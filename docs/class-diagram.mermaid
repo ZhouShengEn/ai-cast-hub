@@ -1,0 +1,180 @@
+classDiagram
+    class Device {
+        +String id
+        +String deviceUuid
+        +String deviceName
+        +String platform
+        +String transferKey
+        +DateTime createdAt
+        +DateTime lastSeenAt
+        +register(uuid, name, platform) Device
+        +findByUuid(uuid) Device
+        +updateLastSeen(uuid) void
+    }
+
+    class Conversation {
+        +String id
+        +String deviceId
+        +String title
+        +String modelProvider
+        +String modelName
+        +DateTime createdAt
+        +DateTime updatedAt
+        +create(deviceId, model) Conversation
+        +findByDevice(deviceId) List~Conversation~
+        +delete(id) void
+    }
+
+    class Message {
+        +String id
+        +String conversationId
+        +String role
+        +String content
+        +Int inputTokens
+        +Int outputTokens
+        +String modelName
+        +DateTime createdAt
+        +create(convId, role, content) Message
+        +findByConversation(convId) List~Message~
+    }
+
+    class ApiKey {
+        +String id
+        +String provider
+        +String encryptedKey
+        +String keyLabel
+        +DateTime createdAt
+        +save(provider, encryptedKey) void
+        +findByProvider(provider) ApiKey
+        +decrypt(encryptedKey) String
+    }
+
+    class TokenUsage {
+        +String id
+        +String deviceId
+        +String modelName
+        +String modelProvider
+        +Int inputTokens
+        +Int outputTokens
+        +Float cost
+        +DateTime createdAt
+        +record(deviceId, model, tokens) void
+        +queryByDevice(deviceId, dateRange) List~TokenUsage~
+        +queryByModel(modelName, dateRange) List~TokenUsage~
+        +aggregateByModel(dateRange) Map
+    }
+
+    class FileTransfer {
+        +String id
+        +String fromDeviceId
+        +String toDeviceId
+        +String fileName
+        +Long fileSize
+        +String status
+        +String checksum
+        +DateTime createdAt
+        +DateTime completedAt
+        +create(from, to, meta) FileTransfer
+        +updateStatus(id, status) void
+        +findByDevice(deviceId) List~FileTransfer~
+    }
+
+    class AiAdapter {
+        <<abstract>>
+        +chat(messages, options) AsyncGenerator
+        +chatSync(messages, options) String
+        +countTokens(messages) Int
+        +getModels() List~Model~
+    }
+
+    class ProviderBase {
+        +String apiEndpoint
+        +String apiKey
+        +buildHeaders() Map
+        +buildRequest(messages, options) Object
+        +parseStreamChunk(chunk) String
+    }
+
+    class OpenAIProvider {
+        +chat(messages, options) AsyncGenerator
+        +countTokens(messages) Int
+    }
+
+    class ClaudeProvider {
+        +chat(messages, options) AsyncGenerator
+        +countTokens(messages) Int
+    }
+
+    class GeminiProvider {
+        +chat(messages, options) AsyncGenerator
+        +countTokens(messages) Int
+    }
+
+    class QwenProvider {
+        +chat(messages, options) AsyncGenerator
+    }
+
+    class ErnieProvider {
+        +chat(messages, options) AsyncGenerator
+    }
+
+    class DeepSeekProvider {
+        +chat(messages, options) AsyncGenerator
+    }
+
+    class GLMProvider {
+        +chat(messages, options) AsyncGenerator
+    }
+
+    class ConversationService {
+        +createConversation(deviceId, model) Conversation
+        +sendMessage(convId, content) AsyncGenerator
+        +getHistory(convId) List~Message~
+        +deleteConversation(convId) void
+        +listConversations(deviceId) List~Conversation~
+    }
+
+    class SignalingService {
+        +handleOffer(roomId, fromDevice, sdp) void
+        +handleAnswer(roomId, fromDevice, sdp) void
+        +handleIceCandidate(roomId, fromDevice, candidate) void
+        +createRoom(deviceA, deviceB) String
+        +closeRoom(roomId) void
+    }
+
+    class DockerManager {
+        +createSandbox(sessionId) Container
+        +executeCode(containerId, code, language) Result
+        +destroySandbox(containerId) void
+        +cleanupIdle() void
+    }
+
+    class CryptoService {
+        +encryptApiKey(plaintext) String
+        +decryptApiKey(ciphertext) String
+        +generateTransferKey() String
+    }
+
+    class TokenCounter {
+        +countInput(messages, model) Int
+        +countOutput(response, model) Int
+        +recordUsage(deviceId, model, input, output) void
+        +getStats(deviceId, filters) Stats
+    }
+
+    Device "1" --> "*" Conversation : owns
+    Conversation "1" --> "*" Message : contains
+    Device "1" --> "*" TokenUsage : consumes
+    Device "1" --> "*" FileTransfer : participates
+    ProviderBase <|-- OpenAIProvider
+    ProviderBase <|-- QwenProvider
+    ProviderBase <|-- ErnieProvider
+    ProviderBase <|-- DeepSeekProvider
+    ProviderBase <|-- GLMProvider
+    AiAdapter <|.. ClaudeProvider
+    AiAdapter <|.. GeminiProvider
+    AiAdapter ..> ProviderBase : uses (OpenAI-compat)
+    ConversationService --> AiAdapter : calls
+    ConversationService --> TokenCounter : records
+    ConversationService --> CryptoService : decrypts key
+    SignalingService --> CryptoService : generates room

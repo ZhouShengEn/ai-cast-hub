@@ -1,0 +1,70 @@
+/* ============================================================
+   AI Cast Hub — 组件样式
+   全局动画、滚动条美化、二维码容器等
+   ============================================================ */
+
+/* 消息淡入动画 */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-message-enter-active {
+  animation: fadeInUp 0.3s ease-out;
+}
+
+/* 流式光标闪烁 */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.stream-cursor {
+  animation: blink 0.8s infinite;
+}
+
+/* Toast 滑入 */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-slide-enter-active {
+  animation: slideInRight 0.3s ease-out;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* 二维码容器 */
+.qr-wrapper {
+  border: 2px dashed #e2e8f0;
+}

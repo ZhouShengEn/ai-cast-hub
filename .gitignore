@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+Thumbs.db
+server/sqlite-data/
+deploy/mysql/data/
+deploy/nginx/ssl/*.pem
+deploy/nginx/ssl/*.key
+*.pem
+*.key

@@ -1,0 +1,181 @@
+sequenceDiagram
+    actor User as 用户 (PC/手机)
+    participant Client as 前端 (Vue/Flutter)
+    participant API as Express API
+    participant ConvSvc as ConversationService
+    participant Adapter as AiAdapter
+    participant AI as AI Model API
+    participant DB as MySQL
+
+    User->>Client: 输入消息，点击发送
+    Client->>API: POST /chat/send (SSE)
+    Note over Client,API: Headers: X-Device-UUID, X-Transfer-Key
+
+    API->>API: deviceAuth 中间件校验
+    API->>ConvSvc: sendMessage(convId, content, model)
+
+    ConvSvc->>DB: 查询/创建 Conversation
+    ConvSvc->>DB: 存储用户 Message (role=user)
+    ConvSvc->>DB: 获取历史消息列表
+
+    ConvSvc->>Adapter: chat(historyMessages, options)
+    Note over Adapter: 根据 model 路由到对应 Provider
+
+    Adapter->>AI: POST chat/completions (stream=true)
+    AI-->>Adapter: SSE data chunks
+    Adapter-->>ConvSvc: yield token chunks
+    ConvSvc-->>API: SSE: data: {"token":"你好"}
+    API-->>Client: SSE stream
+    Client->>Client: 逐字渲染消息
+
+    loop 每个 token chunk
+        AI-->>Adapter: data: {"choices":[{"delta":{"content":"..."}}]}
+        Adapter-->>ConvSvc: token
+        ConvSvc-->>API: SSE write
+        API-->>Client: SSE data
+    end
+
+    AI-->>Adapter: [DONE]
+    Adapter-->>ConvSvc: stream end
+
+    ConvSvc->>DB: 存储 AI Message (role=assistant)
+    ConvSvc->>TokenCounter: recordUsage(deviceId, model, tokens)
+    TokenCounter->>DB: INSERT TokenUsage
+
+    API-->>Client: SSE: data: [DONE]
+    Client->>Client: 显示完成状态
+
+---
+title 投屏（Cast）信令 + WebRTC P2P 流程
+---
+sequenceDiagram
+    actor Mobile as 手机 (Flutter)
+    actor PC as PC 浏览器 (Vue)
+    participant WS as WebSocket Server
+    participant SigSvc as SignalingService
+    participant TURN as Coturn TURN
+
+    Note over PC: 打开投屏页面，显示二维码
+    PC->>WS: CONNECT (deviceUuid, transferKey)
+    WS->>SigSvc: 注册设备在线
+    PC->>WS: subscribe cast_room
+
+    Mobile->>Mobile: 扫描 PC 二维码 → 获取 PC deviceUuid
+    Mobile->>WS: CONNECT (deviceUuid, transferKey)
+    Mobile->>WS: create_room { targetDevice: PC_UUID, type: "cast" }
+
+    WS->>SigSvc: createRoom(mobileUuid, pcUuid)
+    SigSvc-->>WS: roomId: "room_abc123"
+    WS-->>PC: room_created { roomId, fromDevice }
+
+    Mobile->>Mobile: 创建 RTCPeerConnection + 屏幕捕获
+    Mobile->>WS: signal { roomId, type: "offer", sdp }
+
+    WS->>SigSvc: handleOffer(roomId, mobile, sdp)
+    SigSvc-->>WS: 转发 offer 到 PC
+    WS-->>PC: signal { roomId, type: "offer", sdp }
+
+    PC->>PC: setRemoteDescription(offer)
+    PC->>PC: createAnswer()
+    PC->>WS: signal { roomId, type: "answer", sdp }
+
+    WS-->>Mobile: signal { roomId, type: "answer", sdp }
+    Mobile->>Mobile: setRemoteDescription(answer)
+
+    loop ICE 候选交换
+        Mobile->>Mobile: onIceCandidate
+        Mobile->>WS: signal { roomId, type: "ice", candidate }
+        WS-->>PC: signal { roomId, type: "ice", candidate }
+        PC->>PC: addIceCandidate
+        PC->>PC: onIceCandidate
+        PC->>WS: signal { roomId, type: "ice", candidate }
+        WS-->>Mobile: signal { roomId, type: "ice", candidate }
+        Mobile->>Mobile: addIceCandidate
+    end
+
+    Note over Mobile,TURN: NAT 穿透失败时走 TURN 中继
+    Mobile-->>PC: WebRTC MediaStream (P2P)
+    PC->>PC: 渲染到 video 标签
+
+---
+title 文件传输流程（WebRTC DataChannel）
+---
+sequenceDiagram
+    actor Mobile as 手机 (Flutter)
+    actor PC as PC 浏览器 (Vue)
+    participant WS as WebSocket Server
+    participant API as Express API
+    participant SigSvc as SignalingService
+    participant DB as MySQL
+
+    Mobile->>Mobile: 选择文件（小于 2GB）
+    Mobile->>API: POST /file/transfer/init { fileName, fileSize, checksum }
+    API->>DB: INSERT FileTransfer (status=pending)
+
+    Mobile->>WS: create_room { targetDevice, type: "file", transferId }
+    WS->>SigSvc: createRoom(mobile, pc)
+    WS-->>PC: room_created { roomId, transferId, fileMeta }
+
+    PC->>PC: 用户确认接收（弹窗）
+
+    Mobile->>Mobile: 创建 RTCPeerConnection + DataChannel("fileTransfer")
+    Mobile->>WS: signal offer (含 DataChannel 参数)
+    WS-->>PC: signal offer
+
+    PC->>PC: setRemoteDescription + createAnswer
+    PC->>WS: signal answer
+    WS-->>Mobile: signal answer
+
+    Mobile->>PC: DataChannel OPEN
+
+    loop 文件分片发送 (64KB/chunk)
+        Mobile->>Mobile: 读取文件分片
+        Mobile->>PC: DataChannel.send(chunk {seq, data})
+        PC->>PC: 写入缓冲区，更新进度
+        PC-->>Mobile: DataChannel.send(ack {seq})
+    end
+
+    Mobile->>PC: DataChannel.send({type:"complete", checksum})
+    PC->>PC: 校验 checksum
+    PC->>API: POST /file/transfer/:id/complete { status: "success" }
+    API->>DB: UPDATE FileTransfer (status=completed)
+
+    PC->>WS: close_room
+    WS->>SigSvc: closeRoom(roomId)
+
+---
+title Claude Code 沙箱执行流程
+---
+sequenceDiagram
+    actor User as 用户
+    participant Client as 前端
+    participant API as Express API
+    participant Adapter as AiAdapter (Claude)
+    participant Sandbox as DockerManager
+    participant ClaudeAPI as Claude API
+    participant Container as Docker Container
+
+    User->>Client: "帮我写一个 Express 服务器"
+    Client->>API: POST /chat/send { content }
+    API->>Adapter: chat(messages, tools)
+
+    Adapter->>ClaudeAPI: 请求（含 tool_use: code_execution）
+    ClaudeAPI-->>Adapter: tool_use 指令 + 代码
+
+    Adapter->>Sandbox: createSandbox(sessionId)
+    Sandbox->>Container: docker run --rm --network=none --memory=512m --cpus=1
+    Container-->>Sandbox: containerId
+
+    Adapter->>Sandbox: executeCode(containerId, code, "javascript")
+    Sandbox->>Container: 写入代码文件 + 执行
+    Container-->>Sandbox: stdout + stderr + exitCode
+
+    Sandbox-->>Adapter: { stdout, stderr, exitCode }
+    Adapter->>ClaudeAPI: 回传执行结果
+    ClaudeAPI-->>Adapter: 最终回复（含代码解释 + 运行结果）
+
+    Adapter->>Sandbox: destroySandbox(containerId)
+    Sandbox->>Container: docker stop + rm
+
+    Adapter-->>API: 最终回复（经 SSE 流式输出）
+    API-->>Client: SSE 流
