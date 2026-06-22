@@ -1,0 +1,53 @@
+name: Build Flutter APK
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch: # 支持网页手动一键打包
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # 拉取整个仓库代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 配置Flutter环境，替换成你自己的版本
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+
+      # 安装Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 缓存依赖，加速打包
+      - name: Cache Flutter & Gradle deps
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.pub-cache
+            ~/.gradle
+            flutter-app/.dart_tool
+            flutter-app/build
+          key: flutter-${{ hashFiles('flutter-app/pubspec.yaml') }}
+
+      # 切换到flutter-app目录，使用国内pub源
+      - name: Install dependencies
+        working-directory: ./flutter-app
+        run: |
+          flutter config --pub-server https://pub.flutter-io.cn
+          flutter pub get
+
+      # 编译Debug APK（测试用）
+      - name: Build Debug APK
+        working-directory: ./flutter-app
+        run: flutter build apk --debug --split-per-abi
+
+      # 上传APK制品，打包完成可下载
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flutter-Debug-APK
+          path: flutter-app/build/app/outputs/flutter-apk/*.apk
