@@ -20,7 +20,6 @@ class _CastScreenState extends ConsumerState<CastScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final castState = ref.watch(castProvider);
     final deviceState = ref.watch(deviceProvider);
     final castNotifier = ref.read(castProvider.notifier);

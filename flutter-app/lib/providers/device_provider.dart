@@ -49,7 +49,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
 
     try {
       final name = DeviceService.generateDeviceName();
-      final platform = 'android'; // 可通过 dart:io 检测
+      const platform = 'android'; // 可通过 dart:io 检测
       final result = await _service.register(name, platform);
 
       final deviceUuid = result['deviceUuid'] as String? ?? '';

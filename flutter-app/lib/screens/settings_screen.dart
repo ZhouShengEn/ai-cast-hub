@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/device_provider.dart';
 import '../services/local_storage.dart';
 import '../utils/constants.dart';
+import '../utils/extensions.dart';
 
 /// 设置页面 — 服务器配置、API Key 管理、设备信息
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -231,7 +232,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             child: ListTile(
               leading: Icon(Icons.info_outline, color: theme.colorScheme.primary),
               title: const Text('关于 AI Cast Hub'),
-              subtitle: Text('版本 ${AppConstants.appVersion}'),
+              subtitle: const Text('版本 ${AppConstants.appVersion}'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () {
                 showAboutDialog(

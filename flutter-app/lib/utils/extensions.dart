@@ -21,7 +21,7 @@ extension DateTimeExtension on DateTime {
     } else if (diff.inDays < 7) {
       return '${diff.inDays}天前';
     } else {
-      return '${year}-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')}';
+      return '$year-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')}';
     }
   }
 

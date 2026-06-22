@@ -136,7 +136,7 @@ class LocalStorage {
 
   /// 缓存对话列表
   Future<void> cacheConversations(List<Conversation> conversations) async {
-    final database = await this.db;
+    final database = await db;
     final batch = database.batch();
     for (final c in conversations) {
       batch.insert(
@@ -150,7 +150,7 @@ class LocalStorage {
 
   /// 读取缓存的对话列表（按更新时间倒序）
   Future<List<Conversation>> getCachedConversations() async {
-    final database = await this.db;
+    final database = await db;
     final rows = await database.query(
       'conversations',
       orderBy: 'updated_at DESC',
@@ -160,7 +160,7 @@ class LocalStorage {
 
   /// 缓存单条对话
   Future<void> cacheConversation(Conversation conv) async {
-    final database = await this.db;
+    final database = await db;
     await database.insert(
       'conversations',
       _conversationToDb(conv),
@@ -170,7 +170,7 @@ class LocalStorage {
 
   /// 删除缓存的对话
   Future<void> deleteCachedConversation(String id) async {
-    final database = await this.db;
+    final database = await db;
     await database.delete('conversations', where: 'id = ?', whereArgs: [id]);
     await database.delete('messages', where: 'conversation_id = ?', whereArgs: [id]);
   }
@@ -179,7 +179,7 @@ class LocalStorage {
 
   /// 缓存消息列表（按创建时间正序）
   Future<void> cacheMessages(List<Message> messages) async {
-    final database = await this.db;
+    final database = await db;
     final batch = database.batch();
     for (final m in messages) {
       batch.insert(
@@ -193,7 +193,7 @@ class LocalStorage {
 
   /// 读取缓存的对话消息（按创建时间正序）
   Future<List<Message>> getCachedMessages(String conversationId) async {
-    final database = await this.db;
+    final database = await db;
     final rows = await database.query(
       'messages',
       where: 'conversation_id = ?',
@@ -205,7 +205,7 @@ class LocalStorage {
 
   /// 缓存单条消息
   Future<void> cacheMessage(Message message) async {
-    final database = await this.db;
+    final database = await db;
     await database.insert(
       'messages',
       _messageToDb(message),

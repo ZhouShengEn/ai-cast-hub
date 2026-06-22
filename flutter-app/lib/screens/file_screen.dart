@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/file_provider.dart';
 import '../providers/device_provider.dart';
-import '../models/file_transfer.dart';
 import '../widgets/file/file_selector.dart';
 import '../widgets/file/send_progress.dart';
 

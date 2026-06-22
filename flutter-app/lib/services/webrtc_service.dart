@@ -3,8 +3,6 @@ import 'dart:typed_data';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
-import '../utils/constants.dart';
-
 /// WebRTC 服务
 ///
 /// 封装 WebRTC PeerConnection 操作：创建连接、SDP 协商、ICE 候选、数据通道、视频轨。
@@ -34,10 +32,7 @@ class WebrtcService {
   ) async {
     await _closeExisting();
 
-    _peerConnection = await createPeerConnection(
-      configuration,
-      {},
-    );
+    _peerConnection = await createPeerConnection(configuration);
 
     // 远端媒体流监听
     _peerConnection!.onTrack = (RTCTrackEvent event) {
@@ -113,9 +108,9 @@ class WebrtcService {
   }
 
   /// 创建 DataChannel
-  RTCDataChannel createDataChannel(String label) {
+  Future<RTCDataChannel> createDataChannel(String label) async {
     _ensureConnection();
-    final channel = _peerConnection!.createDataChannel(
+    final channel = await _peerConnection!.createDataChannel(
       label,
       RTCDataChannelInit(),
     );

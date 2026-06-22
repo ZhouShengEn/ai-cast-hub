@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../utils/constants.dart';
-
 /// 文件选择器组件
 ///
 /// 大号拖放区域，选择文件后显示详情和发送按钮。
@@ -51,7 +49,7 @@ class FileSelector extends StatelessWidget {
                   ),
                   borderRadius: BorderRadius.circular(16),
                   color: hasFile
-                      ? theme.colorScheme.primaryContainer.withOpacity(0.3)
+                      ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
                       : null,
                 ),
                 child: Column(

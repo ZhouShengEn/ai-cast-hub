@@ -8,7 +8,6 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../utils/constants.dart';
 import 'api_client.dart';
-import '../models/file_transfer.dart';
 
 /// 文件传输服务
 ///
@@ -71,7 +70,6 @@ class FileService {
     RTCDataChannel? dataChannel,
   }) async* {
     final file = File(filePath);
-    final fileSize = await file.length();
     final bytes = await file.readAsBytes();
 
     final totalChunks = ((bytes.length + AppConstants.chunkSize - 1) /
@@ -109,8 +107,6 @@ class FileService {
       sentChunks++;
 
       // 等待 ACK（超时 5 秒重试）
-      final ackTimeout = AppConstants.chunkAckTimeout;
-
       // 注：实际 ACK 等待需要基于回调机制，此处使用简化延迟模拟
       await Future.delayed(const Duration(milliseconds: 50));
 
@@ -160,6 +156,3 @@ class FileService {
     await _client.post('/file/transfer/$transferId/cancel');
   }
 }
-
-/// file_picker PlatformFile 类型别名
-typedef _PlatformFile = dynamic;

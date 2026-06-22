@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../models/message.dart';
+import '../../utils/extensions.dart';
 
 /// 聊天消息气泡
 ///
@@ -88,7 +89,7 @@ class ChatBubble extends StatelessWidget {
                     message.createdAt.formatTime(),
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: isUser
-                          ? theme.colorScheme.onPrimary.withOpacity(0.7)
+                          ? theme.colorScheme.onPrimary.withValues(alpha: 0.7)
                           : theme.colorScheme.onSurfaceVariant,
                     ),
                   ),

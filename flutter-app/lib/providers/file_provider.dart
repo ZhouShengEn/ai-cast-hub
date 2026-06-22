@@ -49,8 +49,8 @@ class FileNotifier extends StateNotifier<FileState> {
       final platformFile = await _service.pickFile();
       if (platformFile == null) return;
 
-      final fileName = platformFile.name ?? 'unknown';
-      final fileSize = platformFile.size ?? 0;
+      final fileName = platformFile.name;
+      final fileSize = platformFile.size;
       final filePath = platformFile.path ?? '';
 
       // 校验文件大小

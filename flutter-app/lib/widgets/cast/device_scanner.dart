@@ -118,11 +118,6 @@ class _DeviceScannerState extends State<DeviceScanner>
     );
   }
 
-  void _scanAgain() {
-    _isProcessing = false;
-    _controller?.resumeCamera();
-  }
-
   @override
   Widget build(BuildContext context) {
     return Stack(

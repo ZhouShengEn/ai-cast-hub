@@ -48,7 +48,7 @@ class AppDrawer extends StatelessWidget {
                   Text(
                     '跨设备 AI 协作平台',
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onPrimaryContainer.withOpacity(0.7),
+                      color: theme.colorScheme.onPrimaryContainer.withValues(alpha: 0.7),
                     ),
                   ),
                 ],
@@ -143,15 +143,15 @@ class _NavItem extends StatelessWidget {
 
     return Material(
       color: isSelected
-          ? theme.colorScheme.primaryContainer.withOpacity(0.5)
+          ? theme.colorScheme.primaryContainer.withValues(alpha: 0.5)
           : Colors.transparent,
-      borderRadius: BorderRadius.horizontal(
-        right: const Radius.circular(28),
+      borderRadius: const BorderRadius.horizontal(
+        right: Radius.circular(28),
       ),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.horizontal(
-          right: const Radius.circular(28),
+        borderRadius: const BorderRadius.horizontal(
+          right: Radius.circular(28),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

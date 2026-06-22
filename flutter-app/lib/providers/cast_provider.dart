@@ -59,7 +59,7 @@ class CastNotifier extends StateNotifier<CastState> {
       final session = await _service.createCastSession(pcDeviceId);
 
       // 开始屏幕捕获
-      final track = await _service.startCapture();
+      await _service.startCapture();
 
       state = state.copyWith(
         roomId: session.roomId,

@@ -14,7 +14,6 @@ class CastService {
   final WebrtcService _webrtc = WebrtcService();
 
   StreamSubscription? _wsSubscription;
-  StreamSubscription? _iceCandidateSubscription;
 
   CastSession? _currentSession;
 

@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
-import '../utils/constants.dart';
 import 'api_client.dart';
 import '../models/conversation.dart';
 import '../models/message.dart';

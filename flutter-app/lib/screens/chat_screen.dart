@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/chat_provider.dart';
-import '../models/message.dart';
+import '../utils/extensions.dart';
 import '../widgets/chat/chat_bubble.dart';
 import '../widgets/chat/chat_input_bar.dart';
 import '../widgets/chat/model_picker.dart';
@@ -128,12 +128,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
-                              '${conv.modelName} · ${conv.updatedAt.timeAgo()}',
+                              '${conv.modelName} \u00b7 ${conv.updatedAt.timeAgo()}',
                               style: theme.textTheme.bodySmall,
                             ),
                             selected: isActive,
                             selectedTileColor:
-                                theme.colorScheme.primaryContainer.withOpacity(0.3),
+                                theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
                             onTap: () {
                               chatNotifier.selectConversation(conv.id);
                               Navigator.pop(context);

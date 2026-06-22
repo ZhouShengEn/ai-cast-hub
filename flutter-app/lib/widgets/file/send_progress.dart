@@ -75,7 +75,7 @@ class SendProgress extends StatelessWidget {
                     tooltip: '取消',
                   ),
                 if (isDone)
-                  Icon(Icons.done_all, color: Colors.green, size: 22),
+                  const Icon(Icons.done_all, color: Colors.green, size: 22),
                 if (isFailed)
                   Icon(Icons.error_outline,
                       color: theme.colorScheme.error, size: 22),
