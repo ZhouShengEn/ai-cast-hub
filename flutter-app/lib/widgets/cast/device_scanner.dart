@@ -1,11 +1,13 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+
+import '../../utils/extensions.dart';
 
 /// 二维码扫码组件
 ///
-/// 基于 qr_code_scanner，扫描成功后振动反馈并弹窗确认。
+/// 基于 mobile_scanner，扫描成功后弹窗确认。
 class DeviceScanner extends StatefulWidget {
   final ValueChanged<String> onDeviceScanned; // 回调解码后的设备 UUID
 
@@ -18,44 +20,23 @@ class DeviceScanner extends StatefulWidget {
   State<DeviceScanner> createState() => _DeviceScannerState();
 }
 
-class _DeviceScannerState extends State<DeviceScanner>
-    with WidgetsBindingObserver {
-  final GlobalKey _qrKey = GlobalKey(debugLabel: 'QR');
-  QRViewController? _controller;
+class _DeviceScannerState extends State<DeviceScanner> {
+  final MobileScannerController _controller = MobileScannerController();
   bool _isProcessing = false;
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-  }
-
-  @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _controller?.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_controller == null) return;
-    if (state == AppLifecycleState.resumed) {
-      _controller!.resumeCamera();
-    } else if (state == AppLifecycleState.paused) {
-      _controller!.pauseCamera();
-    }
-  }
+  void _onScan(BarcodeCapture capture) {
+    if (_isProcessing) return;
 
-  void _onQRViewCreated(QRViewController controller) {
-    _controller = controller;
-    controller.scannedDataStream.listen(_onScan);
-  }
+    final barcode = capture.barcodes.firstOrNull;
+    if (barcode == null || barcode.rawValue == null) return;
 
-  void _onScan(Barcode barcode) {
-    if (_isProcessing || barcode.code == null) return;
-
-    final code = barcode.code!;
+    final code = barcode.rawValue!;
     _isProcessing = true;
 
     try {
@@ -65,9 +46,9 @@ class _DeviceScannerState extends State<DeviceScanner>
 
       if (deviceUuid != null && deviceUuid.isNotEmpty) {
         // 暂停扫描
-        _controller?.pauseCamera();
+        _controller.stop();
 
-        // 振动反馈（平台相关，此处使用简化方式）
+        // 弹窗确认
         _showConfirmDialog(deviceUuid, roomType);
       } else {
         _isProcessing = false;
@@ -101,7 +82,7 @@ class _DeviceScannerState extends State<DeviceScanner>
           TextButton(
             onPressed: () {
               _isProcessing = false;
-              _controller?.resumeCamera();
+              _controller.start();
               Navigator.pop(ctx);
             },
             child: const Text('取消'),
@@ -120,18 +101,28 @@ class _DeviceScannerState extends State<DeviceScanner>
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scanWindow = Rect.fromCenter(
+      center: const Offset(0, 0),
+      width: 280,
+      height: 280,
+    );
+
     return Stack(
       alignment: Alignment.center,
       children: [
-        QRView(
-          key: _qrKey,
-          onQRViewCreated: _onQRViewCreated,
-          overlay: QrScannerOverlayShape(
-            borderColor: Theme.of(context).colorScheme.primary,
-            borderRadius: 12,
-            borderLength: 30,
-            borderWidth: 10,
-            cutOutSize: 280,
+        MobileScanner(
+          controller: _controller,
+          scanWindow: scanWindow,
+          onDetect: _onScan,
+        ),
+        // 扫描框边框（自定义绘制代替 QrScannerOverlayShape）
+        Positioned.fill(
+          child: CustomPaint(
+            painter: _ScannerOverlayPainter(
+              borderColor: theme.colorScheme.primary,
+              scanWindow: scanWindow,
+            ),
           ),
         ),
         Positioned(
@@ -153,10 +144,67 @@ class _DeviceScannerState extends State<DeviceScanner>
   }
 }
 
-/// String 扩展（就地定义，避免额外 import）
-extension _StringExtension on String {
-  String truncate(int maxLength) {
-    if (length <= maxLength) return this;
-    return '${substring(0, maxLength)}...';
+/// 自定义扫描框边框绘制
+class _ScannerOverlayPainter extends CustomPainter {
+  final Color borderColor;
+  final Rect scanWindow;
+
+  _ScannerOverlayPainter({
+    required this.borderColor,
+    required this.scanWindow,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = borderColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4;
+
+    final rect = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: scanWindow.width,
+      height: scanWindow.height,
+    );
+
+    const cornerLength = 30.0;
+    final r = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+
+    // 四个角绘制 L 形线段（模拟 QrScannerOverlayShape 风格）
+    void drawCorner(Offset p1, Offset p2, Offset p3) {
+      canvas.drawLine(p1, p2, paint);
+      canvas.drawLine(p1, p3, paint);
+    }
+
+    // 左上角
+    drawCorner(
+      Offset(r.left, r.top),
+      Offset(r.left + cornerLength, r.top),
+      Offset(r.left, r.top + cornerLength),
+    );
+    // 右上角
+    drawCorner(
+      Offset(r.right, r.top),
+      Offset(r.right - cornerLength, r.top),
+      Offset(r.right, r.top + cornerLength),
+    );
+    // 左下角
+    drawCorner(
+      Offset(r.left, r.bottom),
+      Offset(r.left + cornerLength, r.bottom),
+      Offset(r.left, r.bottom - cornerLength),
+    );
+    // 右下角
+    drawCorner(
+      Offset(r.right, r.bottom),
+      Offset(r.right - cornerLength, r.bottom),
+      Offset(r.right, r.bottom - cornerLength),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScannerOverlayPainter oldDelegate) {
+    return borderColor != oldDelegate.borderColor ||
+        scanWindow != oldDelegate.scanWindow;
   }
 }
