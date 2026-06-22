@@ -12,7 +12,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 配置Flutter环境（修改为你项目对应的版本）
+      # 配置Flutter环境（改成你项目实际版本）
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -22,7 +22,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # 缓存依赖，大幅加速重复打包
+      # 缓存依赖，加速重复打包
       - name: Cache Flutter & Gradle deps
         uses: actions/cache@v3
         with:
@@ -33,19 +33,19 @@ jobs:
             flutter-app/build
           key: flutter-${{ hashFiles('flutter-app/pubspec.yaml') }}
 
-      # 切换到flutter-app目录，使用国内pub镜像（修复参数名）
+      # 切换flutter-app目录，通过环境变量指定国内pub源（无报错方案）
       - name: Install dependencies
         working-directory: ./flutter-app
-        run: |
-          flutter config --pub-repository https://pub.flutter-io.cn
-          flutter pub get
+        env:
+          PUB_HOSTED_URL: https://pub.flutter-io.cn
+        run: flutter pub get
 
       # 编译Debug测试APK
       - name: Build Debug APK
         working-directory: ./flutter-app
         run: flutter build apk --debug --split-per-abi
 
-      # 上传编译产物，打包完成后网页下载
+      # 上传APK产物
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
