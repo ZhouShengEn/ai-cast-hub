@@ -26,17 +26,35 @@ class Message {
   bool get isAssistant => role == 'assistant';
 
   factory Message.fromJson(Map<String, dynamic> json) {
+    // 兼容服务端 snake_case 和小驼峰两种格式
+    String _getStr(String camelKey, String snakeKey, String def) {
+      final val = json[camelKey] ?? json[snakeKey];
+      if (val == null) return def;
+      return val.toString();
+    }
+
+    int? _getInt(String camelKey, String snakeKey) {
+      final val = json[camelKey] ?? json[snakeKey];
+      if (val == null) return null;
+      if (val is int) return val;
+      return int.tryParse(val.toString());
+    }
+
+    DateTime _parseDt(dynamic val) {
+      if (val == null) return DateTime.now();
+      if (val is String) return DateTime.parse(val);
+      return DateTime.now();
+    }
+
     return Message(
-      id: json['id'] as String? ?? '',
-      conversationId: json['conversationId'] as String? ?? '',
-      role: json['role'] as String? ?? 'user',
-      content: json['content'] as String? ?? '',
-      inputTokens: json['inputTokens'] as int?,
-      outputTokens: json['outputTokens'] as int?,
-      modelName: json['modelName'] as String?,
-      createdAt: json['createdAt'] != null
-          ? DateTime.parse(json['createdAt'] as String)
-          : DateTime.now(),
+      id: _getStr('id', 'id', ''),
+      conversationId: _getStr('conversationId', 'conversation_id', ''),
+      role: _getStr('role', 'role', 'user'),
+      content: _getStr('content', 'content', ''),
+      inputTokens: _getInt('inputTokens', 'input_tokens'),
+      outputTokens: _getInt('outputTokens', 'output_tokens'),
+      modelName: json['modelName']?.toString() ?? json['model_name']?.toString(),
+      createdAt: _parseDt(json['createdAt'] ?? json['created_at']),
     );
   }
 

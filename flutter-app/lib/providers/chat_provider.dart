@@ -23,7 +23,7 @@ class ChatState {
     this.messages = const [],
     this.streaming = false,
     this.streamingContent = '',
-    this.selectedModel = 'openai/gpt-4o',
+    this.selectedModel = 'openai:gpt-4o',
     this.error,
   });
 

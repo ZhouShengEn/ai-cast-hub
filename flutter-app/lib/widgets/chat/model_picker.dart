@@ -15,13 +15,13 @@ class ModelPicker extends StatelessWidget {
 
   /// 可用模型列表
   static const List<Map<String, String>> models = [
-    {'provider': 'OpenAI', 'id': 'openai/gpt-4o', 'name': 'GPT-4o'},
-    {'provider': 'OpenAI', 'id': 'openai/gpt-4o-mini', 'name': 'GPT-4o Mini'},
-    {'provider': 'OpenAI', 'id': 'openai/gpt-3.5-turbo', 'name': 'GPT-3.5 Turbo'},
-    {'provider': 'Anthropic', 'id': 'anthropic/claude-3.5-sonnet', 'name': 'Claude 3.5 Sonnet'},
-    {'provider': 'Anthropic', 'id': 'anthropic/claude-3-haiku', 'name': 'Claude 3 Haiku'},
-    {'provider': 'Google', 'id': 'google/gemini-1.5-pro', 'name': 'Gemini 1.5 Pro'},
-    {'provider': 'Google', 'id': 'google/gemini-1.5-flash', 'name': 'Gemini 1.5 Flash'},
+    {'provider': 'OpenAI', 'id': 'openai:gpt-4o', 'name': 'GPT-4o'},
+    {'provider': 'OpenAI', 'id': 'openai:gpt-4o-mini', 'name': 'GPT-4o Mini'},
+    {'provider': 'OpenAI', 'id': 'openai:gpt-3.5-turbo', 'name': 'GPT-3.5 Turbo'},
+    {'provider': 'Anthropic', 'id': 'claude:claude-3-5-sonnet-20241022', 'name': 'Claude 3.5 Sonnet'},
+    {'provider': 'Anthropic', 'id': 'claude:claude-3-opus-20240229', 'name': 'Claude 3 Opus'},
+    {'provider': 'Google', 'id': 'gemini:gemini-1.5-pro', 'name': 'Gemini 1.5 Pro'},
+    {'provider': 'Google', 'id': 'gemini:gemini-1.5-flash', 'name': 'Gemini 1.5 Flash'},
   ];
 
   /// 弹出底部选择器
