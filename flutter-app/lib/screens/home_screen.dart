@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/device_provider.dart';
+import '../services/local_storage.dart';
 import '../models/device.dart';
 import '../utils/extensions.dart';
 
@@ -49,6 +50,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           children: [
             // 设备状态卡片
             _buildDeviceCard(theme, deviceState),
+
+            // 连接失败提示
+            if (deviceState.error != null && deviceState.error!.contains('超时'))
+              _buildNetworkTip(theme),
+
             const SizedBox(height: 24),
 
             // 已绑定 PC 列表
@@ -177,6 +183,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 网络连接失败提示卡片
+  Widget _buildNetworkTip(ThemeData theme) {
+    final storage = LocalStorage.instance;
+    final serverUrl = storage.getServerUrl();
+    return Card(
+      color: theme.colorScheme.errorContainer,
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.wifi_off, color: theme.colorScheme.error),
+                const SizedBox(width: 8),
+                Text('无法连接到服务器', style: TextStyle(color: theme.colorScheme.error, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '当前地址: $serverUrl\n请确保手机和 PC 在同一局域网，然后在设置中修改为 PC 的 IP 地址',
+              style: TextStyle(color: theme.colorScheme.onErrorContainer, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => Navigator.pushNamed(context, '/settings'),
+                icon: const Icon(Icons.settings, size: 18),
+                label: const Text('去设置服务器地址'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: theme.colorScheme.error,
+                ),
+              ),
+            ),
           ],
         ),
       ),

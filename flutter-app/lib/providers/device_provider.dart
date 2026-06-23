@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/device.dart';
 import '../services/device_service.dart';
 import '../services/local_storage.dart';
+import '../services/debug_service.dart';
 
 /// 设备状态
 class DeviceState {
@@ -56,14 +57,19 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
       if (uuid == null || uuid.isEmpty) {
         uuid = _generateUUID();
         await _storage.saveDeviceUuid(uuid);
+        DebugService().info('[注册] 生成新 UUID: ${uuid.substring(0, 8)}...');
       }
 
       // 2. 检测平台类型
       final platform = _getPlatform();
+      DebugService().info('[注册] 平台: $platform, 服务器: ${_storage.getServerUrl()}');
 
       // 3. 发送 POST 注册请求
       final name = DeviceService.generateDeviceName();
+      DebugService().info('[注册] 发送注册请求: $name ($platform)');
       final result = await _service.register(name, platform);
+
+      DebugService().info('[注册] 注册成功: $result');
 
       // 4. 保存服务端返回的信息
       final deviceUuid = result['deviceUuid'] as String? ?? uuid;

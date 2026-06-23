@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/device_provider.dart';
 import '../services/api_client.dart';
 import '../services/local_storage.dart';
+import '../services/debug_service.dart';
 import '../utils/constants.dart';
 import '../utils/extensions.dart';
 
@@ -223,6 +224,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               title: Text('重置传输密钥', style: TextStyle(color: theme.colorScheme.error)),
               subtitle: const Text('重置后将断开所有已绑定设备'),
               onTap: _resetTransferKey,
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // 调试悬浮球开关
+          Card(
+            child: SwitchListTile(
+              secondary: const Icon(Icons.bug_report),
+              title: const Text('调试悬浮球'),
+              subtitle: const Text('在首页显示可拖拽的调试面板，查看日志和网络请求'),
+              value: _storage.getDebugBallEnabled(),
+              onChanged: (val) {
+                _storage.saveDebugBallEnabled(val);
+                DebugService().enabled.value = val; // 全局同步
+                setState(() {});
+                _showSnackBar(val ? '调试悬浮球已开启' : '调试悬浮球已关闭');
+              },
             ),
           ),
 

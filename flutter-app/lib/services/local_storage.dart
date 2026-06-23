@@ -83,6 +83,13 @@ class LocalStorage {
     return raw ?? [];
   }
 
+  /// 获取调试悬浮球开关
+  bool getDebugBallEnabled() => _prefs.getBool('debug_ball_enabled') ?? false;
+
+  /// 保存调试悬浮球开关
+  Future<bool> saveDebugBallEnabled(bool enabled) =>
+      _prefs.setBool('debug_ball_enabled', enabled);
+
   /// 保存最近使用的模型列表
   Future<bool> saveRecentModels(List<String> models) =>
       _prefs.setStringList('recent_models', models);

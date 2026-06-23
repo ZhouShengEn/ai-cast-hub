@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 
 import '../utils/constants.dart';
 import 'local_storage.dart';
+import 'debug_service.dart';
 
 /// Dio HTTP 客户端（单例模式）
 ///
@@ -21,7 +22,8 @@ class ApiClient {
       },
     ));
 
-    // 请求拦截器：自动附加认证头
+    // 请求拦截器：自动附加认证头 + 网络日志
+    final debugService = DebugService();
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
         final uuid = _storage.getDeviceUuid();
@@ -32,9 +34,23 @@ class ApiClient {
         if (key != null) {
           options.headers['X-Transfer-Key'] = key;
         }
+        // 记录网络请求
+        debugService.networkRequest(
+          options.method,
+          '${options.baseUrl}${options.path}',
+          options.data,
+          options.headers,
+        );
         handler.next(options);
       },
       onResponse: (response, handler) {
+        // 记录网络响应
+        debugService.networkResponse(
+          '${response.requestOptions.baseUrl}${response.requestOptions.path}',
+          response.statusCode ?? 0,
+          response.data,
+        );
+
         // 检查业务错误码
         final data = response.data;
         if (data is Map<String, dynamic> && data.containsKey('code')) {
@@ -56,6 +72,11 @@ class ApiClient {
         handler.next(response);
       },
       onError: (error, handler) {
+        // 记录网络错误
+        debugService.networkError(
+          '${error.requestOptions.baseUrl}${error.requestOptions.path}',
+          error.message ?? '网络错误',
+        );
         handler.next(error);
       },
     ));
