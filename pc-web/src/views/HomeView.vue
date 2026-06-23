@@ -90,29 +90,58 @@ const showToast = inject('showToast', () => {})
 /** 初始化设备信息 */
 onMounted(async () => {
   try {
-    // 检查是否已注册
+    // 确保先有 UUID（如果不存在则先生成）
+    if (!localStorage.getItem('deviceUuid')) {
+      localStorage.setItem('deviceUuid', crypto.randomUUID())
+    }
+    
+    // 检查是否已注册（尝试获取设备信息）
     const uuid = localStorage.getItem('deviceUuid')
     if (uuid) {
-      await deviceStore.fetchDeviceInfo()
+      try {
+        await deviceStore.fetchDeviceInfo()
+      } catch (err) {
+        // 获取失败可能是未注册，尝试重新注册
+        console.log('[HomeView] 获取设备信息失败，尝试注册:', err.message)
+        const name = `PC-${navigator.platform || 'Web'}`
+        await deviceStore.registerDevice(name)
+        showToast('设备已注册', 'success')
+      }
     } else {
       // 首次注册
       const name = `PC-${navigator.platform || 'Web'}`
       await deviceStore.registerDevice(name)
       showToast('设备已注册', 'success')
     }
-    // 生成二维码
+    
+    // 生成二维码（确保一定执行）
     deviceStore.generateQRCode()
+    
+    // 验证二维码数据是否生成成功
+    if (!deviceStore.qrCodeData) {
+      console.error('[HomeView] 二维码数据为空')
+      throw new Error('二维码生成失败')
+    }
   } catch (err) {
-    // 如果 fetchDeviceInfo 失败，尝试注册
+    console.error('[HomeView] 初始化失败:', err)
+    // 最后的兜底：强制生成二维码
     if (!localStorage.getItem('deviceUuid')) {
-      try {
-        const name = `PC-${navigator.platform || 'Web'}`
-        await deviceStore.registerDevice(name)
-      } catch (regErr) {
-        showToast('设备注册失败: ' + regErr.message, 'error')
-      }
+      localStorage.setItem('deviceUuid', crypto.randomUUID())
+    }
+    deviceStore.generateQRCode()
+    
+    if (!deviceStore.qrCodeData) {
+      showToast('设备初始化失败: ' + err.message, 'error')
     }
   }
+  
+  // 定期刷新设备列表和二维码
+  setInterval(async () => {
+    try {
+      await deviceStore.fetchDeviceList()
+      deviceStore.generateQRCode()
+    } catch (_) {}
+  }, 30000) // 每 30 秒刷新一次
 })
 
 /** 格式化时间 */

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
@@ -25,7 +26,11 @@ class LocalStorage {
   /// 初始化本地存储（SharedPreferences + sqflite）
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
-    _db = await _initDatabase();
+    try {
+      _db = await _initDatabase();
+    } catch (_) {
+      // sqflite not available (e.g., Web), skip database initialization
+    }
   }
 
   // ============ SharedPreferences 操作 ============
@@ -45,8 +50,28 @@ class LocalStorage {
       _prefs.setString('transfer_key', key);
 
   /// 获取服务器地址
-  String getServerUrl() =>
-      _prefs.getString('server_url') ?? 'http://10.0.2.2:3000/api/v1';
+  ///
+  /// 优先级：用户自定义设置 > 平台默认值
+  /// - Web: http://localhost:3000/api/v1
+  /// - Android 模拟器: http://10.0.2.2:3000/api/v1
+  /// - 真机/其他: http://localhost:3000/api/v1
+  String getServerUrl() {
+    final saved = _prefs.getString('server_url');
+    if (saved != null && saved.isNotEmpty) {
+      // Web 环境下，如果保存的是 Android 模拟器地址，自动修正
+      if (kIsWeb && saved.contains('10.0.2.2')) {
+        return 'http://localhost:3000/api/v1';
+      }
+      return saved;
+    }
+    
+    // 根据平台返回默认地址
+    if (kIsWeb) {
+      return 'http://localhost:3000/api/v1';
+    }
+    // Android 模拟器专用地址（访问宿主机）
+    return 'http://10.0.2.2:3000/api/v1';
+  }
 
   /// 保存服务器地址
   Future<bool> saveServerUrl(String url) =>

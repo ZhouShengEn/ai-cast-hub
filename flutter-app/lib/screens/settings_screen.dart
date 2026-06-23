@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/device_provider.dart';
+import '../services/api_client.dart';
 import '../services/local_storage.dart';
 import '../utils/constants.dart';
 import '../utils/extensions.dart';
@@ -282,7 +283,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       return;
     }
     _storage.saveServerUrl(url);
-    _showSnackBar('服务器地址已保存');
+    // 同步更新 ApiClient 的 baseUrl
+    ApiClient.instance.updateBaseUrl(url);
+    _showSnackBar('服务器地址已保存，正在重新注册设备...');
+
+    // 保存后重新注册设备
+    ref.read(deviceProvider.notifier).registerDevice();
   }
 
   void _addApiKey() {

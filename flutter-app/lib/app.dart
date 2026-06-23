@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'screens/home_screen.dart';
+import 'screens/scan_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/cast_screen.dart';
 import 'screens/file_screen.dart';
@@ -35,6 +36,7 @@ class MyApp extends StatelessWidget {
       initialRoute: '/',
       routes: {
         '/': (context) => const HomeScreen(),
+        '/scan': (context) => const ScanScreen(),
         '/chat': (context) => const ChatScreen(),
         '/cast': (context) => const CastScreen(),
         '/file': (context) => const FileScreen(),

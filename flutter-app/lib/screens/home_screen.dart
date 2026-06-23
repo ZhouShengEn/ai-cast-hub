@@ -86,8 +86,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
       // FAB: 扫码连接
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.pushNamed(context, '/cast');
+        onPressed: () async {
+          final result = await Navigator.pushNamed(context, '/scan');
+          // 扫码绑定成功后刷新设备列表
+          if (result == true) {
+            ref.read(deviceProvider.notifier).fetchDeviceList();
+          }
         },
         icon: const Icon(Icons.qr_code_scanner),
         label: const Text('扫码连接'),

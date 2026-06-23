@@ -28,9 +28,8 @@ const config = {
       queueLimit: 0,
       charset: 'utf8mb4',
     },
-    sqlite: {
-      path: process.env.DB_SQLITE_PATH || './data/local.db',
-    },
+    // 当前使用内存模式存储设备数据
+    // 如需持久化，可启用 MySQL 或添加 SQLite 支持
   },
 
   /** TURN/STUN 服务器配置 */

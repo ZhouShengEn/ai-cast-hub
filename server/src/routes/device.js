@@ -92,14 +92,14 @@ router.get('/info', async (req, res, next) => {
 /**
  * POST /api/v1/device/bind
  * 扫码绑定 PC 设备
- * Body: { targetDeviceUuid: string }
+ * Body: { targetUuid: string }
  */
 router.post('/bind', async (req, res, next) => {
   try {
-    const { targetDeviceUuid } = req.body || {};
+    const { targetUuid } = req.body || {}; // 前端传的是 targetUuid
     const myDeviceUuid = req.deviceUuid || (req.headers['x-device-uuid'] || '').trim();
 
-    if (!targetDeviceUuid) {
+    if (!targetUuid) {
       return res.status(400).json({
         code: 400,
         data: null,
@@ -107,7 +107,16 @@ router.post('/bind', async (req, res, next) => {
       });
     }
 
-    const targetDevice = await DeviceModel.findByUuid(targetDeviceUuid);
+    if (!myDeviceUuid) {
+      return res.status(400).json({
+        code: 400,
+        data: null,
+        message: '缺少当前设备 UUID',
+      });
+    }
+
+    // 检查目标设备是否存在
+    const targetDevice = await DeviceModel.findByUuid(targetUuid);
     if (!targetDevice) {
       return res.status(404).json({
         code: 404,
@@ -116,16 +125,34 @@ router.post('/bind', async (req, res, next) => {
       });
     }
 
-    logger.info(`[Device] 设备绑定: ${myDeviceUuid} → ${targetDeviceUuid}`);
+    // 检查当前设备是否存在，不存在则自动注册（手机端可能还未注册）
+    let myDevice = await DeviceModel.findByUuid(myDeviceUuid);
+    if (!myDevice) {
+      // 自动注册手机设备
+      myDevice = await DeviceModel.register(
+        myDeviceUuid, 
+        `Mobile-${myDeviceUuid.substring(0, 8)}`, 
+        'android' // 默认 android
+      );
+    }
+
+    // 执行双向绑定
+    const bindResult = await DeviceModel.bindDevices(myDeviceUuid, targetUuid);
+
+    logger.info(`[Device] 设备绑定成功: ${myDeviceUuid} <-> ${targetUuid}`);
 
     res.json({
       code: 0,
       data: {
-        deviceUuid: targetDevice.device_uuid,
-        deviceName: targetDevice.device_name,
-        platform: targetDevice.platform,
+        success: true,
+        targetDevice: {
+          deviceUuid: targetDevice.device_uuid,
+          deviceName: targetDevice.device_name,
+          platform: targetDevice.platform,
+        },
+        boundAt: bindResult.boundAt,
       },
-      message: 'ok',
+      message: '绑定成功',
     });
   } catch (err) {
     next(err);
@@ -134,23 +161,35 @@ router.post('/bind', async (req, res, next) => {
 
 /**
  * GET /api/v1/device/list
- * 列出所有已配对设备
+ * 列出当前设备的已配对设备
  */
 router.get('/list', async (req, res, next) => {
   try {
-    const devices = await DeviceModel.listAll();
+    const myDeviceUuid = req.deviceUuid || (req.headers['x-device-uuid'] || '').trim();
+    
+    if (!myDeviceUuid) {
+      return res.status(400).json({
+        code: 400,
+        data: null,
+        message: '缺少设备 UUID',
+      });
+    }
+
+    // 获取已配对设备列表
+    const pairedDevices = await DeviceModel.getPairedDevices(myDeviceUuid);
 
     res.json({
       code: 0,
-      data: {
-        devices: devices.map(d => ({
-          deviceUuid: d.device_uuid,
-          deviceName: d.device_name,
-          platform: d.platform,
-          createdAt: d.created_at,
-          lastSeenAt: d.last_seen_at,
-        })),
-      },
+      data: pairedDevices.map(d => ({
+        uuid: d.device_uuid,
+        id: d.device_uuid, // 兼容前端
+        name: d.device_name,
+        deviceName: d.device_name,
+        platform: d.platform || 'unknown',
+        lastSeen: d.last_seen_at,
+        lastSeenAt: d.last_seen_at,
+        isOnline: d.isOnline || true,
+      })),
       message: 'ok',
     });
   } catch (err) {

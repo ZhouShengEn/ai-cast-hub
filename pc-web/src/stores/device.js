@@ -25,21 +25,24 @@ export const useDeviceStore = defineStore('device', {
     async registerDevice(name = 'PC Web') {
       this.loading = true
       this.error = null
+      // 先生成并持久化 UUID（不管 API 是否成功）
+      if (!localStorage.getItem('deviceUuid')) {
+        localStorage.setItem('deviceUuid', crypto.randomUUID())
+      }
       try {
         const data = await deviceApi.register(name, 'web')
         this.device = data
-        // 持久化设备认证信息
-        if (data.uuid) localStorage.setItem('deviceUuid', data.uuid)
         if (data.transferKey) localStorage.setItem('transferKey', data.transferKey)
-        if (data.name) localStorage.setItem('deviceName', data.name)
-        // 生成绑定二维码
-        this.generateQRCode()
+        if (data.deviceName) localStorage.setItem('deviceName', data.deviceName)
         return data
       } catch (err) {
+        // API 失败也使用本地 UUID（离线可用）
         this.error = err.message
         throw err
       } finally {
         this.loading = false
+        // 无论成功失败都生成二维码（移到这里确保一定会执行）
+        this.generateQRCode()
       }
     },
 
@@ -95,11 +98,18 @@ export const useDeviceStore = defineStore('device', {
 
     /** 生成当前设备的绑定二维码数据 */
     generateQRCode() {
-      const uuid = this.device?.uuid || localStorage.getItem('deviceUuid')
-      if (!uuid) return
+      // 优先使用 API 返回的 deviceUuid，其次从 localStorage 获取
+      const uuid = this.device?.deviceUuid || localStorage.getItem('deviceUuid')
+      if (!uuid) {
+        console.warn('[DeviceStore] 无法生成二维码：缺少设备 UUID')
+        this.qrCodeData = null
+        return
+      }
+      console.log('[DeviceStore] 生成二维码，UUID:', uuid)
       this.qrCodeData = JSON.stringify({
         deviceUuid: uuid,
         roomType: 'bind',
+        timestamp: Date.now(), // 添加时间戳确保每次都触发更新
       })
     },
 

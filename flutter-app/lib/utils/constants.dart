@@ -1,14 +1,18 @@
+import 'package:flutter/foundation.dart';
+
 /// 应用全局常量
 ///
 /// API 地址、超时时间、文件大小限制等配置。
 class AppConstants {
   AppConstants._();
 
-  /// API 基础 URL（Android 模拟器使用 10.0.2.2，真机可修改为局域网 IP）
-  static const String apiBaseUrl = 'http://10.0.2.2:3000/api/v1';
+  /// API 基础 URL
+  static String get apiBaseUrl =>
+      kIsWeb ? 'http://localhost:3000/api/v1' : 'http://10.0.2.2:3000/api/v1';
 
   /// WebSocket 基础 URL
-  static const String wsBaseUrl = 'ws://10.0.2.2:3000';
+  static String get wsBaseUrl =>
+      kIsWeb ? 'ws://localhost:3000' : 'ws://10.0.2.2:3000';
 
   /// 最大文件传输大小：2GB
   static const int maxFileSize = 2 * 1024 * 1024 * 1024;

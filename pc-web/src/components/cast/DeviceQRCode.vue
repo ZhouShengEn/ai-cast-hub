@@ -46,7 +46,11 @@ const qrContainer = ref(null)
 
 /** 生成二维码到 canvas */
 async function generateQR() {
-  if (!qrContainer.value || !props.data) return
+  if (!qrContainer.value) return
+  if (!props.data) {
+    console.warn('[DeviceQRCode] 二维码数据为空，跳过生成')
+    return
+  }
   try {
     // 清空容器
     qrContainer.value.innerHTML = ''
@@ -62,18 +66,25 @@ async function generateQR() {
     canvas.style.width = '200px'
     canvas.style.height = '200px'
     qrContainer.value.appendChild(canvas)
+    console.log('[DeviceQRCode] 二维码生成成功')
   } catch (err) {
-    console.error('QR 生成失败:', err)
+    console.error('[DeviceQRCode] 生成失败:', err)
   }
 }
 
 onMounted(() => {
-  generateQR()
+  // 使用 nextTick 确保 DOM 已渲染
+  setTimeout(() => generateQR(), 100)
 })
 
-watch(() => props.data, () => {
-  generateQR()
-})
+// 监听数据变化，重新生成二维码
+watch(() => props.data, (newData, oldData) => {
+  if (newData && newData !== oldData) {
+    console.log('[DeviceQRCode] 数据变化，重新生成二维码')
+    // 延迟执行确保 DOM 更新完成
+    setTimeout(() => generateQR(), 50)
+  }
+}, { immediate: false })
 </script>
 
 <style scoped>

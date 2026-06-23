@@ -6,7 +6,7 @@ import client from './client'
 export default {
   /** 注册当前设备 */
   async register(name, platform = 'web') {
-    return client.post('/device/register', { name, platform })
+    return client.post('/device/register', { deviceName: name, platform })
   },
 
   /** 获取当前设备信息 */

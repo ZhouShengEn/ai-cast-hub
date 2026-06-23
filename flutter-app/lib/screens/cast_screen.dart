@@ -4,10 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/cast_provider.dart';
 import '../providers/device_provider.dart';
 import '../widgets/cast/cast_control_panel.dart';
-import '../widgets/cast/device_scanner.dart';
 import '../widgets/cast/status_indicator.dart';
 
-/// 投屏页面 — 扫码连接 PC + WebRTC 投屏控制
+/// 投屏页面 — 选择已绑定 PC 并投屏
+///
+/// 此页面只负责投屏控制，不再包含扫码绑定功能。
+/// 扫码绑定请使用首页的"扫码连接"按钮（/scan 路由）。
 class CastScreen extends ConsumerStatefulWidget {
   const CastScreen({super.key});
 
@@ -16,7 +18,14 @@ class CastScreen extends ConsumerStatefulWidget {
 }
 
 class _CastScreenState extends ConsumerState<CastScreen> {
-  bool _showScanner = true;
+  @override
+  void initState() {
+    super.initState();
+    // 进入页面时刷新设备列表
+    Future.microtask(() {
+      ref.read(deviceProvider.notifier).fetchDeviceList();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -24,45 +33,14 @@ class _CastScreenState extends ConsumerState<CastScreen> {
     final deviceState = ref.watch(deviceProvider);
     final castNotifier = ref.read(castProvider.notifier);
 
+    final theme = Theme.of(context);
+
     // 获取第一个已绑定 PC 名称
     final pcName = deviceState.pairedDevices.isNotEmpty
         ? deviceState.pairedDevices.first.deviceName
         : null;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('投屏'),
-        actions: [
-          if (!_showScanner)
-            IconButton(
-              icon: const Icon(Icons.qr_code_scanner),
-              tooltip: '重新扫描',
-              onPressed: () => setState(() => _showScanner = true),
-            ),
-        ],
-      ),
-      body: _showScanner && !castState.isCasting
-          ? _buildScannerView(castNotifier)
-          : _buildControlView(castState, castNotifier, pcName),
-    );
-  }
-
-  Widget _buildScannerView(dynamic castNotifier) {
-    return DeviceScanner(
-      onDeviceScanned: (deviceUuid) {
-        setState(() => _showScanner = false);
-        castNotifier.startCasting(deviceUuid);
-      },
-    );
-  }
-
-  Widget _buildControlView(
-    dynamic castState,
-    dynamic castNotifier,
-    String? pcName,
-  ) {
-    final theme = Theme.of(context);
-
+    // 错误提示
     if (castState.error != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -74,9 +52,82 @@ class _CastScreenState extends ConsumerState<CastScreen> {
       });
     }
 
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('投屏'),
+      ),
+      body: deviceState.pairedDevices.isEmpty
+          ? _buildNoDeviceView(theme)
+          : _buildControlView(castState, castNotifier, pcName, theme),
+    );
+  }
+
+  /// 未绑定任何 PC 设备的提示视图
+  Widget _buildNoDeviceView(ThemeData theme) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.devices_other,
+              size: 80,
+              color: theme.colorScheme.outline,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '尚未绑定任何 PC 设备',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '请返回首页点击"扫码连接"按钮，\n扫描 PC 端二维码完成设备绑定后再使用投屏功能',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () async {
+                final result = await Navigator.pushNamed(context, '/scan');
+                if (result == true) {
+                  ref.read(deviceProvider.notifier).fetchDeviceList();
+                }
+              },
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('去扫码绑定'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 投屏控制视图
+  Widget _buildControlView(
+    dynamic castState,
+    dynamic castNotifier,
+    String? pcName,
+    ThemeData theme,
+  ) {
     return Column(
       children: [
-        const SizedBox(height: 8),
+        const SizedBox(height: 16),
+        // 已绑定的 PC 信息
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Card(
+            child: ListTile(
+              leading: const Icon(Icons.computer, color: Colors.green),
+              title: Text(pcName ?? 'PC 设备'),
+              subtitle: const Text('已绑定 · 可投屏'),
+              trailing: const Icon(Icons.cast_connected, color: Colors.green),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
         // 连接状态指示器
         Center(
           child: StatusIndicator(
@@ -84,8 +135,7 @@ class _CastScreenState extends ConsumerState<CastScreen> {
             dotSize: 12,
           ),
         ),
-        const SizedBox(height: 8),
-
+        const SizedBox(height: 24),
         // 投屏控制面板
         Expanded(
           child: Center(
@@ -94,11 +144,15 @@ class _CastScreenState extends ConsumerState<CastScreen> {
               connectionState: castState.connectionState,
               pcDeviceName: pcName,
               onStartCast: () {
-                // 如果已绑定设备，直接投屏；否则显示扫码器
+                // 直接开始投屏（已绑定设备）
                 if (pcName != null) {
-                  castNotifier.startCasting('');
-                } else {
-                  setState(() => _showScanner = true);
+                  // 使用已绑定设备的 UUID
+                  final deviceState = ref.read(deviceProvider);
+                  if (deviceState.pairedDevices.isNotEmpty) {
+                    castNotifier.startCasting(
+                      deviceState.pairedDevices.first.deviceUuid,
+                    );
+                  }
                 }
               },
               onStopCast: () => castNotifier.stopCasting(),

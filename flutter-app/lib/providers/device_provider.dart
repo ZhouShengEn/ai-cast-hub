@@ -1,3 +1,6 @@
+import 'dart:math';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/device.dart';
@@ -48,11 +51,22 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
+      // 1. 先生成 UUID（如果不存在），确保请求时有 X-Device-UUID 头
+      String? uuid = _storage.getDeviceUuid();
+      if (uuid == null || uuid.isEmpty) {
+        uuid = _generateUUID();
+        await _storage.saveDeviceUuid(uuid);
+      }
+
+      // 2. 检测平台类型
+      final platform = _getPlatform();
+
+      // 3. 发送 POST 注册请求
       final name = DeviceService.generateDeviceName();
-      const platform = 'android'; // 可通过 dart:io 检测
       final result = await _service.register(name, platform);
 
-      final deviceUuid = result['deviceUuid'] as String? ?? '';
+      // 4. 保存服务端返回的信息
+      final deviceUuid = result['deviceUuid'] as String? ?? uuid;
       final transferKey = result['transferKey'] as String? ?? '';
 
       await _storage.saveDeviceUuid(deviceUuid);
@@ -117,6 +131,26 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
   String? generateQRData() {
     return _storage.getDeviceUuid();
   }
+
+  /// 获取当前平台标识
+  String _getPlatform() {
+    if (kIsWeb) return 'web';
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) return 'android';
+      if (defaultTargetPlatform == TargetPlatform.iOS) return 'ios';
+    } catch (_) {}
+    return 'unknown';
+  }
+
+  /// 生成简单的 UUID v4
+  String _generateUUID() {
+    final random = Random();
+    final chars = '0123456789abcdef';
+    String hex(int len) => List.generate(len, (_) => chars[random.nextInt(16)]).join();
+    return '${hex(8)}-${hex(4)}-4${hex(3)}-${_hex89ab(random.nextInt(4))}${hex(3)}-${hex(12)}';
+  }
+
+  String _hex89ab(int n) => '89ab'[n];
 }
 
 /// 设备 Provider

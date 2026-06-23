@@ -1,86 +1,214 @@
 /**
- * Device 数据模型
+ * Device 数据模型 — 内存存储方案
  *
- * 表: devices (id, device_uuid, device_name, platform, transfer_key, created_at, last_seen_at)
- * MySQL 为主存储，SQLite 为本地缓存
+ * 使用 Map 实现设备注册、查询、绑定关系管理
+ * 数据在服务器重启后清空，适合开发测试环境
  */
 
-const { getMySQLPool } = require('../config/database');
-const logger = require('../utils/logger');
+/** @type {Map<string, object>} 设备信息: uuid -> device */
+const _devices = new Map();
 
-/** @type {import('mysql2/promise').Pool | null} */
-let _pool = null;
-
-async function pool() {
-  if (!_pool) {
-    _pool = await getMySQLPool();
-  }
-  return _pool;
-}
+/** @type {Map<string, Set<string>>} 绑定关系: deviceUuid -> Set<pairedDeviceUuid> */
+const _bindings = new Map();
 
 /**
  * 注册或更新设备信息
- * @param {string} uuid - 设备 UUID
+ * @param {string} uuid - 设备唯一标识
  * @param {string} name - 设备名称
- * @param {string} platform - 平台 (android/ios/web)
+ * @param {string} platform - 平台类型
  * @param {string} transferKey - 传输密钥
- * @returns {Promise<object>} Device 对象
+ * @returns {object} 设备对象
  */
 async function register(uuid, name, platform, transferKey) {
-  const p = await pool();
   const now = new Date().toISOString();
+  
+  const device = {
+    device_uuid: uuid,
+    device_name: name,
+    platform,
+    transfer_key: transferKey,
+    created_at: _devices.has(uuid) ? _devices.get(uuid).created_at : now,
+    updated_at: now,
+    last_seen_at: now,
+  };
+  
+  _devices.set(uuid, device);
+  
+  // 确保该设备有绑定集合
+  if (!_bindings.has(uuid)) {
+    _bindings.set(uuid, new Set());
+  }
 
-  await p.execute(
-    `INSERT INTO devices (device_uuid, device_name, platform, transfer_key, created_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       device_name = VALUES(device_name),
-       platform = VALUES(platform),
-       transfer_key = VALUES(transfer_key),
-       last_seen_at = VALUES(last_seen_at)`,
-    [uuid, name, platform, transferKey, now, now]
-  );
-
-  return findByUuid(uuid);
+  console.log(`[Device] 设备注册成功: ${uuid} (${name})`);
+  
+  return device;
 }
 
 /**
  * 根据 UUID 查询设备
  * @param {string} uuid - 设备 UUID
- * @returns {Promise<object|null>} Device 对象或 null
+ * @returns {object|null} 设备对象或 null
  */
 async function findByUuid(uuid) {
-  const p = await pool();
-  const [rows] = await p.execute(
-    'SELECT id, device_uuid, device_name, platform, transfer_key, created_at, last_seen_at FROM devices WHERE device_uuid = ?',
-    [uuid]
-  );
-  return rows.length > 0 ? rows[0] : null;
+  const device = _devices.get(uuid);
+  if (!device) return null;
+  
+  // 返回副本避免直接修改
+  return { ...device };
 }
 
 /**
- * 更新设备 last_seen_at 时间戳
+ * 更新最后在线时间
  * @param {string} uuid - 设备 UUID
- * @returns {Promise<void>}
  */
 async function updateLastSeen(uuid) {
-  const p = await pool();
-  await p.execute(
-    'UPDATE devices SET last_seen_at = ? WHERE device_uuid = ?',
-    [new Date().toISOString(), uuid]
+  const device = _devices.get(uuid);
+  if (device) {
+    device.last_seen_at = new Date().toISOString();
+    device.updated_at = device.last_seen_at;
+  }
+}
+
+/**
+ * 列出所有设备（按最后在线时间倒序）
+ * @returns {Array<object>} 设备列表
+ */
+async function listAll() {
+  return Array.from(_devices.values())
+    .sort((a, b) => new Date(b.last_seen_at) - new Date(a.last_seen_at))
+    .map(device => ({ ...device }));
+}
+
+/**
+ * 绑定两个设备（双向绑定）
+ * @param {string} myUuid - 当前设备 UUID（通常是手机）
+ * @param {string} targetUuid - 目标设备 UUID（通常是 PC）
+ * @returns {object} 绑定结果
+ */
+async function bindDevices(myUuid, targetUuid) {
+  const now = new Date().toISOString();
+
+  // 确保两个设备都有绑定集合
+  if (!_bindings.has(myUuid)) {
+    _bindings.set(myUuid, new Set());
+  }
+  if (!_bindings.has(targetUuid)) {
+    _bindings.set(targetUuid, new Set());
+  }
+  
+  // 双向绑定
+  _bindings.get(myUuid).add(targetUuid);
+  _bindings.get(targetUuid).add(myUuid);
+
+  console.log(`[Device] 设备绑定成功: ${myUuid} <-> ${targetUuid}`);
+
+  return {
+    success: true,
+    boundAt: now,
+    message: '绑定成功',
+  };
+}
+
+/**
+ * 解除设备绑定
+ * @param {string} myUuid - 当前设备 UUID
+ * @param {string} targetUuid - 目标设备 UUID
+ * @returns {boolean} 是否成功
+ */
+async function unbindDevices(myUuid, targetUuid) {
+  const bindingsA = _bindings.get(myUuid);
+  const bindingsB = _bindings.get(targetUuid);
+
+  if (bindingsA) {
+    bindingsA.delete(targetUuid);
+  }
+  if (bindingsB) {
+    bindingsB.delete(myUuid);
+  }
+
+  console.log(`[Device] 解除绑定: ${myUuid} <-> ${targetUuid}`);
+  
+  return true; // 内存操作总是成功
+}
+
+/**
+ * 获取设备的已配对设备列表
+ * @param {string} uuid - 设备 UUID
+ * @returns {Array<object>} 已配对设备列表
+ */
+async function getPairedDevices(uuid) {
+  const pairedUuids = _bindings.get(uuid);
+  
+  if (!pairedUuids || pairedUuids.size === 0) {
+    return [];
+  }
+  
+  // 返回已配对设备的详细信息
+  const pairedDevices = [];
+  for (const pairedUuid of pairedUuids) {
+    const device = _devices.get(pairedUuid);
+    if (device) {
+      pairedDevices.push({
+        ...device,
+        isOnline: isOnline(device.last_seen_at), // 5分钟内视为在线
+      });
+    }
+  }
+
+  // 按最后在线时间排序
+  return pairedDevices.sort((a, b) => 
+    new Date(b.last_seen_at) - new Date(a.last_seen_at)
   );
 }
 
 /**
- * 查询所有已注册设备
- * @returns {Promise<Array<object>>} 设备列表
+ * 检查设备是否在线（5分钟内有活动）
+ * @param {string} lastSeenAt - 最后在线时间
+ * @returns {boolean}
  */
-async function listAll() {
-  const p = await pool();
-  const [rows] = await p.execute(
-    'SELECT id, device_uuid, device_name, platform, created_at, last_seen_at FROM devices ORDER BY last_seen_at DESC'
-  );
-  return rows;
+function isOnline(lastSeenAt) {
+  if (!lastSeenAt) return false;
+  
+  const diff = Date.now() - new Date(lastSeenAt).getTime();
+  const minutes = Math.floor(diff / 60000);
+  
+  return minutes < 5; // 5分钟内视为在线
 }
 
-module.exports = { register, findByUuid, updateLastSeen, listAll };
+/**
+ * 清除所有数据（用于测试或重置）
+ */
+function clearAll() {
+  _devices.clear();
+  _bindings.clear();
+  console.log('[Device] 所有数据已清除');
+}
+
+/**
+ * 获取内存统计信息（调试用）
+ */
+function getStats() {
+  let totalBindings = 0;
+  for (const set of _bindings.values()) {
+    totalBindings += set.size;
+  }
+  
+  return {
+    totalDevices: _devices.size,
+    totalBindings: totalBindings / 2, // 双向绑定所以除以2
+    storageType: 'memory',
+    devices: Array.from(_devices.keys()),
+  };
+}
+
+module.exports = { 
+  register, 
+  findByUuid, 
+  updateLastSeen, 
+  listAll, 
+  bindDevices,
+  unbindDevices,
+  getPairedDevices,
+  clearAll,
+  getStats,
+};

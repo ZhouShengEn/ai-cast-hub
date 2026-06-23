@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 import 'api_client.dart';
 
@@ -45,15 +45,13 @@ class DeviceService {
   /// Android: "Android-{model}"，iOS: "iPhone-{model}" 或 "iPad-{model}"
   static String generateDeviceName() {
     try {
-      if (Platform.isAndroid) {
-        // Android 设备型号可通过属性获取，此处使用通用命名
-        return 'Android-${Platform.operatingSystemVersion}';
-      } else if (Platform.isIOS) {
-        return 'iPhone-${Platform.operatingSystemVersion}';
+      if (kIsWeb) return 'Web Browser';
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        return 'Android Device';
+      } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+        return 'iOS Device';
       }
-    } catch (_) {
-      // 忽略获取失败
-    }
+    } catch (_) {}
     return 'Unknown Device';
   }
 }
