@@ -42,10 +42,10 @@ jobs:
           PUB_HOSTED_URL: https://pub.flutter-io.cn
         run: flutter pub get
 
-      # 6.仅编译arm64真机APK（只生成1个可用包）
-      - name: Build arm64 Debug APK
+      # 6.编译Debug测试APK
+      - name: Build Debug APK
         working-directory: ./flutter-app
-        run: flutter build apk --release --target-platform android-arm64
+        run: flutter build apk --debug --split-per-abi
 
       # 7.上传APK到GitHub Release（必须先打Release才能同步到Gitee）
       - name: Upload APK to GitHub Release
