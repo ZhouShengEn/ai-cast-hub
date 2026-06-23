@@ -43,7 +43,8 @@ jobs:
       # 编译Debug测试APK
       - name: Build Debug APK
         working-directory: ./flutter-app
-        run: flutter build apk --debug --split-per-abi
+        # 仅生成arm64-v8a单架构APK
+        run: flutter build apk --debug --target-platform android-arm64
 
       # 上传APK产物
       - name: Upload APK
