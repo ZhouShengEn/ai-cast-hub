@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.example.ai_cast_hub"
-    compileSdk = 36
+    compileSdk = 35
     ndkVersion = "27.0.12077973"
 
     compileOptions {
