@@ -29,16 +29,14 @@ class ChatService {
         .toList();
   }
 
-  /// 创建新对话并发送首条消息
+  /// 创建新空对话（不发送消息）
   /// 返回创建的对话 ID
   Future<String> createConversation(String model) async {
-    final data = await _client.post('/chat/send', data: {
+    final data = await _client.post('/chat/conversations', data: {
       'model': model,
-      'content': '你好',
-      'isNew': true,
     });
     final result = Map<String, dynamic>.from(data as Map);
-    return result['conversationId'] as String? ?? '';
+    return result['id']?.toString() ?? '';
   }
 
   /// 发送消息并返回 SSE 流式 Token 流

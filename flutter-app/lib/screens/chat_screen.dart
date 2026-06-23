@@ -133,7 +133,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             ),
                             selected: isActive,
                             selectedTileColor:
-                                theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+                                theme.colorScheme.primaryContainer.withOpacity(0.3),
                             onTap: () {
                               chatNotifier.selectConversation(conv.id);
                               Navigator.pop(context);

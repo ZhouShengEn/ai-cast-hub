@@ -89,7 +89,7 @@ class ChatBubble extends StatelessWidget {
                     message.createdAt.formatTime(),
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: isUser
-                          ? theme.colorScheme.onPrimary.withValues(alpha: 0.7)
+                          ? theme.colorScheme.onPrimary.withOpacity(0.7)
                           : theme.colorScheme.onSurfaceVariant,
                     ),
                   ),

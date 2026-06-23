@@ -18,7 +18,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
+          flutter-version: '3.27.0'
 
       # 3.安卓SDK环境
       - name: Setup Android SDK
@@ -33,7 +33,7 @@ jobs:
             ~/.gradle
             flutter-app/.dart_tool
             flutter-app/build
-          key: flutter-${{ hashFiles('flutter-app/pubspec.yaml') }}
+          key: flutter-3.27-${{ hashFiles('flutter-app/pubspec.yaml') }}
 
       # 5.国内镜像安装依赖（无报错方案）
       - name: Install dependencies
@@ -45,7 +45,7 @@ jobs:
       # 6.编译Debug测试APK
       - name: Build Debug APK
         working-directory: ./flutter-app
-        run: flutter build apk --debug --split-per-abi
+        run: flutter build apk --debug
 
       # 7.上传APK到GitHub Release（必须先打Release才能同步到Gitee）
       - name: Upload APK to GitHub Release

@@ -107,6 +107,24 @@ router.post('/send', async (req, res, next) => {
 });
 
 /**
+ * POST /api/v1/chat/conversations
+ * 创建空对话（返回 JSON，非 SSE）
+ * Body: { model }
+ */
+router.post('/conversations', async (req, res, next) => {
+  try {
+    const { model } = req.body;
+    if (!model) {
+      return res.status(400).json({ code: 400, data: null, message: 'model 不能为空' });
+    }
+    const conv = await conversationService.createConversation(req.deviceUuid, model);
+    res.json({ code: 0, data: conv, message: 'ok' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /api/v1/chat/conversations
  * 获取对话列表
  * Query: limit=20, offset=0

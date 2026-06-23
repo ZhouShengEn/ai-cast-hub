@@ -49,7 +49,7 @@ class FileSelector extends StatelessWidget {
                   ),
                   borderRadius: BorderRadius.circular(16),
                   color: hasFile
-                      ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
+                      ? theme.colorScheme.primaryContainer.withOpacity(0.3)
                       : null,
                 ),
                 child: Column(
