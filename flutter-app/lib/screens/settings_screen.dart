@@ -247,6 +247,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
           const SizedBox(height: 16),
 
+          // 网络工具入口
+          Card(
+            child: ListTile(
+              leading: Icon(Icons.network_ping, color: theme.colorScheme.primary),
+              title: const Text('网络工具'),
+              subtitle: const Text('Ping 测试 · 查看本机 IP'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.pushNamed(context, '/network-tools'),
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
           // 关于
           Card(
             child: ListTile(

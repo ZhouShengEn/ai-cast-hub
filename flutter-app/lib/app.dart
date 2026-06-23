@@ -6,6 +6,7 @@ import 'screens/chat_screen.dart';
 import 'screens/cast_screen.dart';
 import 'screens/file_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/network_tools_screen.dart';
 import 'services/local_storage.dart';
 import 'services/debug_service.dart';
 import 'widgets/common/debug_ball.dart';
@@ -49,6 +50,7 @@ class MyApp extends StatelessWidget {
         '/cast': (context) => const CastScreen(),
         '/file': (context) => const FileScreen(),
         '/settings': (context) => const SettingsScreen(),
+        '/network-tools': (context) => const NetworkToolsScreen(),
       },
       // 使用 builder 在所有页面之上叠加 DebugBall（响应式）
       builder: (context, child) {
