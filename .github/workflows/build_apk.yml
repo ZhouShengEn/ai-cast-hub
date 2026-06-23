@@ -33,14 +33,28 @@ jobs:
             ~/.gradle
             flutter-app/.dart_tool
             flutter-app/build
-          key: flutter-3.27-${{ hashFiles('flutter-app/pubspec.yaml') }}
+          key: flutter-build-v2-${{ hashFiles('flutter-app/pubspec.yaml', 'flutter-app/android/app/build.gradle.kts') }}
+          restore-keys: |
+            flutter-build-v2-
 
-      # 5.国内镜像安装依赖（无报错方案）
+      # 5.国内镜像安装依赖
       - name: Install dependencies
         working-directory: ./flutter-app
         env:
           PUB_HOSTED_URL: https://pub.flutter-io.cn
         run: flutter pub get
+
+      # 5.1 修复 flutter_webrtc SurfaceTextureRenderer 缺少 onSurfaceDestroyed
+      - name: Patch flutter_webrtc SurfaceTextureRenderer
+        run: |
+          FILE=$(find ~/.pub-cache -name "SurfaceTextureRenderer.java" -path "*/flutter_webrtc*" 2>/dev/null | head -1)
+          if [ -n "$FILE" ]; then
+            echo "Patching: $FILE"
+            sed -i '/new TextureRegistry\.SurfaceProducer\.Callback() {/a\                @Override\n                public void onSurfaceDestroyed() {}' "$FILE"
+            echo "Patch applied successfully"
+          else
+            echo "WARNING: SurfaceTextureRenderer.java not found, skipping patch"
+          fi
 
       # 6.编译Debug测试APK
       - name: Build Debug APK
