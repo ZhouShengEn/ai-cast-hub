@@ -23,4 +23,9 @@ export default {
   async getDeviceList() {
     return client.get('/device/list')
   },
+
+  /** 获取服务器信息（局域网 IP，用于生成二维码供手机连接） */
+  async getServerInfo() {
+    return client.get('/server/info')
+  },
 }

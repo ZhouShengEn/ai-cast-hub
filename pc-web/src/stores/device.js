@@ -97,7 +97,7 @@ export const useDeviceStore = defineStore('device', {
     },
 
     /** 生成当前设备的绑定二维码数据 */
-    generateQRCode() {
+    async generateQRCode() {
       // 优先使用 API 返回的 deviceUuid，其次从 localStorage 获取
       const uuid = this.device?.deviceUuid || localStorage.getItem('deviceUuid')
       if (!uuid) {
@@ -105,10 +105,21 @@ export const useDeviceStore = defineStore('device', {
         this.qrCodeData = null
         return
       }
-      console.log('[DeviceStore] 生成二维码，UUID:', uuid)
+
+      // 获取服务器局域网地址，供手机扫码后直连
+      let serverUrl = null
+      try {
+        const info = await deviceApi.getServerInfo()
+        serverUrl = info?.serverUrl || null
+      } catch (err) {
+        console.warn('[DeviceStore] 获取服务器地址失败，二维码不含 serverUrl:', err.message)
+      }
+
+      console.log('[DeviceStore] 生成二维码，UUID:', uuid, 'serverUrl:', serverUrl)
       this.qrCodeData = JSON.stringify({
         deviceUuid: uuid,
         roomType: 'bind',
+        serverUrl, // 服务器局域网地址，手机扫码后据此连接
         timestamp: Date.now(), // 添加时间戳确保每次都触发更新
       })
     },

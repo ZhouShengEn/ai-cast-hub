@@ -46,6 +46,7 @@ app.use(globalLimiter);
 // 白名单路由无需认证
 const authWhitelist = [
   '/api/v1/health',
+  '/api/v1/server/info',
   '/api/v1/device/register',
   '/api/v1/device/bind',
 ];

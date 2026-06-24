@@ -15,7 +15,10 @@ class _DebugBallState extends State<DebugBall> {
   bool _expanded = false;
   int _tabIndex = 0;
   late Offset _position;
-  final Size _panelSize = const Size(360, 520);
+  // 面板可缩放，初始尺寸
+  Size _panelSize = const Size(360, 520);
+  // 面板位置（相对于屏幕，拖拽面板时使用）
+  Offset? _panelPosition;
 
   /// 当前展开的网络请求索引（-1 表示无）
   int _expandedNetworkIdx = -1;
@@ -23,6 +26,7 @@ class _DebugBallState extends State<DebugBall> {
   @override
   void initState() {
     super.initState();
+    // 初始位置在屏幕正中间，在 build 中用 MediaQuery 计算后设置
     _position = widget.initialPosition;
     _debug.onLogChanged = () { if (mounted) setState(() {}); };
     _debug.onNetworkChanged = () { if (mounted) setState(() {}); };
@@ -39,27 +43,41 @@ class _DebugBallState extends State<DebugBall> {
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final ballSize = 50.0;
+
+    // 首次构建时将悬浮球放在屏幕正中间
+    if (_position == widget.initialPosition) {
+      _position = Offset(
+        (screenSize.width - ballSize) / 2,
+        (screenSize.height - ballSize) / 2,
+      );
+    }
+
     double ballX = _position.dx >= 0
         ? _position.dx.clamp(0, screenSize.width - ballSize)
         : screenSize.width + _position.dx;
     double ballY = _position.dy.clamp(0, screenSize.height - ballSize - 80);
-    final isLeft = ballX < screenSize.width / 2;
-
-    double panelX = isLeft ? ballX + ballSize + 8 : ballX - _panelSize.width - 8;
-    panelX = panelX.clamp(0, screenSize.width - _panelSize.width);
-    double panelY = (ballY + ballSize / 2 - _panelSize.height / 2)
-        .clamp(0, screenSize.height - _panelSize.height - 40);
 
     return Stack(
       children: [
         if (_expanded)
-          Positioned(left: panelX, top: panelY, child: _buildPanel()),
+          Positioned(
+            left: _panelPosition?.dx ?? _calcDefaultPanelX(screenSize, ballX, ballSize),
+            top: _panelPosition?.dy ?? _calcDefaultPanelY(screenSize, ballY, ballSize),
+            child: _buildPanel(),
+          ),
         Positioned(
           left: ballX, top: ballY,
           child: GestureDetector(
             onTap: () => setState(() {
               _expanded = !_expanded;
               _expandedNetworkIdx = -1;
+              // 展开时重置面板位置（居中显示）
+              if (_expanded) {
+                _panelPosition = Offset(
+                  (screenSize.width - _panelSize.width) / 2,
+                  (screenSize.height - _panelSize.height) / 2,
+                );
+              }
             }),
             onPanUpdate: (d) => setState(() {
               _position = Offset(
@@ -92,50 +110,88 @@ class _DebugBallState extends State<DebugBall> {
     );
   }
 
+  /// 计算面板默认 X 位置（基于悬浮球位置）
+  double _calcDefaultPanelX(Size screenSize, double ballX, double ballSize) {
+    final isLeft = ballX < screenSize.width / 2;
+    double panelX = isLeft ? ballX + ballSize + 8 : ballX - _panelSize.width - 8;
+    return panelX.clamp(0, screenSize.width - _panelSize.width);
+  }
+
+  /// 计算面板默认 Y 位置（基于悬浮球位置）
+  double _calcDefaultPanelY(Size screenSize, double ballY, double ballSize) {
+    double panelY = (ballY + ballSize / 2 - _panelSize.height / 2)
+        .clamp(0, screenSize.height - _panelSize.height - 40);
+    return panelY;
+  }
+
   Widget _buildPanel() {
-    return Material(
-      elevation: 12,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        width: _panelSize.width, height: _panelSize.height,
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          children: [
-            Container(
-              height: 40,
-              decoration: BoxDecoration(
-                color: const Color(0xFF2D2D2D),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-              ),
-              child: Row(
-                children: [
-                  _tab('Console', 0),
-                  _tab('Network', 1),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: () { _debug.clear(); setState(() {}); },
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 8),
-                      child: Icon(Icons.delete_outline, size: 16, color: Colors.grey),
+    return GestureDetector(
+      // 双指缩放面板大小
+      onScaleUpdate: (details) {
+        setState(() {
+          if (details.pointerCount >= 2) {
+            final newWidth = (_panelSize.width * details.scale).clamp(240.0, 600.0);
+            final newHeight = (_panelSize.height * details.scale).clamp(300.0, 800.0);
+            _panelSize = Size(newWidth, newHeight);
+            // 缩放时保持面板中心不变
+            final screenSize = MediaQuery.of(context).size;
+            _panelPosition = Offset(
+              (screenSize.width - _panelSize.width) / 2,
+              (screenSize.height - _panelSize.height) / 2,
+            );
+          } else if (details.pointerCount == 1) {
+            // 单指拖动面板
+            _panelPosition = Offset(
+              (_panelPosition?.dx ?? 0) + details.focalPointDelta.dx,
+              (_panelPosition?.dy ?? 0) + details.focalPointDelta.dy,
+            );
+          }
+        });
+      },
+      child: Material(
+        elevation: 12,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          width: _panelSize.width, height: _panelSize.height,
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            children: [
+              Container(
+                height: 40,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2D2D2D),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                ),
+                child: Row(
+                  children: [
+                    _tab('Console', 0),
+                    _tab('Network', 1),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: () { _debug.clear(); setState(() {}); },
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Icon(Icons.delete_outline, size: 16, color: Colors.grey),
+                      ),
                     ),
-                  ),
-                  GestureDetector(
-                    onTap: () => setState(() { _expanded = false; _expandedNetworkIdx = -1; }),
-                    child: const Padding(
-                      padding: EdgeInsets.only(right: 8),
-                      child: Icon(Icons.close, size: 16, color: Colors.grey),
+                    GestureDetector(
+                      onTap: () => setState(() { _expanded = false; _expandedNetworkIdx = -1; }),
+                      child: const Padding(
+                        padding: EdgeInsets.only(right: 8),
+                        child: Icon(Icons.close, size: 16, color: Colors.grey),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            Expanded(
-              child: _tabIndex == 0 ? _consolePanel() : _networkPanel(),
-            ),
-          ],
+              Expanded(
+                child: _tabIndex == 0 ? _consolePanel() : _networkPanel(),
+              ),
+            ],
+          ),
         ),
       ),
     );

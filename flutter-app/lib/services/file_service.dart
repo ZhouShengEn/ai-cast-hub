@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
 import '../utils/constants.dart';
 import 'api_client.dart';
@@ -67,7 +67,7 @@ class FileService {
   Stream<double> startTransfer({
     required String transferId,
     required String filePath,
-    RTCDataChannel? dataChannel,
+    webrtc.RTCDataChannel? dataChannel,
   }) async* {
     final file = File(filePath);
     final bytes = await file.readAsBytes();
@@ -98,7 +98,7 @@ class FileService {
 
       // 通过 DataChannel 发送（如果提供），否则通过 REST
       if (dataChannel != null) {
-        dataChannel.send(RTCDataChannelMessage.fromBinary(payload));
+        dataChannel.send(webrtc.RTCDataChannelMessage.fromBinary(payload));
       } else {
         // HTTP 方式发送分片
         await _sendChunkViaHttp(transferId, seq, totalChunks, chunk);

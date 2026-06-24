@@ -463,7 +463,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   items: available.map((p) {
                     return DropdownMenuItem(
                       value: p.key,
-                      child: Text(p.displayName),
+                      child: Text(
+                        p.displayName,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
                     );
                   }).toList(),
                   onChanged: (val) {
@@ -491,18 +495,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          // 自动保存提示
-          Row(
+          // 自动保存提示（使用 Wrap 避免窄屏溢出）
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Icon(Icons.info_outline, size: 14, color: theme.colorScheme.onSurfaceVariant),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  '填写完成后点击保存即可，API Key 仅存储在本地',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    fontSize: 11,
-                  ),
+              Text(
+                '填写完成后点击保存即可，API Key 仅存储在本地',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 11,
                 ),
               ),
               FilledButton.tonalIcon(

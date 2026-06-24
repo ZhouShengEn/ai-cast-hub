@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/device_provider.dart';
+import '../services/api_client.dart';
+import '../services/local_storage.dart';
 import '../widgets/cast/device_scanner.dart';
 
 /// 扫码绑定页面
@@ -123,15 +125,24 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   /// 扫描成功回调
-  Future<void> _onDeviceScanned(String deviceUuid) async {
+  Future<void> _onDeviceScanned(ScannedDeviceData scanned) async {
     setState(() {
       _isBinding = true;
-      _bindingDeviceUuid = deviceUuid;
+      _bindingDeviceUuid = scanned.deviceUuid;
     });
 
     try {
+      // 如果二维码中包含服务器地址，先配置服务器（解决真机无法访问 10.0.2.2 的问题）
+      if (scanned.serverUrl != null && scanned.serverUrl!.isNotEmpty) {
+        final apiBaseUrl = '${scanned.serverUrl}/api/v1';
+        final storage = LocalStorage.instance;
+        await storage.saveServerUrl(apiBaseUrl);
+        // 更新 ApiClient 的 baseUrl
+        ApiClient.instance.updateBaseUrl(apiBaseUrl);
+      }
+
       // 调用 provider 完成绑定
-      await ref.read(deviceProvider.notifier).bindDevice(deviceUuid);
+      await ref.read(deviceProvider.notifier).bindDevice(scanned.deviceUuid);
 
       if (!mounted) return;
 

@@ -1,41 +1,42 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
 /// WebRTC 服务
 ///
 /// 封装 WebRTC PeerConnection 操作：创建连接、SDP 协商、ICE 候选、数据通道、视频轨。
 class WebrtcService {
-  RTCPeerConnection? _peerConnection;
-  RTCDataChannel? _dataChannel;
-  MediaStream? _localStream;
+  webrtc.RTCPeerConnection? _peerConnection;
+  webrtc.RTCDataChannel? _dataChannel;
+  webrtc.MediaStream? _localStream;
 
   /// 远端媒体流通知
-  final StreamController<MediaStream> _remoteStreamController =
-      StreamController<MediaStream>.broadcast();
+  final StreamController<webrtc.MediaStream> _remoteStreamController =
+      StreamController<webrtc.MediaStream>.broadcast();
 
   /// 数据通道消息通知
-  final StreamController<RTCDataChannelMessage> _dataChannelMessageController =
-      StreamController<RTCDataChannelMessage>.broadcast();
+  final StreamController<webrtc.RTCDataChannelMessage> _dataChannelMessageController =
+      StreamController<webrtc.RTCDataChannelMessage>.broadcast();
 
   /// 远端媒体流
-  Stream<MediaStream> get onRemoteStream => _remoteStreamController.stream;
+  Stream<webrtc.MediaStream> get onRemoteStream => _remoteStreamController.stream;
 
   /// 数据通道消息
-  Stream<RTCDataChannelMessage> get onDataChannelMessage =>
+  Stream<webrtc.RTCDataChannelMessage> get onDataChannelMessage =>
       _dataChannelMessageController.stream;
 
   /// 创建 RTCPeerConnection
-  Future<RTCPeerConnection> createPeerConnection(
+  Future<webrtc.RTCPeerConnection> createPeerConnection(
     Map<String, dynamic> configuration,
   ) async {
     await _closeExisting();
 
-    _peerConnection = await createPeerConnection(configuration);
+    // 调用 flutter_webrtc 包的全局函数（通过库前缀避免与类方法同名递归）
+    _peerConnection = await webrtc.createPeerConnection(configuration);
 
     // 远端媒体流监听
-    _peerConnection!.onTrack = (RTCTrackEvent event) {
+    _peerConnection!.onTrack = (webrtc.RTCTrackEvent event) {
       if (event.streams.isNotEmpty) {
         if (!_remoteStreamController.isClosed) {
           _remoteStreamController.add(event.streams.first);
@@ -44,24 +45,24 @@ class WebrtcService {
     };
 
     // 数据通道监听（远端创建的 DataChannel）
-    _peerConnection!.onDataChannel = (RTCDataChannel channel) {
+    _peerConnection!.onDataChannel = (webrtc.RTCDataChannel channel) {
       _dataChannel = channel;
       _setupDataChannelListeners(channel);
     };
 
     // ICE 候选事件
-    _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
+    _peerConnection!.onIceCandidate = (webrtc.RTCIceCandidate candidate) {
       // ICE 候选将通过回调方式传出（在 cast_service 中处理）
     };
 
     // ICE 连接状态变化
-    _peerConnection!.onIceConnectionState = (RTCIceConnectionState state) {};
+    _peerConnection!.onIceConnectionState = (webrtc.RTCIceConnectionState state) {};
 
     return _peerConnection!;
   }
 
   /// 创建 SDP Offer
-  Future<RTCSessionDescription> createOffer() async {
+  Future<webrtc.RTCSessionDescription> createOffer() async {
     _ensureConnection();
     final offer = await _peerConnection!.createOffer({});
     await _peerConnection!.setLocalDescription(offer);
@@ -69,7 +70,7 @@ class WebrtcService {
   }
 
   /// 创建 SDP Answer
-  Future<RTCSessionDescription> createAnswer() async {
+  Future<webrtc.RTCSessionDescription> createAnswer() async {
     _ensureConnection();
     final answer = await _peerConnection!.createAnswer({});
     await _peerConnection!.setLocalDescription(answer);
@@ -77,10 +78,10 @@ class WebrtcService {
   }
 
   /// 处理远端 Offer
-  Future<RTCSessionDescription> handleOffer(String sdp) async {
+  Future<webrtc.RTCSessionDescription> handleOffer(String sdp) async {
     _ensureConnection();
     await _peerConnection!.setRemoteDescription(
-      RTCSessionDescription(sdp, 'offer'),
+      webrtc.RTCSessionDescription(sdp, 'offer'),
     );
     final answer = await _peerConnection!.createAnswer({});
     await _peerConnection!.setLocalDescription(answer);
@@ -91,7 +92,7 @@ class WebrtcService {
   Future<void> handleAnswer(String sdp) async {
     _ensureConnection();
     await _peerConnection!.setRemoteDescription(
-      RTCSessionDescription(sdp, 'answer'),
+      webrtc.RTCSessionDescription(sdp, 'answer'),
     );
   }
 
@@ -99,7 +100,7 @@ class WebrtcService {
   Future<void> handleIceCandidate(Map<String, dynamic> candidate) async {
     _ensureConnection();
     await _peerConnection!.addCandidate(
-      RTCIceCandidate(
+      webrtc.RTCIceCandidate(
         candidate['candidate'] as String? ?? '',
         candidate['sdpMid'] as String? ?? '',
         candidate['sdpMLineIndex'] as int? ?? 0,
@@ -108,11 +109,11 @@ class WebrtcService {
   }
 
   /// 创建 DataChannel
-  Future<RTCDataChannel> createDataChannel(String label) async {
+  Future<webrtc.RTCDataChannel> createDataChannel(String label) async {
     _ensureConnection();
     final channel = await _peerConnection!.createDataChannel(
       label,
-      RTCDataChannelInit(),
+      webrtc.RTCDataChannelInit(),
     );
     _dataChannel = channel;
     _setupDataChannelListeners(channel);
@@ -120,17 +121,17 @@ class WebrtcService {
   }
 
   /// 通过 DataChannel 发送消息
-  void sendViaDataChannel(RTCDataChannelMessage message) {
+  void sendViaDataChannel(webrtc.RTCDataChannelMessage message) {
     _dataChannel?.send(message);
   }
 
   /// 通过 DataChannel 发送二进制数据
   void sendViaDataChannelBinary(Uint8List data) {
-    _dataChannel?.send(RTCDataChannelMessage.fromBinary(data));
+    _dataChannel?.send(webrtc.RTCDataChannelMessage.fromBinary(data));
   }
 
   /// 添加本地视频轨（投屏使用）
-  Future<void> addVideoTrack(MediaStreamTrack track) async {
+  Future<void> addVideoTrack(webrtc.MediaStreamTrack track) async {
     _ensureConnection();
     _peerConnection!.addTrack(track);
   }
@@ -153,10 +154,10 @@ class WebrtcService {
   }
 
   /// 获取当前 PeerConnection 实例
-  RTCPeerConnection? get peerConnection => _peerConnection;
+  webrtc.RTCPeerConnection? get peerConnection => _peerConnection;
 
   /// 获取当前 DataChannel 实例
-  RTCDataChannel? get dataChannel => _dataChannel;
+  webrtc.RTCDataChannel? get dataChannel => _dataChannel;
 
   // ---- 内部方法 ----
 
@@ -173,13 +174,13 @@ class WebrtcService {
     _peerConnection = null;
   }
 
-  void _setupDataChannelListeners(RTCDataChannel channel) {
-    channel.onMessage = (RTCDataChannelMessage message) {
+  void _setupDataChannelListeners(webrtc.RTCDataChannel channel) {
+    channel.onMessage = (webrtc.RTCDataChannelMessage message) {
       if (!_dataChannelMessageController.isClosed) {
         _dataChannelMessageController.add(message);
       }
     };
-    channel.onDataChannelState = (RTCDataChannelState state) {
+    channel.onDataChannelState = (webrtc.RTCDataChannelState state) {
       // 状态变化处理
     };
   }

@@ -190,4 +190,19 @@ function getConnectionCount() {
   return deviceConnections.size;
 }
 
-module.exports = { initWebSocket, getConnectionCount };
+/**
+ * 向指定设备发送 WebSocket 消息（供 HTTP 路由调用，如绑定通知）
+ * @param {string} deviceUuid - 目标设备 UUID
+ * @param {object} message - 消息对象
+ * @returns {boolean} 是否发送成功（设备在线且连接打开）
+ */
+function sendToDevice(deviceUuid, message) {
+  const ws = deviceConnections.get(deviceUuid);
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify(message));
+    return true;
+  }
+  return false;
+}
+
+module.exports = { initWebSocket, getConnectionCount, sendToDevice };

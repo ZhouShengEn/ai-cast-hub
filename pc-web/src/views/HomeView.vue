@@ -79,13 +79,27 @@
 </template>
 
 <script setup>
-import { onMounted, inject } from 'vue'
+import { onMounted, onUnmounted, inject } from 'vue'
 import { useDeviceStore } from '../stores/device'
+import { useWebSocket } from '../composables/useWebSocket'
 import DeviceQRCode from '../components/cast/DeviceQRCode.vue'
 import Spinner from '../components/common/Spinner.vue'
 
 const deviceStore = useDeviceStore()
 const showToast = inject('showToast', () => {})
+
+const { connect: wsConnect, disconnect: wsDisconnect, onMessage, offMessage } = useWebSocket()
+
+/** 收到设备绑定通知时的处理 */
+async function onDeviceBound(msg) {
+  console.log('[HomeView] 收到设备绑定通知:', msg)
+  const deviceName = msg?.payload?.device?.deviceName || '新设备'
+  showToast(`设备「${deviceName}」已连接`, 'success')
+  // 立即刷新设备列表
+  try {
+    await deviceStore.fetchDeviceList()
+  } catch (_) {}
+}
 
 /** 初始化设备信息 */
 onMounted(async () => {
@@ -115,7 +129,7 @@ onMounted(async () => {
     }
     
     // 生成二维码（确保一定执行）
-    deviceStore.generateQRCode()
+    await deviceStore.generateQRCode()
     
     // 验证二维码数据是否生成成功
     if (!deviceStore.qrCodeData) {
@@ -134,6 +148,10 @@ onMounted(async () => {
       showToast('设备初始化失败: ' + err.message, 'error')
     }
   }
+
+  // 建立 WebSocket 连接，监听设备绑定通知（实时感知）
+  onMessage('device_bound', onDeviceBound)
+  wsConnect()
   
   // 定期刷新设备列表和二维码
   setInterval(async () => {
@@ -142,6 +160,11 @@ onMounted(async () => {
       deviceStore.generateQRCode()
     } catch (_) {}
   }, 30000) // 每 30 秒刷新一次
+})
+
+onUnmounted(() => {
+  offMessage('device_bound', onDeviceBound)
+  wsDisconnect()
 })
 
 /** 格式化时间 */

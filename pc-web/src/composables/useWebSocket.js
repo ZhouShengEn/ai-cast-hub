@@ -30,7 +30,9 @@ export function useWebSocket() {
 
     const deviceUuid = localStorage.getItem('deviceUuid') || ''
     const transferKey = localStorage.getItem('transferKey') || ''
-    const url = `ws://localhost:3000?deviceUuid=${encodeURIComponent(deviceUuid)}&transferKey=${encodeURIComponent(transferKey)}`
+    // 动态构建 WebSocket URL，适配开发代理和生产环境
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const url = `${wsProtocol}//${window.location.host}/ws?deviceUuid=${encodeURIComponent(deviceUuid)}&transferKey=${encodeURIComponent(transferKey)}`
 
     connectionState.value = 'connecting'
     ws = new WebSocket(url)

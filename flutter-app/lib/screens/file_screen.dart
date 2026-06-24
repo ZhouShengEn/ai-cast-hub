@@ -19,6 +19,15 @@ class _FileScreenState extends ConsumerState<FileScreen> {
   int? _selectedFileSize;
 
   @override
+  void initState() {
+    super.initState();
+    // 进入页面时刷新设备列表，确保绑定状态最新
+    Future.microtask(() {
+      ref.read(deviceProvider.notifier).fetchDeviceList();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final fileState = ref.watch(fileProvider);
@@ -43,14 +52,20 @@ class _FileScreenState extends ConsumerState<FileScreen> {
             isSending: fileState.isSending,
             warning: targetDeviceId.isEmpty ? '未绑定 PC 设备，请先在首页扫描二维码完成绑定' : null,
             onSelectFile: () async {
-              // 直接通过 provider 选择并发送（provider 内部调用 file_picker）
-              if (targetDeviceId.isNotEmpty) {
-                await fileNotifier.selectAndSend(targetDeviceId);
-                setState(() {
-                  _selectedFileName = null;
-                  _selectedFileSize = null;
-                });
+              // 未绑定设备时引导用户去扫码
+              if (targetDeviceId.isEmpty) {
+                final result = await Navigator.pushNamed(context, '/scan');
+                if (result == true) {
+                  await ref.read(deviceProvider.notifier).fetchDeviceList();
+                }
+                return;
               }
+              // 已绑定设备，选择文件并发送
+              await fileNotifier.selectAndSend(targetDeviceId);
+              setState(() {
+                _selectedFileName = null;
+                _selectedFileSize = null;
+              });
             },
             onSend: () {
               if (targetDeviceId.isNotEmpty) {
@@ -88,6 +103,7 @@ class _FileScreenState extends ConsumerState<FileScreen> {
               ),
             ),
           ] else ...[
+
             // 空状态
             Expanded(
               child: Center(
@@ -108,6 +124,19 @@ class _FileScreenState extends ConsumerState<FileScreen> {
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
+                    if (targetDeviceId.isEmpty) ...[
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: () async {
+                          final result = await Navigator.pushNamed(context, '/scan');
+                          if (result == true) {
+                            await ref.read(deviceProvider.notifier).fetchDeviceList();
+                          }
+                        },
+                        icon: const Icon(Icons.qr_code_scanner),
+                        label: const Text('去扫码绑定'),
+                      ),
+                    ],
                   ],
                 ),
               ),

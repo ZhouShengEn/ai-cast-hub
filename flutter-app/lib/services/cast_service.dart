@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
 import 'websocket_service.dart';
 import 'webrtc_service.dart';
@@ -37,7 +37,7 @@ class CastService {
 
   /// 开始屏幕捕获
   /// 返回本地视频轨，如果权限未授予则返回 null
-  Future<MediaStreamTrack?> startCapture() async {
+  Future<webrtc.MediaStreamTrack?> startCapture() async {
     final granted = await requestPermission();
     if (!granted) return null;
 
@@ -68,8 +68,10 @@ class CastService {
     _ws.send({
       'type': 'create_room',
       'roomId': roomId,
-      'pcDeviceId': pcDeviceId,
-      'roomType': 'cast',
+      'payload': {
+        'targetDeviceUuid': pcDeviceId,
+        'type': 'cast',
+      },
     });
 
     // 创建 WebRTC PeerConnection
@@ -85,7 +87,7 @@ class CastService {
       'type': 'signal',
       'roomId': roomId,
       'payload': {
-        'type': 'offer',
+        'signalType': 'offer',
         'sdp': offer.sdp,
       },
     });
@@ -127,7 +129,8 @@ class CastService {
     final payload = message['payload'] as Map<String, dynamic>?;
     if (payload == null) return;
 
-    final signalType = payload['type'] as String?;
+    // 服务端信令消息使用 signalType 字段
+    final signalType = payload['signalType'] as String? ?? payload['type'] as String?;
 
     switch (signalType) {
       case 'answer':

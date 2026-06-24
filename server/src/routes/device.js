@@ -12,6 +12,7 @@ const DeviceModel = require('../models/Device');
 const { generateTransferKey } = require('../utils/uid');
 const { deviceRegisterSchema } = require('../utils/validators');
 const logger = require('../utils/logger');
+const { sendToDevice } = require('../ws');
 
 const router = Router();
 
@@ -140,6 +141,23 @@ router.post('/bind', async (req, res, next) => {
     const bindResult = await DeviceModel.bindDevices(myDeviceUuid, targetUuid);
 
     logger.info(`[Device] 设备绑定成功: ${myDeviceUuid} <-> ${targetUuid}`);
+
+    // 通过 WebSocket 实时通知 PC 端（目标设备）有新设备绑定
+    const notified = sendToDevice(targetUuid, {
+      type: 'device_bound',
+      roomId: null,
+      payload: {
+        device: {
+          deviceUuid: myDevice.device_uuid,
+          deviceName: myDevice.device_name,
+          platform: myDevice.platform,
+        },
+        boundAt: bindResult.boundAt,
+      },
+    });
+    if (notified) {
+      logger.info(`[Device] 已通过 WS 通知 PC 端: ${targetUuid}`);
+    }
 
     res.json({
       code: 0,

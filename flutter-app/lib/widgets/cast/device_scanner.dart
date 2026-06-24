@@ -9,7 +9,8 @@ import '../../utils/extensions.dart';
 ///
 /// 基于 mobile_scanner，扫描成功后弹窗确认。
 class DeviceScanner extends StatefulWidget {
-  final ValueChanged<String> onDeviceScanned; // 回调解码后的设备 UUID
+  /// 扫码成功回调，返回解析出的扫码数据
+  final ValueChanged<ScannedDeviceData> onDeviceScanned;
 
   const DeviceScanner({
     super.key,
@@ -18,6 +19,19 @@ class DeviceScanner extends StatefulWidget {
 
   @override
   State<DeviceScanner> createState() => _DeviceScannerState();
+}
+
+/// 扫码解析后的设备数据
+class ScannedDeviceData {
+  final String deviceUuid;
+  final String? roomType;
+  final String? serverUrl;
+
+  const ScannedDeviceData({
+    required this.deviceUuid,
+    this.roomType,
+    this.serverUrl,
+  });
 }
 
 class _DeviceScannerState extends State<DeviceScanner> {
@@ -43,13 +57,14 @@ class _DeviceScannerState extends State<DeviceScanner> {
       final data = jsonDecode(code) as Map<String, dynamic>;
       final deviceUuid = data['deviceUuid'] as String?;
       final roomType = data['roomType'] as String?;
+      final serverUrl = data['serverUrl'] as String?;
 
       if (deviceUuid != null && deviceUuid.isNotEmpty) {
         // 暂停扫描
         _controller.stop();
 
         // 弹窗确认
-        _showConfirmDialog(deviceUuid, roomType);
+        _showConfirmDialog(deviceUuid, roomType, serverUrl);
       } else {
         _isProcessing = false;
       }
@@ -59,7 +74,7 @@ class _DeviceScannerState extends State<DeviceScanner> {
     }
   }
 
-  void _showConfirmDialog(String deviceUuid, String? roomType) {
+  void _showConfirmDialog(String deviceUuid, String? roomType, String? serverUrl) {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -73,6 +88,10 @@ class _DeviceScannerState extends State<DeviceScanner> {
             if (roomType != null) ...[
               const SizedBox(height: 8),
               Text('类型: $roomType'),
+            ],
+            if (serverUrl != null) ...[
+              const SizedBox(height: 8),
+              Text('服务器: $serverUrl'),
             ],
             const SizedBox(height: 12),
             const Text('是否连接到此设备？'),
@@ -90,7 +109,11 @@ class _DeviceScannerState extends State<DeviceScanner> {
           FilledButton(
             onPressed: () {
               Navigator.pop(ctx);
-              widget.onDeviceScanned(deviceUuid);
+              widget.onDeviceScanned(ScannedDeviceData(
+                deviceUuid: deviceUuid,
+                roomType: roomType,
+                serverUrl: serverUrl,
+              ));
             },
             child: const Text('连接'),
           ),
