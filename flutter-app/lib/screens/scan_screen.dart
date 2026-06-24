@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/device_provider.dart';
 import '../services/api_client.dart';
+import '../services/debug_service.dart';
 import '../services/local_storage.dart';
 import '../widgets/cast/device_scanner.dart';
 
@@ -20,6 +21,8 @@ class ScanScreen extends ConsumerStatefulWidget {
 class _ScanScreenState extends ConsumerState<ScanScreen> {
   bool _isBinding = false;
   String? _bindingDeviceUuid;
+  String? _scanStatus; // 扫码状态信息
+  String? _lastScannedCode; // 最近扫描到的原始数据
 
   @override
   Widget build(BuildContext context) {
@@ -39,6 +42,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           // 扫码器
           DeviceScanner(
             onDeviceScanned: _onDeviceScanned,
+            onScanResult: _onScanResult,
           ),
 
           // 顶部提示
@@ -60,6 +64,44 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               ),
             ),
           ),
+
+          // 扫码状态信息
+          if (_scanStatus != null)
+            Positioned(
+              top: 80,
+              left: 16,
+              right: 16,
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.75),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '扫码信息',
+                      style: TextStyle(
+                        color: Colors.green.shade300,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _scanStatus!,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
 
           // 绑定中 loading 遮罩
           if (_isBinding)
@@ -124,29 +166,35 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     );
   }
 
-  /// 扫描成功回调
+  /// 扫码成功回调（弹窗确认后）
   Future<void> _onDeviceScanned(ScannedDeviceData scanned) async {
+    final debug = DebugService();
+    debug.info('[扫码] 收到扫描结果');
+    debug.info('[扫码] deviceUuid: ${scanned.deviceUuid}');
+    debug.info('[扫码] roomType: ${scanned.roomType ?? "无"}');
+    debug.info('[扫码] serverUrl: ${scanned.serverUrl ?? "无"}');
+
     setState(() {
       _isBinding = true;
       _bindingDeviceUuid = scanned.deviceUuid;
     });
 
     try {
-      // 如果二维码中包含服务器地址，先配置服务器（解决真机无法访问 10.0.2.2 的问题）
+      // 如果二维码中包含服务器地址，先配置服务器
       if (scanned.serverUrl != null && scanned.serverUrl!.isNotEmpty) {
         final apiBaseUrl = '${scanned.serverUrl}/api/v1';
+        debug.info('[扫码] 更新服务器地址: $apiBaseUrl');
         final storage = LocalStorage.instance;
         await storage.saveServerUrl(apiBaseUrl);
-        // 更新 ApiClient 的 baseUrl
         ApiClient.instance.updateBaseUrl(apiBaseUrl);
       }
 
-      // 调用 provider 完成绑定
+      debug.info('[扫码] 开始绑定设备...');
       await ref.read(deviceProvider.notifier).bindDevice(scanned.deviceUuid);
+      debug.info('[扫码] 绑定成功');
 
       if (!mounted) return;
 
-      // 绑定成功
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('✅ 设备绑定成功'),
@@ -155,11 +203,11 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         ),
       );
 
-      // 延迟返回让用户看到提示
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
       Navigator.pop(context, true);
     } catch (e) {
+      debug.error('[扫码] 绑定失败: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -175,5 +223,19 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         });
       }
     }
+  }
+
+  /// 扫码原始数据回调（用于实时显示扫描结果）
+  void _onScanResult(String rawCode, bool isValid, String? info) {
+    final debug = DebugService();
+    if (isValid && info != null) {
+      debug.info('[扫码] 识别到有效二维码: $info');
+    } else {
+      debug.warn('[扫码] 无效扫码数据: ${rawCode.length > 100 ? "${rawCode.substring(0, 100)}..." : rawCode}');
+    }
+    setState(() {
+      _lastScannedCode = rawCode;
+      _scanStatus = info ?? '扫描到无效数据';
+    });
   }
 }

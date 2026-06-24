@@ -359,6 +359,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       conversationId: convId,
       role: 'user',
       content: content,
+      inputTokens: _estimateTokens(content),  // 估算输入 token
       createdAt: DateTime.now(),
     );
     final updatedMessages = List<Message>.from(state.messages)..add(userMessage);
@@ -536,6 +537,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       conversationId: convId,
       role: 'assistant',
       content: fullContent,
+      outputTokens: _estimateTokens(fullContent),  // 估算输出 token
       createdAt: DateTime.now(),
     );
     final updatedMessages = List<Message>.from(state.messages)..add(aiMessage);
@@ -603,6 +605,22 @@ class ChatNotifier extends StateNotifier<ChatState> {
     _flushTimer?.cancel();
     _localService.cancel();
     super.dispose();
+  }
+
+  /// 估算文本 token 数量（粗略：英文 ~4字符/token，中文 ~1.5字符/token）
+  static int _estimateTokens(String text) {
+    if (text.isEmpty) return 0;
+    int chineseChars = 0;
+    int otherChars = 0;
+    for (int i = 0; i < text.length; i++) {
+      final code = text.codeUnitAt(i);
+      if (code >= 0x4E00 && code <= 0x9FFF) {
+        chineseChars++;
+      } else {
+        otherChars++;
+      }
+    }
+    return ((chineseChars / 1.5) + (otherChars / 4)).round().clamp(1, 999999);
   }
 }
 

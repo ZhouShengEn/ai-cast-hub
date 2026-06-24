@@ -385,6 +385,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     Text(
                       provider?.displayName ?? '未知',
                       style: const TextStyle(fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       'sk-...${apiKey.length > 8 ? apiKey.substring(apiKey.length - 4) : ""}',
@@ -401,6 +402,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 icon: const Icon(Icons.delete_outline, size: 20),
                 color: theme.colorScheme.error,
                 tooltip: '删除',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                padding: EdgeInsets.zero,
                 onPressed: () => _deleteConfig(index),
               ),
             ],
@@ -449,9 +453,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         children: [
           Row(
             children: [
-              // Provider 下拉框
+              // Provider 下拉框（全宽）
               Expanded(
-                flex: 2,
                 child: DropdownButtonFormField<String>(
                   value: _newProvider,
                   decoration: const InputDecoration(
@@ -475,10 +478,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   },
                 ),
               ),
-              const SizedBox(width: 8),
-              // API Key 输入框
+            ],
+          ),
+          const SizedBox(height: 8),
+          // API Key 输入框（全宽，独立行）
+          Row(
+            children: [
               Expanded(
-                flex: 3,
                 child: TextField(
                   controller: _newKeyController,
                   decoration: const InputDecoration(

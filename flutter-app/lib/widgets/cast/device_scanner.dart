@@ -11,10 +11,13 @@ import '../../utils/extensions.dart';
 class DeviceScanner extends StatefulWidget {
   /// 扫码成功回调，返回解析出的扫码数据
   final ValueChanged<ScannedDeviceData> onDeviceScanned;
+  /// 扫码原始数据回调，用于实时展示扫描结果
+  final void Function(String rawCode, bool isValid, String? info)? onScanResult;
 
   const DeviceScanner({
     super.key,
     required this.onDeviceScanned,
+    this.onScanResult,
   });
 
   @override
@@ -32,11 +35,15 @@ class ScannedDeviceData {
     this.roomType,
     this.serverUrl,
   });
+
+  @override
+  String toString() => 'ScannedDeviceData(deviceUuid=$deviceUuid, roomType=$roomType, serverUrl=$serverUrl)';
 }
 
 class _DeviceScannerState extends State<DeviceScanner> {
   final MobileScannerController _controller = MobileScannerController();
   bool _isProcessing = false;
+  int _scanCount = 0; // 扫描计数，避免重复处理同一个码
 
   @override
   void dispose() {
@@ -52,6 +59,10 @@ class _DeviceScannerState extends State<DeviceScanner> {
 
     final code = barcode.rawValue!;
     _isProcessing = true;
+    _scanCount++;
+
+    // 通知外部扫描结果
+    widget.onScanResult?.call(code, false, '正在解析第 $_scanCount 次扫描...');
 
     try {
       final data = jsonDecode(code) as Map<String, dynamic>;
@@ -63,13 +74,29 @@ class _DeviceScannerState extends State<DeviceScanner> {
         // 暂停扫描
         _controller.stop();
 
+        final info = 'UUID: ${deviceUuid.truncate(20)}\n'
+            '类型: ${roomType ?? "未知"}\n'
+            '服务器: ${serverUrl ?? "未提供"}';
+        widget.onScanResult?.call(code, true, info);
+
         // 弹窗确认
         _showConfirmDialog(deviceUuid, roomType, serverUrl);
       } else {
+        widget.onScanResult?.call(
+          code,
+          false,
+          'JSON 中缺少 deviceUuid 字段\n原始数据: ${code.length > 80 ? "${code.substring(0, 80)}..." : code}',
+        );
         _isProcessing = false;
       }
-    } catch (_) {
-      // JSON 解析失败，不是有效二维码
+    } catch (e) {
+      // JSON 解析失败
+      widget.onScanResult?.call(
+        code,
+        false,
+        'JSON 解析失败: ${e.toString().length > 60 ? "${e.toString().substring(0, 60)}..." : e}\n'
+        '原始: ${code.length > 60 ? "${code.substring(0, 60)}..." : code}',
+      );
       _isProcessing = false;
     }
   }
@@ -139,7 +166,7 @@ class _DeviceScannerState extends State<DeviceScanner> {
           scanWindow: scanWindow,
           onDetect: _onScan,
         ),
-        // 扫描框边框（自定义绘制代替 QrScannerOverlayShape）
+        // 扫描框边框
         Positioned.fill(
           child: CustomPaint(
             painter: _ScannerOverlayPainter(
@@ -193,31 +220,26 @@ class _ScannerOverlayPainter extends CustomPainter {
     const cornerLength = 30.0;
     final r = RRect.fromRectAndRadius(rect, const Radius.circular(12));
 
-    // 四个角绘制 L 形线段（模拟 QrScannerOverlayShape 风格）
     void drawCorner(Offset p1, Offset p2, Offset p3) {
       canvas.drawLine(p1, p2, paint);
       canvas.drawLine(p1, p3, paint);
     }
 
-    // 左上角
     drawCorner(
       Offset(r.left, r.top),
       Offset(r.left + cornerLength, r.top),
       Offset(r.left, r.top + cornerLength),
     );
-    // 右上角
     drawCorner(
       Offset(r.right, r.top),
       Offset(r.right - cornerLength, r.top),
       Offset(r.right, r.top + cornerLength),
     );
-    // 左下角
     drawCorner(
       Offset(r.left, r.bottom),
       Offset(r.left + cornerLength, r.bottom),
       Offset(r.left, r.bottom - cornerLength),
     );
-    // 右下角
     drawCorner(
       Offset(r.right, r.bottom),
       Offset(r.right - cornerLength, r.bottom),

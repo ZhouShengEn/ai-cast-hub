@@ -38,7 +38,7 @@ function initWebSocket(server) {
     const deviceUuid = url.searchParams.get('deviceUuid');
     const transferKey = url.searchParams.get('transferKey');
 
-    logger.info(`[WS] 新连接: deviceUuid=${deviceUuid}`);
+    logger.debug(`[WS] 新连接: deviceUuid=${deviceUuid}`);
 
     // 验证参数
     if (!deviceUuid || !transferKey) {

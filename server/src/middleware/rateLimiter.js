@@ -9,11 +9,11 @@ const rateLimit = require('express-rate-limit');
 
 /**
  * 全局频率限制
- * 100 次请求 / 15 分钟
+ * 开发环境放宽，生产环境 500 次 / 15 分钟
  */
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 分钟
-  max: 100,
+  max: process.env.NODE_ENV === 'production' ? 500 : 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: {

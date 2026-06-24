@@ -41,8 +41,6 @@ export const useDeviceStore = defineStore('device', {
         throw err
       } finally {
         this.loading = false
-        // 无论成功失败都生成二维码（移到这里确保一定会执行）
-        this.generateQRCode()
       }
     },
 
@@ -112,15 +110,20 @@ export const useDeviceStore = defineStore('device', {
         const info = await deviceApi.getServerInfo()
         serverUrl = info?.serverUrl || null
       } catch (err) {
-        console.warn('[DeviceStore] 获取服务器地址失败，二维码不含 serverUrl:', err.message)
+        console.warn('[DeviceStore] 获取服务器地址失败，使用 fallback:', err.message)
+      }
+      // Fallback: 使用当前页面的 hostname + 端口 3000（server 直连端口）
+      if (!serverUrl) {
+        serverUrl = `http://${window.location.hostname}:3000`
+        console.log('[DeviceStore] 使用 fallback serverUrl:', serverUrl)
       }
 
       console.log('[DeviceStore] 生成二维码，UUID:', uuid, 'serverUrl:', serverUrl)
       this.qrCodeData = JSON.stringify({
         deviceUuid: uuid,
         roomType: 'bind',
-        serverUrl, // 服务器局域网地址，手机扫码后据此连接
-        timestamp: Date.now(), // 添加时间戳确保每次都触发更新
+        serverUrl, // 服务器地址，手机扫码后据此直连
+        timestamp: Date.now(),
       })
     },
 
