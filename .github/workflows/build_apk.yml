@@ -1,4 +1,7 @@
 name: Build Flutter APK & Sync to Gitee
+permissions:
+  contents: write
+  releases: write
 on:
   push:
     branches: [ master ]
@@ -49,12 +52,15 @@ jobs:
         working-directory: ./flutter-app
         run: flutter build apk --debug
 
-      # 7.上传APK到GitHub Release（必须先打Release才能同步到Gitee）
+      # 调试：检查GH_PAT是否加载成功
+      - name: Debug Token Check
+        run: echo "Token length: ${{ length(secrets.GH_PAT) }}"
+
+      # 7.上传APK到GitHub Release
       - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v2
         if: success()
         env:
-          # 替换为自己的PAT密钥，不再用内置GITHUB_TOKEN
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           ACTIONS_ALLOW_UNSECURE_NODE_VERSION: false
         with:
@@ -66,13 +72,8 @@ jobs:
       - name: Sync code & APK release to Gitee
         uses: Yikun/hub-mirror-action@master
         with:
-          # GitHub源仓库
           src: github/ZhouShengEn/ai-cast-hub
-          # 你的Gitee用户名/仓库名，替换这里！
           dst: gitee/zhou-sheng-en/ai-cast-hub
-          # Gitee令牌密钥
           gitee-token: ${{ secrets.GITEE_TOKEN }}
-          # 同步Release发布包（关键：同步APK）
           sync-release: true
-          # 同步所有分支
           sync-branch: true
