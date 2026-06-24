@@ -18,7 +18,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.0'
+          flutter-version: '3.35.1'
 
       # 3.安卓SDK环境
       - name: Setup Android SDK
@@ -33,9 +33,9 @@ jobs:
             ~/.gradle
             flutter-app/.dart_tool
             flutter-app/build
-          key: flutter-build-v2-${{ hashFiles('flutter-app/pubspec.yaml', 'flutter-app/android/app/build.gradle.kts') }}
+          key: flutter-build-v3-${{ hashFiles('flutter-app/pubspec.yaml', 'flutter-app/android/app/build.gradle.kts') }}
           restore-keys: |
-            flutter-build-v2-
+            flutter-build-v3-
 
       # 5.国内镜像安装依赖
       - name: Install dependencies
@@ -43,18 +43,6 @@ jobs:
         env:
           PUB_HOSTED_URL: https://pub.flutter-io.cn
         run: flutter pub get
-
-      # 5.1 修复 flutter_webrtc SurfaceTextureRenderer 缺少 onSurfaceDestroyed
-      - name: Patch flutter_webrtc SurfaceTextureRenderer
-        run: |
-          FILE=$(find ~/.pub-cache -name "SurfaceTextureRenderer.java" -path "*/flutter_webrtc*" 2>/dev/null | head -1)
-          if [ -n "$FILE" ]; then
-            echo "Patching: $FILE"
-            sed -i '/new TextureRegistry\.SurfaceProducer\.Callback() {/a\                @Override\n                public void onSurfaceDestroyed() {}' "$FILE"
-            echo "Patch applied successfully"
-          else
-            echo "WARNING: SurfaceTextureRenderer.java not found, skipping patch"
-          fi
 
       # 6.编译Debug测试APK
       - name: Build Debug APK
