@@ -1,75 +1,53 @@
-name: Build Flutter APK & Sync to Gitee
-permissions:
-  contents: write
+name: Build Flutter APK
 on:
   push:
     branches: [ master ]
-  workflow_dispatch:
+  workflow_dispatch: # 网页手动一键打包
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1.拉取仓库代码
+      # 拉取完整仓库代码
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # 完整拉取历史，同步Gitee需要
 
-      # 2.配置Flutter环境
+      # 配置Flutter环境（改成你项目实际版本）
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.1'
+          flutter-version: '3.29.0'
 
-      # 3.安卓SDK环境
+      # 安装Android编译SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # 4.缓存依赖加速打包
+      # 缓存依赖，加速重复打包
       - name: Cache Flutter & Gradle deps
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
           path: |
             ~/.pub-cache
             ~/.gradle
             flutter-app/.dart_tool
             flutter-app/build
-          key: flutter-build-v3-${{ hashFiles('flutter-app/pubspec.yaml', 'flutter-app/android/app/build.gradle.kts') }}
-          restore-keys: |
-            flutter-build-v3-
+          key: flutter-${{ hashFiles('flutter-app/pubspec.yaml') }}
 
-      # 5.国内镜像安装依赖
+      # 切换flutter-app目录，通过环境变量指定国内pub源（无报错方案）
       - name: Install dependencies
         working-directory: ./flutter-app
         env:
           PUB_HOSTED_URL: https://pub.flutter-io.cn
         run: flutter pub get
 
-      # 6.编译Debug测试APK
+      # 编译Debug测试APK
       - name: Build Debug APK
         working-directory: ./flutter-app
-        run: flutter build apk --debug
+        run: flutter build apk --debug --split-per-abi
 
-      # 7.上传APK到GitHub Release
-      - name: Upload APK to GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: success()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          ACTIONS_ALLOW_UNSECURE_NODE_VERSION: false
+      # 上传APK产物
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: build-${{ github.sha }}
-          name: Flutter Build ${{ github.sha }}
-          files: flutter-app/build/app/outputs/flutter-apk/*.apk
-
-      # 8.同步整个仓库代码 + Release附件APK到Gitee
-      - name: Sync code & APK release to Gitee
-        uses: Yikun/hub-mirror-action@v1
-        if: success() # 前置步骤全部成功才同步
-        with:
-          src: github/ZhouShengEn/ai-cast-hub
-          dst: gitee/zhou-sheng-en/ai-cast-hub
-          gitee-token: ${{ secrets.GITEE_TOKEN }}
-          sync-release: true
-          sync-branch: true
+          name: Flutter-Debug-APK
+          path: flutter-app/build/app/outputs/flutter-apk/*.apk
