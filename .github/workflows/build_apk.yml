@@ -59,13 +59,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           ACTIONS_ALLOW_UNSECURE_NODE_VERSION: false
         with:
-          tag_name: build-test01
+          tag_name: build-${{ github.sha }}
           name: Flutter Build ${{ github.sha }}
           files: flutter-app/build/app/outputs/flutter-apk/*.apk
 
       # 8.同步整个仓库代码 + Release附件APK到Gitee
       - name: Sync code & APK release to Gitee
-        uses: Yikun/hub-mirror-action@master
+        uses: Yikun/hub-mirror-action@v1.20
+        if: success() # 前置步骤全部成功才同步
         with:
           src: github/ZhouShengEn/ai-cast-hub
           dst: gitee/zhou-sheng-en/ai-cast-hub
