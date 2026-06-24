@@ -54,9 +54,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 替换为自己的PAT密钥，不再用内置GITHUB_TOKEN
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          ACTIONS_ALLOW_UNSECURE_NODE_VERSION: false
         with:
-          tag_name: build-${{ github.sha }} # 用commit哈希作为版本tag
+          tag_name: build-test01
           name: Flutter Build ${{ github.sha }}
           files: flutter-app/build/app/outputs/flutter-apk/*.apk
 
