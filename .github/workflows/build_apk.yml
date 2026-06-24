@@ -1,7 +1,6 @@
 name: Build Flutter APK & Sync to Gitee
 permissions:
   contents: write
-  releases: write
 on:
   push:
     branches: [ master ]
@@ -51,10 +50,6 @@ jobs:
       - name: Build Debug APK
         working-directory: ./flutter-app
         run: flutter build apk --debug
-
-      # 调试：检查GH_PAT是否加载成功
-      - name: Debug Token Check
-        run: echo "Token length: ${{ length(secrets.GH_PAT) }}"
 
       # 7.上传APK到GitHub Release
       - name: Upload APK to GitHub Release
