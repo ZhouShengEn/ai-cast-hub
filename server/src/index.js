@@ -49,6 +49,8 @@ const authWhitelist = [
   '/api/v1/server/info',
   '/api/v1/device/register',
   '/api/v1/device/bind',
+  '/api/v1/device/bind-by-code',
+  '/api/v1/device/pair-code',
 ];
 
 app.use((req, res, next) => {

@@ -9,17 +9,13 @@
     <!-- 内容区 -->
     <div class="flex-1 p-6 overflow-auto">
       <div class="max-w-4xl mx-auto">
-        <!-- 未连接 → 显示二维码 -->
-        <div v-if="castStore.connectionState !== 'connected'" class="card text-center">
-          <h3 class="text-lg font-semibold mb-4">扫描二维码开始投屏</h3>
-          <DeviceQRCode
-            :data="castStore.qrCodeData"
-            :connected="false"
-            description="使用 AI Cast Hub App 扫描二维码开始投屏"
-            :show-refresh="true"
-          />
-          <p class="mt-4 text-xs text-gray-400">
-            设备 UUID: {{ deviceUuid }}
+        <!-- 未连接 → 等待投屏 -->
+        <div v-if="castStore.connectionState !== 'connected'" class="card text-center py-12">
+          <div class="text-6xl mb-4">📱→💻</div>
+          <h3 class="text-lg font-semibold mb-2">等待手机投屏</h3>
+          <p class="text-sm text-gray-500">
+            请先在手机 App 输入首页的连接码完成设备绑定<br/>
+            然后在手机端发起投屏，画面将显示在此处
           </p>
         </div>
 
@@ -47,31 +43,20 @@
 <script setup>
 import { ref, onMounted, onUnmounted, inject } from 'vue'
 import { useCastStore } from '../stores/cast'
-import DeviceQRCode from '../components/cast/DeviceQRCode.vue'
 import CastReceiver from '../components/cast/CastReceiver.vue'
 import ConnectionBadge from '../components/cast/ConnectionBadge.vue'
 import { useCastReceiver } from '../composables/useCastReceiver'
 
 const castStore = useCastStore()
 const showToast = inject('showToast', () => {})
-
-const deviceUuid = ref(localStorage.getItem('deviceUuid') || '')
 const castReceiverRef = ref(null)
 
-const {
-  startReceiving,
-  stopReceiving,
-  connectionState,
-} = useCastReceiver()
+const { startReceiving, stopReceiving, connectionState } = useCastReceiver()
 
-/** 初始化：生成投屏二维码，监听 WebSocket 房间事件 */
 onMounted(() => {
-  castStore.generateQRCode(deviceUuid.value)
-
-  // 注册为投屏接收端
-  const roomId = `cast_${deviceUuid.value}_${Date.now()}`
+  const deviceUuid = localStorage.getItem('deviceUuid') || ''
+  const roomId = `cast_${deviceUuid}_${Date.now()}`
   castStore.roomId = roomId
-  // 开始接收（等待手机连接）
   startReceiving(roomId)
 })
 
@@ -79,7 +64,6 @@ onUnmounted(() => {
   stopReceiving()
 })
 
-/** 停止投屏 */
 function stopCasting() {
   stopReceiving()
   showToast('投屏已停止', 'info')

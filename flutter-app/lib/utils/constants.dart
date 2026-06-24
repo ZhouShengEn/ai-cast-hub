@@ -8,11 +8,11 @@ class AppConstants {
 
   /// API 基础 URL
   static String get apiBaseUrl =>
-      kIsWeb ? 'http://localhost:3000/api/v1' : 'http://10.0.2.2:3000/api/v1';
+      kIsWeb ? 'http://localhost:3000/api/v1' : 'http://192.168.1.41:3000/api/v1';
 
   /// WebSocket 基础 URL
   static String get wsBaseUrl =>
-      kIsWeb ? 'ws://localhost:3000' : 'ws://10.0.2.2:3000';
+      kIsWeb ? 'ws://localhost:3000' : 'ws://192.168.1.41:3000';
 
   /// 最大文件传输大小：2GB
   static const int maxFileSize = 2 * 1024 * 1024 * 1024;

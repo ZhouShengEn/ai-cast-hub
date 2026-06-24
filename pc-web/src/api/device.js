@@ -24,8 +24,13 @@ export default {
     return client.get('/device/list')
   },
 
-  /** 获取服务器信息（局域网 IP，用于生成二维码供手机连接） */
+  /** 获取服务器信息（局域网 IP） */
   async getServerInfo() {
     return client.get('/server/info')
+  },
+
+  /** 生成连接码（PC 端展示给 App 输入） */
+  async generatePairCode() {
+    return client.post('/device/pair-code')
   },
 }

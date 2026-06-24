@@ -6,7 +6,7 @@ import '../services/local_storage.dart';
 import '../models/device.dart';
 import '../utils/extensions.dart';
 
-/// 首页 — 设备状态、已绑定 PC 列表、扫码连接入口
+/// 首页 — 设备状态、已绑定 PC 列表、连接码绑定入口
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -98,17 +98,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
       ),
-      // FAB: 扫码连接
+      // FAB: 输入连接码
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
           final result = await Navigator.pushNamed(context, '/scan');
-          // 扫码绑定成功后刷新设备列表
+          // 绑定成功后刷新设备列表
           if (result == true) {
             ref.read(deviceProvider.notifier).fetchDeviceList();
           }
         },
-        icon: const Icon(Icons.qr_code_scanner),
-        label: const Text('扫码连接'),
+        icon: const Icon(Icons.link),
+        label: const Text('输入连接码'),
       ),
     );
   }

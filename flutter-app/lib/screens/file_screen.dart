@@ -52,7 +52,7 @@ class _FileScreenState extends ConsumerState<FileScreen> {
             isSending: fileState.isSending,
             warning: targetDeviceId.isEmpty ? '未绑定 PC 设备，请先在首页扫描二维码完成绑定' : null,
             onSelectFile: () async {
-              // 未绑定设备时引导用户去扫码
+              // 未绑定设备时引导用户去输入连接码
               if (targetDeviceId.isEmpty) {
                 final result = await Navigator.pushNamed(context, '/scan');
                 if (result == true) {
@@ -133,8 +133,8 @@ class _FileScreenState extends ConsumerState<FileScreen> {
                             await ref.read(deviceProvider.notifier).fetchDeviceList();
                           }
                         },
-                        icon: const Icon(Icons.qr_code_scanner),
-                        label: const Text('去扫码绑定'),
+                        icon: const Icon(Icons.link),
+                        label: const Text('去输入连接码'),
                       ),
                     ],
                   ],

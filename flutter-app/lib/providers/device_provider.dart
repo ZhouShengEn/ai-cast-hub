@@ -122,6 +122,23 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     }
   }
 
+  /// 通过连接码绑定 PC 设备
+  Future<void> bindByCode(String pairCode) async {
+    state = state.copyWith(isLoading: true, error: null);
+
+    try {
+      await _service.bindByCode(pairCode);
+      await fetchDeviceList();
+      state = state.copyWith(isLoading: false);
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: '绑定失败: $e',
+      );
+      rethrow;
+    }
+  }
+
   /// 获取已绑定设备列表
   Future<void> fetchDeviceList() async {
     try {

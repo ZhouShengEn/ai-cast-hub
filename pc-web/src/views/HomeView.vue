@@ -14,7 +14,7 @@
           <span class="text-gray-300">→</span>
           <div class="flex items-center gap-2">
             <span class="w-8 h-8 rounded-full bg-primary-600 text-white flex items-center justify-center text-sm font-bold">2</span>
-            <span class="text-sm text-gray-600">扫描二维码</span>
+            <span class="text-sm text-gray-600">输入连接码</span>
           </div>
           <span class="text-gray-300">→</span>
           <div class="flex items-center gap-2">
@@ -23,13 +23,13 @@
           </div>
         </div>
 
-        <!-- 设备二维码 -->
-        <DeviceQRCode
-          :data="deviceStore.qrCodeData"
+        <!-- 连接码展示 -->
+        <DevicePairCode
+          :code="deviceStore.pairCode"
+          :expires-at="deviceStore.pairCodeExpiresAt"
           :connected="deviceStore.isConnected"
           :connected-text="'已连接到 ' + (deviceStore.pairedDevices[0]?.name || '设备')"
-          description="使用 AI Cast Hub App 扫描二维码完成设备绑定"
-          :show-refresh="true"
+          @refresh="refreshPairCode"
         />
 
         <!-- 已绑定设备列表 -->
@@ -42,7 +42,7 @@
             class="text-center py-6 text-gray-400 text-sm"
           >
             <span class="text-3xl block mb-2">📱</span>
-            暂无已绑定设备，请扫描二维码绑定
+            暂无已绑定设备，请在 App 中输入连接码
           </div>
 
           <!-- 加载中 -->
@@ -81,90 +81,23 @@
 <script setup>
 import { onMounted, onUnmounted, inject } from 'vue'
 import { useDeviceStore } from '../stores/device'
-import { useWebSocket } from '../composables/useWebSocket'
-import DeviceQRCode from '../components/cast/DeviceQRCode.vue'
+import DevicePairCode from '../components/cast/DevicePairCode.vue'
 import Spinner from '../components/common/Spinner.vue'
 
 const deviceStore = useDeviceStore()
 const showToast = inject('showToast', () => {})
 
-const { connect: wsConnect, disconnect: wsDisconnect, onMessage, offMessage } = useWebSocket()
-
-/** 收到设备绑定通知时的处理 */
-async function onDeviceBound(msg) {
-  console.log('[HomeView] 收到设备绑定通知:', msg)
-  const deviceName = msg?.payload?.device?.deviceName || '新设备'
-  showToast(`设备「${deviceName}」已连接`, 'success')
-  // 立即刷新设备列表
-  try {
-    await deviceStore.fetchDeviceList()
-  } catch (_) {}
+/** 刷新连接码 */
+async function refreshPairCode() {
+  await deviceStore.generatePairCode()
+  showToast('连接码已刷新', 'info')
 }
 
-/** 初始化设备信息 */
+/** 进入页面时：如果连接码不存在或已过期则生成，否则保持不变 */
 onMounted(async () => {
-  try {
-    // 确保先有 UUID（如果不存在则先生成）
-    if (!localStorage.getItem('deviceUuid')) {
-      localStorage.setItem('deviceUuid', crypto.randomUUID())
-    }
-    
-    // 检查是否已注册（尝试获取设备信息）
-    const uuid = localStorage.getItem('deviceUuid')
-    if (uuid) {
-      try {
-        await deviceStore.fetchDeviceInfo()
-      } catch (err) {
-        // 获取失败可能是未注册，尝试重新注册
-        console.log('[HomeView] 获取设备信息失败，尝试注册:', err.message)
-        const name = `PC-${navigator.platform || 'Web'}`
-        await deviceStore.registerDevice(name)
-        showToast('设备已注册', 'success')
-      }
-    } else {
-      // 首次注册
-      const name = `PC-${navigator.platform || 'Web'}`
-      await deviceStore.registerDevice(name)
-      showToast('设备已注册', 'success')
-    }
-    
-    // 生成二维码（确保一定执行）
-    await deviceStore.generateQRCode()
-    
-    // 验证二维码数据是否生成成功
-    if (!deviceStore.qrCodeData) {
-      console.error('[HomeView] 二维码数据为空')
-      throw new Error('二维码生成失败')
-    }
-  } catch (err) {
-    console.error('[HomeView] 初始化失败:', err)
-    // 最后的兜底：强制生成二维码
-    if (!localStorage.getItem('deviceUuid')) {
-      localStorage.setItem('deviceUuid', crypto.randomUUID())
-    }
-    deviceStore.generateQRCode()
-    
-    if (!deviceStore.qrCodeData) {
-      showToast('设备初始化失败: ' + err.message, 'error')
-    }
+  if (!deviceStore.pairCode || (deviceStore.pairCodeExpiresAt && Date.now() > deviceStore.pairCodeExpiresAt)) {
+    await deviceStore.generatePairCode()
   }
-
-  // 建立 WebSocket 连接，监听设备绑定通知（实时感知）
-  onMessage('device_bound', onDeviceBound)
-  wsConnect()
-  
-  // 定期刷新设备列表和二维码
-  setInterval(async () => {
-    try {
-      await deviceStore.fetchDeviceList()
-      deviceStore.generateQRCode()
-    } catch (_) {}
-  }, 30000) // 每 30 秒刷新一次
-})
-
-onUnmounted(() => {
-  offMessage('device_bound', onDeviceBound)
-  wsDisconnect()
 })
 
 /** 格式化时间 */

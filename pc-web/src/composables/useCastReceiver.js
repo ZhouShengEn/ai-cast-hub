@@ -16,7 +16,7 @@ export function useCastReceiver() {
   const videoRef = ref(null)
   const connectionState = ref('disconnected')
 
-  const { send, onMessage, offMessage, connectionState: wsState, connect: wsConnect } = useWebSocket()
+  const { send, onMessage, offMessage, connectionState: wsState } = useWebSocket()
   const {
     connectionState: rtcState,
     remoteStream,
@@ -37,8 +37,7 @@ export function useCastReceiver() {
     connectionState.value = 'connecting'
     castStore.setConnectionState('connecting')
 
-    // 确保 WebSocket 已连接
-    wsConnect()
+    // WebSocket 连接由 App.vue 全局管理，这里只注册信令监听
 
     // 监听 ICE 候选并发送
     onIceCandidate((candidate) => {

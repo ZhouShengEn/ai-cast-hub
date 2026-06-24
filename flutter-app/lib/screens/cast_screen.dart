@@ -8,8 +8,8 @@ import '../widgets/cast/status_indicator.dart';
 
 /// 投屏页面 — 选择已绑定 PC 并投屏
 ///
-/// 此页面只负责投屏控制，不再包含扫码绑定功能。
-/// 扫码绑定请使用首页的"扫码连接"按钮（/scan 路由）。
+/// 此页面只负责投屏控制，不包含绑定功能。
+/// 绑定请使用首页的"输入连接码"按钮（/scan 路由）。
 class CastScreen extends ConsumerStatefulWidget {
   const CastScreen({super.key});
 
@@ -82,7 +82,7 @@ class _CastScreenState extends ConsumerState<CastScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              '请返回首页点击"扫码连接"按钮，\n扫描 PC 端二维码完成设备绑定后再使用投屏功能',
+              '请返回首页点击"输入连接码"按钮，\n在 PC 端查看连接码并输入完成绑定后再使用投屏功能',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
@@ -96,8 +96,8 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                   ref.read(deviceProvider.notifier).fetchDeviceList();
                 }
               },
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('去扫码绑定'),
+              icon: const Icon(Icons.link),
+              label: const Text('去输入连接码'),
             ),
           ],
         ),

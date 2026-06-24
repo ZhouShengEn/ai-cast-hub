@@ -54,7 +54,7 @@ class LocalStorage {
   /// 优先级：用户自定义设置 > 平台默认值
   /// - Web: http://localhost:3000/api/v1
   /// - Android 模拟器: http://10.0.2.2:3000/api/v1
-  /// - 真机/其他: http://localhost:3000/api/v1
+  /// - 真机/其他: http://192.168.1.41:3000/api/v1
   String getServerUrl() {
     final saved = _prefs.getString('server_url');
     if (saved != null && saved.isNotEmpty) {
@@ -70,7 +70,8 @@ class LocalStorage {
       return 'http://localhost:3000/api/v1';
     }
     // Android 模拟器专用地址（访问宿主机）
-    return 'http://10.0.2.2:3000/api/v1';
+    // 真机使用局域网 IP
+    return 'http://192.168.1.41:3000/api/v1';
   }
 
   /// 保存服务器地址

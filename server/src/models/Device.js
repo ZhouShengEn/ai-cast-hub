@@ -11,6 +11,60 @@ const _devices = new Map();
 /** @type {Map<string, Set<string>>} 绑定关系: deviceUuid -> Set<pairedDeviceUuid> */
 const _bindings = new Map();
 
+/** @type {Map<string, {deviceUuid: string, expiresAt: number}>} 连接码: code -> {deviceUuid, expiresAt} */
+const _pairCodes = new Map();
+
+/** 连接码有效期：5 分钟 */
+const PAIR_CODE_TTL = 5 * 60 * 1000;
+
+/**
+ * 生成 6 位数字连接码并关联到设备 UUID
+ * @param {string} deviceUuid - 设备 UUID
+ * @returns {string} 6 位数字连接码
+ */
+function generatePairCode(deviceUuid) {
+  // 清理该设备旧的连接码
+  for (const [code, info] of _pairCodes.entries()) {
+    if (info.deviceUuid === deviceUuid) {
+      _pairCodes.delete(code);
+    }
+  }
+  // 生成不重复的 6 位码
+  let code;
+  do {
+    code = String(Math.floor(100000 + Math.random() * 900000));
+  } while (_pairCodes.has(code));
+
+  _pairCodes.set(code, {
+    deviceUuid,
+    expiresAt: Date.now() + PAIR_CODE_TTL,
+  });
+  return code;
+}
+
+/**
+ * 通过连接码查询目标设备 UUID（同时校验有效期）
+ * @param {string} code - 连接码
+ * @returns {string|null} 设备 UUID，无效或过期返回 null
+ */
+function resolvePairCode(code) {
+  const entry = _pairCodes.get(code);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    _pairCodes.delete(code);
+    return null;
+  }
+  return entry.deviceUuid;
+}
+
+/**
+ * 消费连接码（绑定成功后删除）
+ * @param {string} code - 连接码
+ */
+function consumePairCode(code) {
+  _pairCodes.delete(code);
+}
+
 /**
  * 注册或更新设备信息
  * @param {string} uuid - 设备唯一标识
@@ -211,4 +265,7 @@ module.exports = {
   getPairedDevices,
   clearAll,
   getStats,
+  generatePairCode,
+  resolvePairCode,
+  consumePairCode,
 };

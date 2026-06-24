@@ -33,6 +33,15 @@ class DeviceService {
     return Map<String, dynamic>.from(data as Map);
   }
 
+  /// 通过连接码绑定 PC 设备
+  /// [pairCode] PC 端展示的 6 位连接码
+  Future<Map<String, dynamic>> bindByCode(String pairCode) async {
+    final data = await _client.post('/device/bind-by-code', data: {
+      'pairCode': pairCode,
+    });
+    return Map<String, dynamic>.from(data as Map);
+  }
+
   /// 获取已绑定设备列表
   Future<List<Map<String, dynamic>>> getDeviceList() async {
     final data = await _client.get('/device/list');

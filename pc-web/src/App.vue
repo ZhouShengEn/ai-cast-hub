@@ -65,10 +65,14 @@
 </template>
 
 <script setup>
-import { ref, computed, provide } from 'vue'
+import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { useWebSocket } from './composables/useWebSocket'
+import { useDeviceStore } from './stores/device'
 
 const route = useRoute()
+const deviceStore = useDeviceStore()
+const { connect: wsConnect, disconnect: wsDisconnect, onMessage, offMessage } = useWebSocket()
 
 /** 导航菜单项 */
 const navItems = [
@@ -96,6 +100,57 @@ function isActive(path) {
   }
   return route.path.startsWith(path)
 }
+
+// ============================================================
+// 全局 WebSocket 连接管理（应用级，不随页面切换断开）
+// ============================================================
+
+/** 收到设备绑定通知 */
+async function onDeviceBound(msg) {
+  console.log('[App] 收到设备绑定通知:', msg)
+  const deviceName = msg?.payload?.device?.deviceName || '新设备'
+  showToast(`设备「${deviceName}」已连接`, 'success')
+  deviceConnected.value = true
+  try {
+    await deviceStore.fetchDeviceList()
+  } catch (_) {}
+}
+
+onMounted(async () => {
+  // 确保有 UUID
+  if (!localStorage.getItem('deviceUuid')) {
+    localStorage.setItem('deviceUuid', crypto.randomUUID())
+  }
+
+  // 确保设备已注册
+  try {
+    await deviceStore.fetchDeviceInfo()
+  } catch (err) {
+    console.log('[App] 获取设备信息失败，尝试注册:', err.message)
+    try {
+      const name = `PC-${navigator.platform || 'Web'}`
+      await deviceStore.registerDevice(name)
+    } catch (_) {}
+  }
+
+  // 检查是否有已绑定设备
+  try {
+    await deviceStore.fetchDeviceList()
+    deviceConnected.value = deviceStore.pairedDevices.length > 0
+  } catch (_) {}
+
+  // 全局生成连接码（仅一次，切 Tab 不重新生成）
+  await deviceStore.generatePairCode()
+
+  // 注册 WS 监听并建立连接（全局唯一）
+  onMessage('device_bound', onDeviceBound)
+  wsConnect()
+})
+
+onUnmounted(() => {
+  offMessage('device_bound', onDeviceBound)
+  wsDisconnect()
+})
 
 // ============================================================
 // 全局 Toast 通知系统

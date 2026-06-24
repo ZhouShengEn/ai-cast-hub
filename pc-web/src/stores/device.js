@@ -10,8 +10,10 @@ export const useDeviceStore = defineStore('device', {
     device: null,
     /** 已配对设备列表 */
     pairedDevices: [],
-    /** 二维码数据（JSON 字符串） */
-    qrCodeData: null,
+    /** 连接码（6 位数字） */
+    pairCode: null,
+    /** 连接码过期时间戳（毫秒） */
+    pairCodeExpiresAt: null,
     /** 是否有已连接设备 */
     isConnected: false,
     /** 加载状态 */
@@ -94,37 +96,24 @@ export const useDeviceStore = defineStore('device', {
       }
     },
 
-    /** 生成当前设备的绑定二维码数据 */
-    async generateQRCode() {
-      // 优先使用 API 返回的 deviceUuid，其次从 localStorage 获取
+    /** 生成连接码（替代二维码） */
+    async generatePairCode() {
       const uuid = this.device?.deviceUuid || localStorage.getItem('deviceUuid')
       if (!uuid) {
-        console.warn('[DeviceStore] 无法生成二维码：缺少设备 UUID')
-        this.qrCodeData = null
+        console.warn('[DeviceStore] 无法生成连接码：缺少设备 UUID')
+        this.pairCode = null
         return
       }
-
-      // 获取服务器局域网地址，供手机扫码后直连
-      let serverUrl = null
       try {
-        const info = await deviceApi.getServerInfo()
-        serverUrl = info?.serverUrl || null
+        const data = await deviceApi.generatePairCode()
+        this.pairCode = data?.pairCode || null
+        // expiresIn 单位为秒
+        this.pairCodeExpiresAt = Date.now() + (data?.expiresIn || 300) * 1000
+        console.log('[DeviceStore] 连接码:', this.pairCode, '过期时间:', new Date(this.pairCodeExpiresAt).toLocaleTimeString())
       } catch (err) {
-        console.warn('[DeviceStore] 获取服务器地址失败，使用 fallback:', err.message)
+        console.warn('[DeviceStore] 生成连接码失败:', err.message)
+        this.pairCode = null
       }
-      // Fallback: 使用当前页面的 hostname + 端口 3000（server 直连端口）
-      if (!serverUrl) {
-        serverUrl = `http://${window.location.hostname}:3000`
-        console.log('[DeviceStore] 使用 fallback serverUrl:', serverUrl)
-      }
-
-      console.log('[DeviceStore] 生成二维码，UUID:', uuid, 'serverUrl:', serverUrl)
-      this.qrCodeData = JSON.stringify({
-        deviceUuid: uuid,
-        roomType: 'bind',
-        serverUrl, // 服务器地址，手机扫码后据此直连
-        timestamp: Date.now(),
-      })
     },
 
     /** 清除错误 */

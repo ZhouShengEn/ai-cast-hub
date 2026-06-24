@@ -164,11 +164,22 @@ class WebSocketService {
 
   void _onError(dynamic error) {
     _setConnectionState(WsConnectionState.disconnected);
-    _scheduleReconnect();
+    _maybeReconnect();
   }
 
   void _onDone() {
     _setConnectionState(WsConnectionState.disconnected);
+    _maybeReconnect();
+  }
+
+  /// 判断是否应该重连（认证失败不重连）
+  void _maybeReconnect() {
+    final closeCode = _channel?.closeCode ?? 0;
+    // 认证失败（4000-4003）不重连，避免无限循环
+    if (closeCode >= 4000 && closeCode <= 4003) {
+      _intentionalClose = true;
+      return;
+    }
     _scheduleReconnect();
   }
 
