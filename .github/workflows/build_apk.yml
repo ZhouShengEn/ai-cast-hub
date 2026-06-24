@@ -65,7 +65,7 @@ jobs:
 
       # 8.同步整个仓库代码 + Release附件APK到Gitee
       - name: Sync code & APK release to Gitee
-        uses: Yikun/hub-mirror-action@v1.20
+        uses: Yikun/hub-mirror-action@master
         if: success() # 前置步骤全部成功才同步
         with:
           src: github/ZhouShengEn/ai-cast-hub
