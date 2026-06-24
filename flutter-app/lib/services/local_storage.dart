@@ -86,6 +86,46 @@ class LocalStorage {
   /// 获取调试悬浮球开关
   bool getDebugBallEnabled() => _prefs.getBool('debug_ball_enabled') ?? false;
 
+  /// 获取对话模式: 'server' | 'local'
+  String getChatMode() => _prefs.getString('chat_mode') ?? 'server';
+
+  /// 保存对话模式
+  Future<bool> saveChatMode(String mode) =>
+      _prefs.setString('chat_mode', mode);
+
+  // ============ 本地对话持久化 ============
+
+  /// 获取本地对话列表
+  List<Map<String, dynamic>> getLocalConversations() {
+    final raw = _prefs.getString('local_conversations');
+    if (raw == null) return [];
+    return (jsonDecode(raw) as List<dynamic>).cast<Map<String, dynamic>>();
+  }
+
+  /// 保存本地对话列表
+  Future<bool> saveLocalConversations(List<Map<String, dynamic>> data) =>
+      _prefs.setString('local_conversations', jsonEncode(data));
+
+  /// 获取本地对话消息（按对话 ID 分组）
+  Map<String, List<Map<String, dynamic>>> getLocalMessages() {
+    final raw = _prefs.getString('local_messages');
+    if (raw == null) return {};
+    final map = jsonDecode(raw) as Map<String, dynamic>;
+    return map.map((k, v) =>
+        MapEntry(k, (v as List<dynamic>).cast<Map<String, dynamic>>()));
+  }
+
+  /// 保存本地对话消息
+  Future<bool> saveLocalMessages(Map<String, List<Map<String, dynamic>>> data) =>
+      _prefs.setString('local_messages', jsonEncode(data));
+
+  /// 获取背景风格
+  String getBackgroundStyle() => _prefs.getString('background_style') ?? 'day';
+
+  /// 保存背景风格
+  Future<bool> saveBackgroundStyle(String style) =>
+      _prefs.setString('background_style', style);
+
   /// 保存调试悬浮球开关
   Future<bool> saveDebugBallEnabled(bool enabled) =>
       _prefs.setBool('debug_ball_enabled', enabled);

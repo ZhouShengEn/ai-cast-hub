@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/chat_provider.dart';
 import '../utils/extensions.dart';
+import '../utils/model_config.dart';
 import '../widgets/chat/chat_bubble.dart';
 import '../widgets/chat/chat_input_bar.dart';
 import '../widgets/chat/model_picker.dart';
@@ -65,6 +66,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             final selected = await ModelPicker.show(
               context,
               chatState.selectedModel,
+              chatState.chatMode,
             );
             if (selected != null) {
               chatNotifier.setModel(selected);
@@ -73,25 +75,62 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('AI 对话'),
+              Text(chatState.chatMode == ChatMode.local ? '本地对话' : 'AI 对话'),
+              if (chatState.chatMode == ChatMode.local) ...[
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    _shortModelName(chatState.selectedModel),
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(width: 4),
               Icon(Icons.arrow_drop_down, size: 20, color: theme.colorScheme.onSurface),
             ],
           ),
         ),
         actions: [
+          // 模式切换按钮
+          IconButton(
+            icon: Icon(
+              chatState.chatMode == ChatMode.local ? Icons.phone_android : Icons.cloud,
+            ),
+            tooltip: chatState.chatMode == ChatMode.local ? '本地模式 — 点击切换服务端' : '服务端模式 — 点击切换本地',
+            onPressed: () {
+              final next = chatState.chatMode == ChatMode.local
+                  ? ChatMode.server
+                  : ChatMode.local;
+              chatNotifier.setChatMode(next);
+              if (next == ChatMode.server) {
+                chatNotifier.fetchConversations();
+              }
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: '新建对话',
             onPressed: () => chatNotifier.createConversation(),
           ),
-          Builder(
-            builder: (scaffoldContext) => IconButton(
-              icon: const Icon(Icons.history),
-              tooltip: '对话历史',
-              onPressed: () => Scaffold.of(scaffoldContext).openDrawer(),
+          // 本地模式：设置按钮；服务端模式：对话历史按钮
+          if (chatState.chatMode == ChatMode.local)
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: '模型配置',
+              onPressed: () => Navigator.pushNamed(context, '/settings'),
+            )
+          else
+            Builder(
+              builder: (scaffoldContext) => IconButton(
+                icon: const Icon(Icons.history),
+                tooltip: '对话历史',
+                onPressed: () => Scaffold.of(scaffoldContext).openDrawer(),
+              ),
             ),
-          ),
         ],
       ),
       // 对话历史抽屉
@@ -161,6 +200,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 .fold(0, (sum, m) => sum + (m.outputTokens ?? 0)),
           ),
 
+          // 本地模式提示条
+          if (chatState.chatMode == ChatMode.local)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              color: theme.colorScheme.tertiaryContainer,
+              child: Row(
+                children: [
+                  Icon(Icons.phone_android, size: 16,
+                      color: theme.colorScheme.onTertiaryContainer),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '本地直连模式 — API Key 在设置 → 模型配置中管理',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onTertiaryContainer,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
           // 消息列表
           Expanded(
             child: messages.isEmpty && !isStreaming
@@ -175,7 +237,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         ),
                         const SizedBox(height: 16),
                         Text(
-                          '选择模型开始对话',
+                          chatState.chatMode == ChatMode.local
+                              ? '选择模型开始本地对话'
+                              : '选择模型开始对话',
                           style: theme.textTheme.titleMedium?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                           ),
@@ -187,14 +251,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             color: theme.colorScheme.outline,
                           ),
                         ),
+                        if (chatState.chatMode == ChatMode.local) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            '点击右上角图标可切换服务端/本地模式',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.outline,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   )
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.symmetric(vertical: 8),
-                    itemCount: messages.length,
+                    itemCount: messages.length + (chatState.thinking ? 1 : 0),
                     itemBuilder: (context, index) {
+                      // 思考中指示气泡
+                      if (index == messages.length && chatState.thinking) {
+                        return _buildThinkingBubble(theme);
+                      }
                       final message = messages[index];
                       final isLastAI = index == messages.length - 1 &&
                           message.isAssistant &&
@@ -216,6 +294,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               _scrollToBottom();
             },
             onStop: () => chatNotifier.cancelStream(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _shortModelName(String modelId) {
+    final name = ModelConfig.getModelDisplayName(modelId);
+    return name.length > 20 ? '${name.substring(0, 18)}…' : name;
+  }
+
+  Widget _buildThinkingBubble(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: theme.colorScheme.secondaryContainer,
+            child: Icon(
+              Icons.psychology,
+              size: 18,
+              color: theme.colorScheme.onSecondaryContainer,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Container(
+              constraints: BoxConstraints(
+                maxWidth: MediaQuery.of(context).size.width * 0.75,
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                  bottomLeft: Radius.circular(4),
+                  bottomRight: Radius.circular(16),
+                ),
+              ),
+              child: _ThinkingDots(color: theme.colorScheme.primary),
+            ),
           ),
         ],
       ),
@@ -245,6 +368,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 思考中动画 — 三个点交替跳动
+class _ThinkingDots extends StatefulWidget {
+  final Color color;
+  const _ThinkingDots({required this.color});
+
+  @override
+  State<_ThinkingDots> createState() => _ThinkingDotsState();
+}
+
+class _ThinkingDotsState extends State<_ThinkingDots>
+    with TickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(3, (i) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final t = (_controller.value - i * 0.2) % 1.0;
+            final scale = 0.5 + 0.5 * (1 - (2 * t - 1).abs());
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: Transform.scale(
+                scale: scale,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: widget.color.withOpacity(0.4 + 0.6 * scale),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      }),
     );
   }
 }

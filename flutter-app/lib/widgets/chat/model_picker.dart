@@ -1,31 +1,31 @@
 import 'package:flutter/material.dart';
 
+import '../../providers/chat_provider.dart';
+import '../../services/local_storage.dart';
+import '../../utils/model_config.dart';
+
 /// 模型选择器
 ///
 /// 底部弹出列表，按 provider 分组显示可用模型。
+/// 本地模式仅显示已配置 API Key 的本地直连提供商。
 class ModelPicker extends StatelessWidget {
   final String selectedModel;
   final ValueChanged<String> onSelect;
+  final ChatMode chatMode;
 
   const ModelPicker({
     super.key,
     required this.selectedModel,
     required this.onSelect,
+    required this.chatMode,
   });
 
-  /// 可用模型列表
-  static const List<Map<String, String>> models = [
-    {'provider': 'OpenAI', 'id': 'openai:gpt-4o', 'name': 'GPT-4o'},
-    {'provider': 'OpenAI', 'id': 'openai:gpt-4o-mini', 'name': 'GPT-4o Mini'},
-    {'provider': 'OpenAI', 'id': 'openai:gpt-3.5-turbo', 'name': 'GPT-3.5 Turbo'},
-    {'provider': 'Anthropic', 'id': 'claude:claude-3-5-sonnet-20241022', 'name': 'Claude 3.5 Sonnet'},
-    {'provider': 'Anthropic', 'id': 'claude:claude-3-opus-20240229', 'name': 'Claude 3 Opus'},
-    {'provider': 'Google', 'id': 'gemini:gemini-1.5-pro', 'name': 'Gemini 1.5 Pro'},
-    {'provider': 'Google', 'id': 'gemini:gemini-1.5-flash', 'name': 'Gemini 1.5 Flash'},
-  ];
-
   /// 弹出底部选择器
-  static Future<String?> show(BuildContext context, String currentModel) {
+  static Future<String?> show(
+    BuildContext context,
+    String currentModel,
+    ChatMode chatMode,
+  ) {
     return showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -35,21 +35,32 @@ class ModelPicker extends StatelessWidget {
       builder: (context) => ModelPicker(
         selectedModel: currentModel,
         onSelect: (model) => Navigator.pop(context, model),
+        chatMode: chatMode,
       ),
     );
+  }
+
+  /// 获取当前模式下的可用提供商列表
+  List<ProviderConfig> _getAvailableProviders() {
+    if (chatMode == ChatMode.local) {
+      // 本地模式：仅显示已配置 API Key 的本地直连提供商
+      final keys = LocalStorage.instance.getApiKeys();
+      final configuredKeys = keys
+          .where((k) => (k['key'] ?? '').isNotEmpty)
+          .map((k) => k['provider'])
+          .toSet();
+      return ModelConfig.localProviders
+          .where((p) => configuredKeys.contains(p.key))
+          .toList();
+    }
+    // 服务端模式：显示所有提供商
+    return ModelConfig.providers;
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
-    // 按 provider 分组
-    final grouped = <String, List<Map<String, String>>>{};
-    for (final model in models) {
-      final provider = model['provider']!;
-      grouped.putIfAbsent(provider, () => []);
-      grouped[provider]!.add(model);
-    }
+    final providers = _getAvailableProviders();
 
     return DraggableScrollableSheet(
       initialChildSize: 0.6,
@@ -59,7 +70,6 @@ class ModelPicker extends StatelessWidget {
       builder: (context, scrollController) {
         return Column(
           children: [
-            // 拖动指示条
             Container(
               margin: const EdgeInsets.symmetric(vertical: 12),
               width: 40,
@@ -72,59 +82,98 @@ class ModelPicker extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Text(
-                '选择模型',
+                chatMode == ChatMode.local ? '选择模型（本地直连）' : '选择模型',
                 style: theme.textTheme.titleLarge,
               ),
             ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: ListView(
-                controller: scrollController,
-                padding: const EdgeInsets.only(bottom: 32),
-                children: grouped.entries.map((entry) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Provider 标签
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                        child: Text(
-                          entry.key,
-                          style: theme.textTheme.labelLarge?.copyWith(
-                            color: theme.colorScheme.primary,
-                            fontWeight: FontWeight.w600,
+            if (providers.isEmpty && chatMode == ChatMode.local)
+              Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  children: [
+                    Icon(Icons.key_off, size: 48, color: theme.colorScheme.outline),
+                    const SizedBox(height: 12),
+                    Text(
+                      '暂无已配置的模型',
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '请在设置 → 模型配置中添加 API Key',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  padding: const EdgeInsets.only(bottom: 32),
+                  children: providers.map((provider) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                          child: Row(
+                            children: [
+                              Text(
+                                provider.displayName,
+                                style: theme.textTheme.labelLarge?.copyWith(
+                                  color: theme.colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              if (chatMode == ChatMode.local) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.tertiaryContainer,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    '本地',
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: theme.colorScheme.onTertiaryContainer,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
-                      ),
-                      // 模型列表
-                      ...entry.value.map((model) {
-                        final modelId = model['id']!;
-                        final modelName = model['name']!;
-                        final isSelected = modelId == selectedModel;
+                        ...provider.models.map((model) {
+                          final modelId = ModelConfig.buildModelId(provider.key, model.id);
+                          final isSelected = modelId == selectedModel;
 
-                        return ListTile(
-                          title: Text(modelName),
-                          subtitle: Text(modelId, style: theme.textTheme.bodySmall),
-                          trailing: isSelected
-                              ? Icon(
-                                  Icons.check_circle,
-                                  color: theme.colorScheme.primary,
-                                )
-                              : null,
-                          selected: isSelected,
-                          selectedTileColor:
-                              theme.colorScheme.primaryContainer.withOpacity(0.3),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          onTap: () => onSelect(modelId),
-                        );
-                      }),
-                    ],
-                  );
-                }).toList(),
+                          return ListTile(
+                            title: Text(model.name),
+                            subtitle: Text(modelId, style: theme.textTheme.bodySmall),
+                            trailing: isSelected
+                                ? Icon(Icons.check_circle,
+                                    color: theme.colorScheme.primary)
+                                : null,
+                            selected: isSelected,
+                            selectedTileColor:
+                                theme.colorScheme.primaryContainer.withOpacity(0.3),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            onTap: () => onSelect(modelId),
+                          );
+                        }),
+                      ],
+                    );
+                  }).toList(),
+                ),
               ),
-            ),
           ],
         );
       },

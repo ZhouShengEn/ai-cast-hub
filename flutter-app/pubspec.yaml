@@ -23,6 +23,7 @@ dependencies:
   shared_preferences: ^2.2.0
   file_picker: ^8.0.0
   network_info_plus: ^6.0.0
+  uuid: ^4.0.0
 
 dev_dependencies:
   flutter_test:
