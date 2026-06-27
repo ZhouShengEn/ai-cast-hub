@@ -78,6 +78,17 @@ router.get('/server/info', (req, res) => {
   });
 });
 
+// ---- WebRTC 配置（供客户端获取 ICE 服务器列表） ----
+const { getTurnConfig } = require('../services/webrtc/turnConfig');
+router.get('/webrtc/config', (req, res) => {
+  const config = getTurnConfig();
+  res.json({
+    code: 0,
+    data: config,
+    message: 'ok',
+  });
+});
+
 // ---- 子路由挂载 ----
 router.use('/device', deviceRoutes);
 router.use('/chat', chatRoutes);

@@ -120,5 +120,21 @@ export const useDeviceStore = defineStore('device', {
     clearError() {
       this.error = null
     },
+
+    /** 解除设备绑定 */
+    async unbindDevice(targetUuid) {
+      this.loading = true
+      this.error = null
+      try {
+        await deviceApi.unbindDevice(targetUuid)
+        await this.fetchDeviceList()
+        return true
+      } catch (err) {
+        this.error = err.message
+        throw err
+      } finally {
+        this.loading = false
+      }
+    },
   },
 })

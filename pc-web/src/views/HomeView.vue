@@ -65,6 +65,14 @@
                 </p>
               </div>
               <span class="w-2 h-2 rounded-full bg-green-400" title="在线"></span>
+              <!-- 断开连接按钮 -->
+              <button
+                @click.stop="confirmUnbind(device)"
+                class="ml-2 px-2 py-1 text-xs text-red-500 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                title="解除绑定"
+              >
+                解除绑定
+              </button>
             </li>
           </ul>
         </div>
@@ -110,5 +118,18 @@ function formatTime(dateStr) {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}小时前`
   return new Date(dateStr).toLocaleDateString('zh-CN')
+}
+
+/** 确认解除绑定 */
+async function confirmUnbind(device) {
+  const targetUuid = device.uuid || device.id || device.deviceUuid
+  if (!targetUuid) return
+  if (!confirm(`确定要解除与「${device.name || '未知设备'}」的绑定吗？\n\n解除后需要重新扫码绑定才能恢复连接。`)) return
+  try {
+    await deviceStore.unbindDevice(targetUuid)
+    showToast('已解除绑定', 'success')
+  } catch (err) {
+    showToast('解除绑定失败: ' + err.message, 'error')
+  }
 }
 </script>

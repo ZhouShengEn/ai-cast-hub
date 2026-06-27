@@ -50,6 +50,15 @@ class DeviceService {
         .toList();
   }
 
+  /// 解除设备绑定
+  /// [targetUuid] 目标设备的 UUID
+  Future<Map<String, dynamic>> unbindDevice(String targetUuid) async {
+    final data = await _client.post('/device/unbind', data: {
+      'targetUuid': targetUuid,
+    });
+    return Map<String, dynamic>.from(data as Map);
+  }
+
   /// 生成设备名称
   /// Android: "Android-{model}"，iOS: "iPhone-{model}" 或 "iPad-{model}"
   static String generateDeviceName() {

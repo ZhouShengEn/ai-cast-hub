@@ -79,6 +79,8 @@ function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
       const targetDevice = message.payload?.targetDeviceUuid;
       const roomType = message.payload?.type || 'cast';
 
+      logger.info(`[WS Handler] create_room: from=${deviceUuid} target=${targetDevice} type=${roomType}`);
+
       if (!targetDevice) {
         return { type: 'error', roomId: null, payload: { message: '缺少目标设备 UUID' } };
       }
@@ -89,7 +91,7 @@ function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
       roomManager.joinRoom(room.roomId, deviceUuid, ws, roomType);
 
       // 通知目标设备
-      sendToDevice(targetDevice, {
+      const notified = sendToDevice(targetDevice, {
         type: 'room_invitation',
         roomId: room.roomId,
         payload: {
@@ -97,6 +99,8 @@ function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
           type: roomType,
         },
       }, getWsByDeviceUuid);
+
+      logger.info(`[WS Handler] 房间创建: roomId=${room.roomId} type=${roomType} 通知目标设备 ${targetDevice} ${notified ? '成功(在线)' : '失败(离线)'}`);
 
       return {
         type: 'room_created',
@@ -117,19 +121,25 @@ function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
 
       const room = sessionManager.getRoom(roomId);
       if (!room) {
+        logger.warn(`[WS Handler] join_room: 房间不存在 roomId=${roomId}`);
         return { type: 'error', roomId, payload: { message: '房间不存在' } };
       }
+
+      logger.info(`[WS Handler] join_room: device=${deviceUuid} roomId=${roomId} type=${room.type}`);
 
       roomManager.joinRoom(roomId, deviceUuid, ws, room.type);
 
       // 通知房间创建者（对方）对端已加入，可以开始发 offer
       const peerDevice = sessionManager.getPeerDevice(roomId, deviceUuid);
       if (peerDevice) {
-        sendToDevice(peerDevice, {
+        const peerNotified = sendToDevice(peerDevice, {
           type: 'peer_joined',
           roomId,
           payload: { roomId, peerDeviceUuid: deviceUuid },
         }, getWsByDeviceUuid);
+        logger.info(`[WS Handler] peer_joined 通知: ${peerDevice} ${peerNotified ? '成功' : '失败'}`);
+      } else {
+        logger.warn(`[WS Handler] join_room: 找不到对方设备 roomId=${roomId}`);
       }
 
       return {

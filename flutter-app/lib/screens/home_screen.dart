@@ -51,8 +51,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             // 设备状态卡片
             _buildDeviceCard(theme, deviceState),
 
-            // 连接失败提示
-            if (deviceState.error != null && deviceState.error!.contains('超时'))
+            // 连接失败提示（任何时候错误都显示）
+            if (deviceState.error != null)
               _buildNetworkTip(theme),
 
             const SizedBox(height: 24),
@@ -82,10 +82,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const SizedBox(height: 12),
             _buildFeatureCard(
               context,
-              icon: Icons.folder_outlined,
-              title: '文件传输',
-              subtitle: '发送文件到 PC 端',
-              route: '/file',
+              icon: Icons.message_outlined,
+              title: '消息',
+              subtitle: '发送消息和文件到 PC',
+              route: '/message',
             ),
             const SizedBox(height: 12),
             _buildFeatureCard(
@@ -168,7 +168,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const SizedBox(height: 8),
             if (device != null && !state.hasPairedDevice) ...[
               Text(
-                '扫描 PC 端二维码完成设备绑定',
+                '输入 PC 端连接码完成设备绑定',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -222,16 +222,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               style: TextStyle(color: theme.colorScheme.onErrorContainer, fontSize: 13),
             ),
             const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: () => Navigator.pushNamed(context, '/settings'),
-                icon: const Icon(Icons.settings, size: 18),
-                label: const Text('去设置服务器地址'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: theme.colorScheme.error,
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      ref.read(deviceProvider.notifier).registerDevice();
+                    },
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('重试'),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.pushNamed(context, '/settings'),
+                    icon: const Icon(Icons.settings, size: 18),
+                    label: const Text('设置服务器'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: theme.colorScheme.error,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -286,9 +299,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
         actions: [
+          // 解除绑定按钮
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _confirmUnbind(device);
+            },
+            child: const Text('解除绑定', style: TextStyle(color: Colors.red)),
+          ),
+          const SizedBox(width: 8),
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 确认解除绑定对话框
+  void _confirmUnbind(Device device) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认解除绑定'),
+        content: Text('确定要解除与「${device.deviceName}」的绑定吗？\n\n解除后需要重新输入连接码绑定才能恢复连接。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              ref.read(deviceProvider.notifier).unbindDevice(device.deviceUuid);
+            },
+            child: const Text('确定解除', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),

@@ -3,6 +3,9 @@ import 'dart:typed_data';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
+import 'webrtc_codec_prefs_stub.dart'
+    if (dart.library.io) 'webrtc_codec_prefs_io.dart';
+
 /// WebRTC 服务
 ///
 /// 封装 WebRTC PeerConnection 操作：创建连接、SDP 协商、ICE 候选、数据通道、视频轨。
@@ -152,6 +155,15 @@ class WebrtcService {
     for (final track in stream.getTracks()) {
       await _peerConnection!.addTrack(track, stream);
     }
+  }
+
+  /// 设置 H.264 视频编码偏好
+  ///
+  /// Android 硬件编码 H.264 比 VP8/VP9 功耗更低、帧率更稳定。
+  /// 在 addTrack 之后、createOffer/createAnswer 之前调用。
+  /// Web 平台通过条件导入自动跳过，编译期无平台 API 引用。
+  Future<void> setH264Preference() async {
+    await setH264CodecPreferences(_peerConnection);
   }
 
   /// 屏幕捕获（Web 端使用 getDisplayMedia）

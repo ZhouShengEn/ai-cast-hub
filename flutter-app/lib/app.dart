@@ -4,6 +4,7 @@ import 'screens/home_screen.dart';
 import 'screens/scan_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/cast_screen.dart';
+import 'screens/message_screen.dart';
 import 'screens/file_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/network_tools_screen.dart';
@@ -75,6 +76,7 @@ class _MyAppState extends State<MyApp> {
             '/scan': (context) => const ScanScreen(),
             '/chat': (context) => const ChatScreen(),
             '/cast': (context) => const CastScreen(),
+            '/message': (context) => const MessageScreen(),
             '/file': (context) => const FileScreen(),
             '/settings': (context) => const SettingsScreen(),
             '/network-tools': (context) => const NetworkToolsScreen(),

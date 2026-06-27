@@ -12,6 +12,7 @@
 const { WebSocketServer } = require('ws');
 const DeviceModel = require('../models/Device');
 const roomManager = require('./roomManager');
+const signaling = require('../services/webrtc/signaling');
 const { handleMessage } = require('./handler');
 const logger = require('../utils/logger');
 
@@ -137,8 +138,16 @@ function initWebSocket(server) {
     // 连接关闭
     ws.on('close', (code, reason) => {
       const rooms = roomManager.getDeviceRooms(deviceUuid);
+      const notify = (device, msg) => {
+        const clientWs = deviceConnections.get(device);
+        if (clientWs && clientWs.readyState === 1) {
+          try { clientWs.send(JSON.stringify(msg)); } catch (_) {}
+        }
+      };
+
       for (const roomId of rooms) {
-        roomManager.leaveRoom(roomId, deviceUuid);
+        signaling.closeRoom(roomId, notify);
+        roomManager.removeRoom(roomId);
       }
 
       deviceConnections.delete(deviceUuid);

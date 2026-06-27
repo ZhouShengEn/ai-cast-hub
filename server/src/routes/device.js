@@ -359,4 +359,55 @@ router.get('/list', async (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/v1/device/unbind
+ * 解除与目标设备的绑定
+ * Body: { targetUuid: string }
+ */
+router.post('/unbind', async (req, res, next) => {
+  try {
+    const { targetUuid } = req.body || {};
+    const myDeviceUuid = req.deviceUuid || (req.headers['x-device-uuid'] || '').trim();
+
+    if (!targetUuid) {
+      return res.status(400).json({
+        code: 400,
+        data: null,
+        message: '请提供目标设备 UUID',
+      });
+    }
+
+    if (!myDeviceUuid) {
+      return res.status(400).json({
+        code: 400,
+        data: null,
+        message: '缺少当前设备 UUID',
+      });
+    }
+
+    // 执行解绑
+    await DeviceModel.unbindDevices(myDeviceUuid, targetUuid);
+
+    logger.info(`[Device] 解除绑定成功: ${myDeviceUuid} <-> ${targetUuid}`);
+
+    // 通知对方设备绑定已解除
+    sendToDevice(targetUuid, {
+      type: 'device_unbound',
+      roomId: null,
+      payload: {
+        fromDeviceUuid: myDeviceUuid,
+        message: '设备绑定已解除',
+      },
+    });
+
+    res.json({
+      code: 0,
+      data: { success: true },
+      message: '已解除绑定',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

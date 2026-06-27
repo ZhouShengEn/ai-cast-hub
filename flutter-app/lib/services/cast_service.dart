@@ -5,6 +5,8 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
 import 'websocket_service.dart';
 import 'webrtc_service.dart';
+import 'screen_capture_service.dart';
+import 'api_client.dart';
 import '../models/cast_session.dart';
 
 /// 安全截取 ID 用于日志（避免 substring RangeError）
@@ -28,6 +30,7 @@ String _safeId(String? id) {
 class CastService {
   final WebSocketService _ws = WebSocketService.instance;
   final WebrtcService _webrtc = WebrtcService();
+  final ScreenCaptureService _screenCapture = ScreenCaptureService();
 
   StreamSubscription? _wsSubscription;
   CastSession? _currentSession;
@@ -56,117 +59,136 @@ class CastService {
     debugPrint('[Cast] 目标 PC 设备: ${_safeId(pcDeviceId)}');
     _isDisposed = false;
 
-    // 0. 确保 WebSocket 已连接
-    debugPrint('[Cast] 步骤0: 确保 WebSocket 已连接...');
-    await _ensureWebSocketConnected();
-    debugPrint('[Cast] 步骤0: WebSocket 已连接 ✓');
+    try {
+      // 0. 确保 WebSocket 已连接
+      debugPrint('[Cast] 步骤0: 确保 WebSocket 已连接...');
+      await _ensureWebSocketConnected();
+      debugPrint('[Cast] 步骤0: WebSocket 已连接 ✓');
 
-    // 1. 创建 WebRTC PeerConnection
-    debugPrint('[Cast] 步骤1: 创建 PeerConnection...');
-    await _webrtc.createPeerConnection({
-      'iceServers': [
-        {'urls': 'stun:stun.l.google.com:19302'},
-      ],
-    });
-    debugPrint('[Cast] 步骤1: PeerConnection 已创建 ✓');
+      // 1. 从服务器获取 ICE 配置（STUN/TURN）
+      debugPrint('[Cast] 步骤1: 获取 ICE 配置...');
+      final iceServers = await _fetchIceServers();
+      debugPrint('[Cast] 步骤1: ICE 配置已获取, servers=${iceServers.length}');
 
-    // 2. 设置 ICE 候选回调
-    debugPrint('[Cast] 步骤2: 设置 ICE 候选回调');
-    _webrtc.onIceCandidate((candidate) {
-      if (_currentSession == null || _isDisposed) return;
-      final candStr = candidate.candidate ?? '';
-      final candShort = candStr.length > 40 ? '${candStr.substring(0, 40)}...' : candStr;
-      debugPrint('[Cast] ICE 候选: $candShort');
-      _ws.send({
-        'type': 'signal',
-        'roomId': _currentSession!.roomId,
-        'payload': {
-          'signalType': 'ice_candidate',
-          'candidate': {
-            'candidate': candidate.candidate,
-            'sdpMid': candidate.sdpMid,
-            'sdpMLineIndex': candidate.sdpMLineIndex,
+      // 2. 创建 WebRTC PeerConnection
+      debugPrint('[Cast] 步骤2: 创建 PeerConnection...');
+      await _webrtc.createPeerConnection({
+        'iceServers': iceServers,
+        // Android 硬件编码偏好：H.264 优先以降低功耗
+        'sdpSemantics': 'unified-plan',
+      });
+      // 设置 H.264 视频编码偏好（Android 硬编码支持，降低功耗提升帧率）
+      await _webrtc.setH264Preference();
+      debugPrint('[Cast] 步骤2: PeerConnection 已创建 ✓');
+
+      // 3. 设置 ICE 候选回调
+      debugPrint('[Cast] 步骤3: 设置 ICE 候选回调');
+      _webrtc.onIceCandidate((candidate) {
+        if (_currentSession == null || _isDisposed) return;
+        final candStr = candidate.candidate ?? '';
+        final candShort = candStr.length > 40 ? '${candStr.substring(0, 40)}...' : candStr;
+        debugPrint('[Cast] ICE 候选: $candShort');
+        _ws.send({
+          'type': 'signal',
+          'roomId': _currentSession!.roomId,
+          'payload': {
+            'signalType': 'ice_candidate',
+            'candidate': {
+              'candidate': candidate.candidate,
+              'sdpMid': candidate.sdpMid,
+              'sdpMLineIndex': candidate.sdpMLineIndex,
+            },
           },
+        });
+      });
+
+      // 4. 开始监听 WS 消息（在发送 create_room 之前）
+      debugPrint('[Cast] 步骤4: 开始监听 WS 消息');
+      _wsSubscription = _ws.messages.listen(_handleMessage);
+
+      // 5. 发送 create_room，等待 room_created 响应
+      debugPrint('[Cast] 步骤5: 发送 create_room...');
+      _roomCreatedCompleter = Completer<String>();
+
+      final sent = _ws.send({
+        'type': 'create_room',
+        'payload': {
+          'targetDeviceUuid': pcDeviceId,
+          'type': 'cast',
         },
       });
-    });
+      debugPrint('[Cast] 步骤5: create_room 发送${sent ? "成功" : "失败"}，等待 room_created...');
 
-    // 3. 开始监听 WS 消息（在发送 create_room 之前）
-    debugPrint('[Cast] 步骤3: 开始监听 WS 消息');
-    _wsSubscription = _ws.messages.listen(_handleMessage);
+      final roomId = await _roomCreatedCompleter!.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw TimeoutException(
+          '等待 room_created 超时\n'
+          '可能原因:\n'
+          '1. 服务器收到 create_room 但 PC 端不在线\n'
+          '2. 服务器没有正确响应\n'
+          '请查看 Flutter 控制台的 [WS] 日志确认消息收发情况',
+        ),
+      );
 
-    // 4. 发送 create_room，等待 room_created 响应
-    debugPrint('[Cast] 步骤4: 发送 create_room...');
-    _roomCreatedCompleter = Completer<String>();
+      debugPrint('[Cast] 步骤5: 收到 room_created, roomId=$roomId ✓');
 
-    final sent = _ws.send({
-      'type': 'create_room',
-      'payload': {
-        'targetDeviceUuid': pcDeviceId,
-        'type': 'cast',
-      },
-    });
-    debugPrint('[Cast] 步骤4: create_room 发送${sent ? "成功" : "失败"}，等待 room_created...');
+      _currentSession = CastSession(
+        roomId: roomId,
+        pcDeviceId: pcDeviceId,
+        status: 'connecting',
+      );
 
-    final roomId = await _roomCreatedCompleter!.future.timeout(
-      const Duration(seconds: 10),
-      onTimeout: () => throw TimeoutException(
-        '等待 room_created 超时\n'
-        '可能原因:\n'
-        '1. 服务器收到 create_room 但 PC 端不在线\n'
-        '2. 服务器没有正确响应\n'
-        '请查看 Flutter 控制台的 [WS] 日志确认消息收发情况',
-      ),
-    );
+      // 6. 等待 PC 加入房间 (peer_joined)
+      debugPrint('[Cast] 步骤6: 等待 PC 加入房间 (peer_joined)...');
+      _peerJoinedCompleter = Completer<void>();
+      await _peerJoinedCompleter!.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw TimeoutException(
+          '等待 PC 加入房间超时\n'
+          '可能原因:\n'
+          '1. PC 端未打开投屏接收页面\n'
+          '2. PC 端 WebSocket 未连接',
+        ),
+      );
+      debugPrint('[Cast] 步骤6: peer_joined ✓');
 
-    debugPrint('[Cast] 步骤4: 收到 room_created, roomId=$roomId ✓');
+      // 7. 捕获屏幕（跨平台：Android MediaProjection / Web getDisplayMedia）
+      debugPrint('[Cast] 步骤7: 开始屏幕捕获...');
+      onStatusChanged?.call('capturing');
+      final stream = await _screenCapture.startCapture();
+      debugPrint('[Cast] 步骤7: 屏幕捕获完成, tracks=${stream.getTracks().length} ✓');
 
-    _currentSession = CastSession(
-      roomId: roomId,
-      pcDeviceId: pcDeviceId,
-      status: 'connecting',
-    );
+      // 8. 将屏幕轨道添加到 PeerConnection
+      debugPrint('[Cast] 步骤8: 添加轨道到 PeerConnection...');
+      await _webrtc.addStream(stream);
+      debugPrint('[Cast] 步骤8: 轨道已添加 ✓');
 
-    // 5. 等待 PC 加入房间 (peer_joined)
-    debugPrint('[Cast] 步骤5: 等待 PC 加入房间 (peer_joined)...');
-    _peerJoinedCompleter = Completer<void>();
-    await _peerJoinedCompleter!.future.timeout(
-      const Duration(seconds: 30),
-      onTimeout: () => throw TimeoutException(
-        '等待 PC 加入房间超时\n'
-        '可能原因:\n'
-        '1. PC 端未打开投屏接收页面\n'
-        '2. PC 端 WebSocket 未连接',
-      ),
-    );
-    debugPrint('[Cast] 步骤5: peer_joined ✓');
+      // 9. 创建 offer 并发送
+      debugPrint('[Cast] 步骤9: 创建并发送 offer...');
+      final offer = await _webrtc.createOffer();
+      _ws.send({
+        'type': 'signal',
+        'roomId': roomId,
+        'payload': {
+          'signalType': 'offer',
+          'sdp': offer.sdp,
+        },
+      });
+      debugPrint('[Cast] 步骤9: offer 已发送 ✓');
+      debugPrint('═══════════════════════════════════════════');
 
-    // 6. 捕获屏幕
-    debugPrint('[Cast] 步骤6: 开始屏幕捕获...');
-    onStatusChanged?.call('capturing');
-    final stream = await _webrtc.startScreenCapture();
-    debugPrint('[Cast] 步骤6: 屏幕捕获完成, tracks=${stream.getTracks().length} ✓');
-
-    // 7. 将屏幕轨道添加到 PeerConnection
-    debugPrint('[Cast] 步骤7: 添加轨道到 PeerConnection...');
-    await _webrtc.addStream(stream);
-    debugPrint('[Cast] 步骤7: 轨道已添加 ✓');
-
-    // 8. 创建 offer 并发送
-    debugPrint('[Cast] 步骤8: 创建并发送 offer...');
-    final offer = await _webrtc.createOffer();
-    _ws.send({
-      'type': 'signal',
-      'roomId': roomId,
-      'payload': {
-        'signalType': 'offer',
-        'sdp': offer.sdp,
-      },
-    });
-    debugPrint('[Cast] 步骤8: offer 已发送 ✓');
-    debugPrint('═══════════════════════════════════════════');
-
-    return _currentSession!;
+      return _currentSession!;
+    } catch (e) {
+      // 失败时清理 WS 订阅和 WebRTC 资源，避免泄漏
+      debugPrint('[Cast] 创建会话失败，清理资源: $e');
+      await _wsSubscription?.cancel();
+      _wsSubscription = null;
+      await _webrtc.close();
+      _roomCreatedCompleter = null;
+      _peerJoinedCompleter = null;
+      _currentSession = null;
+      rethrow;
+    }
   }
 
   /// 结束投屏会话
@@ -183,6 +205,7 @@ class CastService {
 
     await _wsSubscription?.cancel();
     _wsSubscription = null;
+    await _screenCapture.stopCapture();
     await _webrtc.close();
 
     if (_currentSession != null) {
@@ -213,12 +236,30 @@ class CastService {
         _onSignal(message);
         break;
       case 'room_closed':
+      case 'peer_disconnected':
         _onRoomClosed(message);
         break;
     }
   }
 
   // ---- 内部方法 ----
+
+  /// 从服务器获取 ICE 服务器配置（STUN/TURN）
+  Future<List<Map<String, dynamic>>> _fetchIceServers() async {
+    try {
+      final data = await ApiClient.instance.get('/webrtc/config');
+      if (data is Map<String, dynamic> && data.containsKey('iceServers')) {
+        final servers = data['iceServers'] as List<dynamic>;
+        return servers.cast<Map<String, dynamic>>();
+      }
+    } catch (e) {
+      debugPrint('[Cast] 获取 ICE 配置失败，使用默认 STUN: $e');
+    }
+    // 降级到 Google 公共 STUN
+    return [
+      {'urls': ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']},
+    ];
+  }
 
   /// 确保 WebSocket 已连接
   Future<void> _ensureWebSocketConnected() async {

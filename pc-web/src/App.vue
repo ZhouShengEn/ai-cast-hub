@@ -16,13 +16,20 @@
           <li v-for="item in navItems" :key="item.path">
             <router-link
               :to="item.path"
-              class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors"
+              class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors relative"
               :class="isActive(item.path)
                 ? 'bg-primary-600 text-white'
                 : 'text-gray-300 hover:bg-white/10 hover:text-white'"
             >
               <span class="text-lg">{{ item.icon }}</span>
               <span>{{ item.label }}</span>
+              <!-- 消息未读红点 -->
+              <span
+                v-if="item.hasBadge && messageStore.unreadCount > 0"
+                class="absolute top-1 right-2 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center"
+              >
+                {{ messageStore.unreadCount > 99 ? '99+' : messageStore.unreadCount }}
+              </span>
             </router-link>
           </li>
         </ul>
@@ -69,17 +76,21 @@ import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useWebSocket } from './composables/useWebSocket'
 import { useDeviceStore } from './stores/device'
+import { useMessageStore } from './stores/message'
+import { useMessageTransfer } from './composables/useMessageTransfer'
 
 const route = useRoute()
 const deviceStore = useDeviceStore()
+const messageStore = useMessageStore()
 const { connect: wsConnect, disconnect: wsDisconnect, onMessage, offMessage } = useWebSocket()
+const { startListening: startMessageListening, disconnect: disconnectMessageChannel } = useMessageTransfer()
 
 /** 导航菜单项 */
 const navItems = [
   { path: '/', label: '首页', icon: '🏠' },
   { path: '/chat', label: 'AI 对话', icon: '💬' },
   { path: '/cast', label: '投屏接收', icon: '📺' },
-  { path: '/file', label: '文件传输', icon: '📁' },
+  { path: '/message', label: '消息', icon: '💬', hasBadge: true },
 ]
 
 /** 设备连接状态 */
@@ -101,6 +112,12 @@ function isActive(path) {
   return route.path.startsWith(path)
 }
 
+// 监听路由变化，更新消息页面查看状态
+import { watch } from 'vue'
+watch(() => route.path, (newPath) => {
+  messageStore.setViewing(newPath === '/message')
+}, { immediate: false })
+
 // ============================================================
 // 全局 WebSocket 连接管理（应用级，不随页面切换断开）
 // ============================================================
@@ -113,6 +130,16 @@ async function onDeviceBound(msg) {
   deviceConnected.value = true
   try {
     await deviceStore.fetchDeviceList()
+  } catch (_) {}
+}
+
+/** 收到设备解绑通知 */
+async function onDeviceUnbound(msg) {
+  console.log('[App] 收到设备解绑通知:', msg)
+  showToast('设备绑定已解除', 'warning')
+  try {
+    await deviceStore.fetchDeviceList()
+    deviceConnected.value = deviceStore.pairedDevices.length > 0
   } catch (_) {}
 }
 
@@ -144,11 +171,17 @@ onMounted(async () => {
 
   // 注册 WS 监听并建立连接（全局唯一）
   onMessage('device_bound', onDeviceBound)
+  onMessage('device_unbound', onDeviceUnbound)
   wsConnect()
+
+  // 全局启动消息通道监听（无论是否在消息页面都能收到消息）
+  startMessageListening()
 })
 
 onUnmounted(() => {
   offMessage('device_bound', onDeviceBound)
+  offMessage('device_unbound', onDeviceUnbound)
+  disconnectMessageChannel()
   wsDisconnect()
 })
 

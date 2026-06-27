@@ -15,13 +15,9 @@ class FileScreen extends ConsumerStatefulWidget {
 }
 
 class _FileScreenState extends ConsumerState<FileScreen> {
-  String? _selectedFileName;
-  int? _selectedFileSize;
-
   @override
   void initState() {
     super.initState();
-    // 进入页面时刷新设备列表，确保绑定状态最新
     Future.microtask(() {
       ref.read(deviceProvider.notifier).fetchDeviceList();
     });
@@ -34,7 +30,6 @@ class _FileScreenState extends ConsumerState<FileScreen> {
     final deviceState = ref.watch(deviceProvider);
     final fileNotifier = ref.read(fileProvider.notifier);
 
-    // 获取已绑定的 PC 设备 ID
     final targetDeviceId = deviceState.pairedDevices.isNotEmpty
         ? deviceState.pairedDevices.first.deviceUuid
         : '';
@@ -47,36 +42,43 @@ class _FileScreenState extends ConsumerState<FileScreen> {
         children: [
           // 文件选择器
           FileSelector(
-            selectedFileName: _selectedFileName,
-            selectedFileSize: _selectedFileSize,
+            selectedFileName: fileState.pendingFileName,
+            selectedFileSize: fileState.pendingFileSize,
             isSending: fileState.isSending,
-            warning: targetDeviceId.isEmpty ? '未绑定 PC 设备，请先在首页扫描二维码完成绑定' : null,
-            onSelectFile: () async {
-              // 未绑定设备时引导用户去输入连接码
+            warning: targetDeviceId.isEmpty ? '未绑定 PC 设备，请先在首页输入连接码完成绑定' : null,
+            onSelectFile: () {
               if (targetDeviceId.isEmpty) {
-                final result = await Navigator.pushNamed(context, '/scan');
-                if (result == true) {
-                  await ref.read(deviceProvider.notifier).fetchDeviceList();
-                }
+                Navigator.pushNamed(context, '/scan').then((_) {
+                  ref.read(deviceProvider.notifier).fetchDeviceList();
+                });
                 return;
               }
-              // 已绑定设备，选择文件并发送
-              await fileNotifier.selectAndSend(targetDeviceId);
-              setState(() {
-                _selectedFileName = null;
-                _selectedFileSize = null;
-              });
+              fileNotifier.pickFile();
             },
             onSend: () {
               if (targetDeviceId.isNotEmpty) {
-                fileNotifier.selectAndSend(targetDeviceId);
-                setState(() {
-                  _selectedFileName = null;
-                  _selectedFileSize = null;
-                });
+                fileNotifier.sendFile(targetDeviceId);
               }
             },
           ),
+
+          // 错误提示
+          if (fileState.error != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Chip(
+                avatar: const Icon(Icons.error_outline, size: 18, color: Colors.red),
+                label: Expanded(
+                  child: Text(
+                    fileState.error!,
+                    style: theme.textTheme.bodySmall?.copyWith(color: Colors.red),
+                    maxLines: 2,
+                  ),
+                ),
+                backgroundColor: Colors.red.shade50,
+                side: BorderSide.none,
+              ),
+            ),
 
           // 发送历史
           if (fileState.transfers.isNotEmpty) ...[
@@ -103,7 +105,6 @@ class _FileScreenState extends ConsumerState<FileScreen> {
               ),
             ),
           ] else ...[
-
             // 空状态
             Expanded(
               child: Center(
@@ -142,18 +143,6 @@ class _FileScreenState extends ConsumerState<FileScreen> {
               ),
             ),
           ],
-
-          // 错误提示
-          if (fileState.error != null)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                fileState.error!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.error,
-                ),
-              ),
-            ),
         ],
       ),
     );

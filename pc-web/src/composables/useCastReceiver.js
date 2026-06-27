@@ -22,8 +22,11 @@ export function useCastReceiver() {
     handleOffer,
     handleAnswer,
     handleIceCandidate,
+    fetchIceServers,
     onIceCandidate,
+    offIceCandidate,
     onTrack,
+    offTrack,
     close: rtcClose,
   } = useWebRTC()
 
@@ -44,19 +47,31 @@ export function useCastReceiver() {
     connectionState.value = 'disconnected'
     castStore.setConnectionState('disconnected')
 
+    // 从服务器获取 ICE 配置（STUN/TURN）
+    fetchIceServers()
+
     // 监听房间邀请
     _invitationHandler = (msg) => {
+      // 只处理 cast 类型的房间邀请，避免与消息的 message 类型冲突
+      const roomType = msg.payload?.type
+      if (roomType && roomType !== 'cast') return
       _handleInvitation(msg)
     }
     onMessage('room_invitation', _invitationHandler)
 
-    // 监听房间关闭
+    // 监听房间关闭/对端断开
     _roomClosedHandler = (msg) => {
       if (_currentRoomId && msg.roomId === _currentRoomId) {
         stopReceiving()
       }
     }
     onMessage('room_closed', _roomClosedHandler)
+    // 也监听对端主动断开消息
+    onMessage('peer_disconnected', (msg) => {
+      if (_currentRoomId && msg.roomId === _currentRoomId) {
+        stopReceiving()
+      }
+    })
   }
 
   /** 处理房间邀请 */
@@ -89,14 +104,11 @@ export function useCastReceiver() {
       try {
         if (signalType === 'offer') {
           // 收到手机端 offer → 创建 answer 并回复
-          await handleOffer(payload.sdp, (localSdp) => {
+          await handleOffer(payload.sdp, (answerPayload) => {
             send({
               type: 'signal',
               roomId: _currentRoomId,
-              payload: {
-                signalType: 'answer',
-                sdp: localSdp,
-              },
+              payload: answerPayload,
             })
           })
         } else if (signalType === 'answer') {
@@ -159,6 +171,14 @@ export function useCastReceiver() {
     if (_roomClosedHandler) {
       offMessage('room_closed', _roomClosedHandler)
       _roomClosedHandler = null
+    }
+    if (_iceCandidateCb) {
+      offIceCandidate(_iceCandidateCb)
+      _iceCandidateCb = null
+    }
+    if (_trackCb) {
+      offTrack(_trackCb)
+      _trackCb = null
     }
     rtcClose()
     if (videoRef.value) {

@@ -4,33 +4,13 @@ import { createRouter, createWebHistory } from 'vue-router'
 const HomeView = () => import('../views/HomeView.vue')
 const ChatView = () => import('../views/ChatView.vue')
 const CastView = () => import('../views/CastView.vue')
-const FileTransferView = () => import('../views/FileTransferView.vue')
+const MessageView = () => import('../views/MessageView.vue')
 
 const routes = [
-  {
-    path: '/',
-    name: 'Home',
-    component: HomeView,
-    meta: { title: '首页 - 设备绑定' },
-  },
-  {
-    path: '/chat',
-    name: 'Chat',
-    component: ChatView,
-    meta: { title: 'AI 对话' },
-  },
-  {
-    path: '/cast',
-    name: 'Cast',
-    component: CastView,
-    meta: { title: '投屏接收' },
-  },
-  {
-    path: '/file',
-    name: 'FileTransfer',
-    component: FileTransferView,
-    meta: { title: '文件传输' },
-  },
+  { path: '/',     name: 'Home',     component: HomeView,     meta: { title: '首页 - 设备绑定' } },
+  { path: '/chat', name: 'Chat',     component: ChatView,     meta: { title: 'AI 对话' } },
+  { path: '/cast', name: 'Cast',     component: CastView,     meta: { title: '投屏接收' } },
+  { path: '/message', name: 'Message', component: MessageView, meta: { title: '消息' } },
 ]
 
 const router = createRouter({

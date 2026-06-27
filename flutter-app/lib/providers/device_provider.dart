@@ -150,6 +150,21 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     }
   }
 
+  /// 解除设备绑定
+  Future<void> unbindDevice(String targetUuid) async {
+    state = state.copyWith(isLoading: true, error: null);
+    try {
+      await _service.unbindDevice(targetUuid);
+      await fetchDeviceList();
+      state = state.copyWith(isLoading: false);
+    } catch (e) {
+      state = state.copyWith(
+        isLoading: false,
+        error: '解除绑定失败: $e',
+      );
+    }
+  }
+
   /// 生成二维码数据（当前设备 UUID）
   String? generateQRData() {
     return _storage.getDeviceUuid();

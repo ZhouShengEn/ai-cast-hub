@@ -69,9 +69,9 @@ class LocalStorage {
     if (kIsWeb) {
       return 'http://localhost:3000/api/v1';
     }
-    // Android 模拟器专用地址（访问宿主机）
-    // 真机使用局域网 IP
-    return 'http://192.168.1.41:3000/api/v1';
+    // Android 模拟器专用地址（10.0.2.2 访问宿主机 localhost）
+    // 真机用户请在「设置」中填写服务器的局域网 IP
+    return 'http://10.0.2.2:3000/api/v1';
   }
 
   /// 保存服务器地址

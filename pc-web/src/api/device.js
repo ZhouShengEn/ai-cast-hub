@@ -33,4 +33,9 @@ export default {
   async generatePairCode() {
     return client.post('/device/pair-code')
   },
+
+  /** 解除设备绑定 */
+  async unbindDevice(targetUuid) {
+    return client.post('/device/unbind', { targetUuid })
+  },
 }
