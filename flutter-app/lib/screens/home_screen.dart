@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -15,6 +17,8 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
+  Timer? _deviceRefreshTimer;
+
   @override
   void initState() {
     super.initState();
@@ -29,6 +33,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         await notifier.registerDevice();
       }
     });
+    // 每 60 秒刷新一次设备在线状态，保持与服务器同步
+    _deviceRefreshTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      ref.read(deviceProvider.notifier).fetchDeviceList();
+    });
+  }
+
+  @override
+  void dispose() {
+    _deviceRefreshTimer?.cancel();
+    super.dispose();
   }
 
   @override

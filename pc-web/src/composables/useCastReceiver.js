@@ -28,8 +28,10 @@ export function useCastReceiver(externalVideoRef) {
     offIceCandidate,
     onTrack,
     offTrack,
+    onConnectionStateChange,
+    offConnectionStateChange,
     close: rtcClose,
-  } = useWebRTC()
+  } = useWebRTC('cast')
 
   let _currentRoomId = null
 
@@ -39,12 +41,24 @@ export function useCastReceiver(externalVideoRef) {
   let _roomClosedHandler = null
   let _iceCandidateCb = null
   let _trackCb = null
+  let _connectionStateCb = null
 
   /**
    * 开始监听投屏邀请
    * PC 端页面加载后调用，等待手机端发起 create_room
+   * 幂等：重复调用安全（先清理旧 handler）
    */
   function startListening() {
+    // 先清理旧的 invitation handler 避免重复注册
+    if (_invitationHandler) {
+      offMessage('room_invitation', _invitationHandler)
+      _invitationHandler = null
+    }
+    if (_roomClosedHandler) {
+      offMessage('room_closed', _roomClosedHandler)
+      _roomClosedHandler = null
+    }
+
     connectionState.value = 'disconnected'
     castStore.setConnectionState('disconnected')
 
@@ -79,6 +93,10 @@ export function useCastReceiver(externalVideoRef) {
   function _handleInvitation(msg) {
     const roomId = msg.roomId
     if (!roomId) return
+
+    // 先清理之前的连接状态（确保每次投屏使用全新的 PC，避免 SDP m-line 顺序错误）
+    _cleanupCallbacks()
+    rtcClose()
 
     _currentRoomId = roomId
     castStore.roomId = roomId
@@ -154,25 +172,19 @@ export function useCastReceiver(externalVideoRef) {
       }
     }
     onTrack(_trackCb)
+
+    // 监听 WebRTC 连接状态变化：连接断开时自动清理
+    _connectionStateCb = (state) => {
+      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+        console.log('[CastReceiver] WebRTC 连接断开 (state=%s)，清理投屏状态', state)
+        stopReceiving()
+      }
+    }
+    onConnectionStateChange(_connectionStateCb)
   }
 
-  /** 停止接收 */
-  function stopReceiving() {
-    if (_currentRoomId) {
-      send({ type: 'close_room', roomId: _currentRoomId })
-    }
-    if (_invitationHandler) {
-      offMessage('room_invitation', _invitationHandler)
-      _invitationHandler = null
-    }
-    if (_signalHandler) {
-      offMessage('signal', _signalHandler)
-      _signalHandler = null
-    }
-    if (_roomClosedHandler) {
-      offMessage('room_closed', _roomClosedHandler)
-      _roomClosedHandler = null
-    }
+  /** 清理 WebRTC 回调注册（不清除 WS 消息监听） */
+  function _cleanupCallbacks() {
     if (_iceCandidateCb) {
       offIceCandidate(_iceCandidateCb)
       _iceCandidateCb = null
@@ -181,6 +193,23 @@ export function useCastReceiver(externalVideoRef) {
       offTrack(_trackCb)
       _trackCb = null
     }
+    if (_connectionStateCb) {
+      offConnectionStateChange(_connectionStateCb)
+      _connectionStateCb = null
+    }
+  }
+
+  /** 停止接收当前会话（保持 invitation 监听，可接受下次投屏） */
+  function stopReceiving() {
+    if (_currentRoomId) {
+      send({ type: 'close_room', roomId: _currentRoomId })
+    }
+    // 只清理当前会话的 handlers，不清理 invitation/room_closed（保持可接受新投屏）
+    if (_signalHandler) {
+      offMessage('signal', _signalHandler)
+      _signalHandler = null
+    }
+    _cleanupCallbacks()
     rtcClose()
     if (videoRef.value) {
       videoRef.value.srcObject = null

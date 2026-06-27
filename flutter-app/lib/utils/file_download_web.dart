@@ -4,7 +4,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 /// Web 平台的浏览器文件下载
-Future<void> downloadFile(Uint8List bytes, String fileName) async {
+/// 返回 null（浏览器下载不产生文件系统路径）
+Future<String?> downloadFile(Uint8List bytes, String fileName) async {
   try {
     final blob = html.Blob([bytes]);
     final url = html.Url.createObjectUrlFromBlob(blob);
@@ -16,4 +17,5 @@ Future<void> downloadFile(Uint8List bytes, String fileName) async {
   } catch (e) {
     debugPrint('[File] 下载失败: $e');
   }
+  return null;
 }

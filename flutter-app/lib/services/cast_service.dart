@@ -156,10 +156,23 @@ class CastService {
       debugPrint('[Cast] 步骤7: 开始屏幕捕获...');
       onStatusChanged?.call('capturing');
       final stream = await _screenCapture.startCapture();
-      debugPrint('[Cast] 步骤7: 屏幕捕获完成, tracks=${stream.getTracks().length} ✓');
+      final tracks = stream.getTracks();
+      debugPrint('[Cast] 步骤7: 屏幕捕获完成, tracks=${tracks.length} ✓');
+      for (final t in tracks) {
+        debugPrint('[Cast]   track: kind=${t.kind}, enabled=${t.enabled}, muted=${t.muted}, id=${_safeId(t.id)}');
+      }
+
+      // 验证至少有一个视频轨道
+      final videoTracks = tracks.where((t) => t.kind == 'video').toList();
+      if (videoTracks.isEmpty) {
+        debugPrint('[Cast] ⚠ 未捕获到视频轨道，投屏将显示黑屏');
+        throw Exception('屏幕捕获失败：未获取到视频轨道\n'
+            '请确认已授权屏幕录制权限\n'
+            '（Android: 需要开启「显示在其他应用上层」权限）');
+      }
 
       // 8. 将屏幕轨道添加到 PeerConnection
-      debugPrint('[Cast] 步骤8: 添加轨道到 PeerConnection...');
+      debugPrint('[Cast] 步骤8: 添加轨道到 PeerConnection (视频轨: ${videoTracks.length})...');
       await _webrtc.addStream(stream);
       debugPrint('[Cast] 步骤8: 轨道已添加 ✓');
 

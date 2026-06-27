@@ -19,6 +19,7 @@ enum WsConnectionState {
 /// WebSocket 通信服务
 ///
 /// 管理到服务器的 WebSocket 长连接，支持自动重连、心跳保活、消息流。
+/// 支持调试模式：开启后可查看所有 WS 消息的详细日志。
 class WebSocketService {
   static WebSocketService? _instance;
 
@@ -46,6 +47,31 @@ class WebSocketService {
 
   /// 重连最大间隔（指数退避上限）
   static const Duration _maxReconnectDelay = Duration(seconds: 30);
+
+  /// 调试模式开关
+  bool debugMode = false;
+
+  final List<Map<String, dynamic>> _debugLog = [];
+  static const int _maxDebugLog = 200;
+
+  void _debugAdd(String dir, String type, [Map<String, dynamic>? payload]) {
+    if (!debugMode) return;
+    _debugLog.add({'time': DateTime.now().toIso8601String(), 'dir': dir, 'type': type, 'payload': payload});
+    if (_debugLog.length > _maxDebugLog) _debugLog.removeAt(0);
+    if (payload != null) {
+      debugPrint('[WS-Debug] $dir $type payload=${_truncatePayload(payload)}');
+    } else {
+      debugPrint('[WS-Debug] $dir $type');
+    }
+  }
+
+  String _truncatePayload(Map<String, dynamic> p) {
+    final str = p.toString();
+    return str.length > 200 ? '${str.substring(0, 200)}...' : str;
+  }
+
+  /// 获取调试日志列表
+  List<Map<String, dynamic>> get debugLog => List.unmodifiable(_debugLog);
 
   WebSocketService._();
 
@@ -153,7 +179,9 @@ class WebSocketService {
     try {
       final json = jsonEncode(message);
       _channel!.sink.add(json);
-      debugPrint('[WS] >> ${message['type']}');
+      final type = message['type'] as String? ?? '?';
+      _debugAdd('>>>', type, message);
+      if (!debugMode) debugPrint('[WS] >> $type');
       return true;
     } catch (e) {
       debugPrint('[WS] 发送异常: $e');
@@ -198,10 +226,12 @@ class WebSocketService {
       // 心跳 pong
       if (type == 'pong') {
         _heartbeatTimeoutTimer?.cancel();
+        _debugAdd('<<<', 'pong');
         return;
       }
 
-      debugPrint('[WS] << $type');
+      _debugAdd('<<<', type ?? '?', message);
+      if (!debugMode) debugPrint('[WS] << $type');
 
       // 服务端连接确认
       if (type == 'connected') {

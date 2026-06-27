@@ -16,37 +16,6 @@
       <span class="text-sm text-orange-600">连接已断开，等待 App 端重连</span>
     </div>
 
-    <!-- 文件接收确认弹窗 -->
-    <Teleport to="body">
-      <div v-if="pendingFile" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-        <div class="bg-white rounded-xl shadow-2xl p-6 w-96">
-          <div class="text-center mb-4">
-            <span class="text-4xl">📁</span>
-          </div>
-          <h3 class="text-lg font-semibold text-center mb-2">接收文件确认</h3>
-          <p class="text-sm text-gray-500 text-center mb-2">手机端发送了一个文件</p>
-          <p class="text-sm font-medium text-center text-gray-800 mb-1">
-            {{ pendingFile.fileName }}
-          </p>
-          <p class="text-xs text-center text-gray-400 mb-5">
-            {{ formatSize(pendingFile.fileSize) }}
-          </p>
-          <div class="flex gap-3">
-            <button
-              class="flex-1 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
-              @click="rejectFile(pendingFile.id)">
-              拒绝
-            </button>
-            <button
-              class="flex-1 py-2 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors"
-              @click="confirmFile(pendingFile.id)">
-              接收
-            </button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
     <!-- 消息列表 -->
     <div ref="msgList" class="flex-1 overflow-y-auto p-4 space-y-3">
       <div v-if="store.messages.length === 0" class="flex flex-col items-center justify-center h-full text-gray-400">
@@ -72,7 +41,12 @@
             <p v-if="msg.type === 'text'">{{ msg.text }}</p>
 
             <!-- File -->
-            <div v-if="msg.type === 'file'" class="flex items-center gap-2">
+            <div v-if="msg.type === 'file'"
+              :class="[
+                'flex items-center gap-2',
+                msg.status === 'received' ? 'cursor-pointer' : ''
+              ]"
+              @click="msg.status === 'received' && downloadFile(msg.id)">
               <span class="text-xl">📄</span>
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium truncate">{{ msg.fileName }}</p>
@@ -84,19 +58,26 @@
                       :style="{ width: ((msg.progress || 0) * 100) + '%' }"></div>
                   </div>
                   <p class="text-xs mt-0.5">{{ Math.round((msg.progress || 0) * 100) }}%</p>
-                  <button v-if="msg.status === 'sending'" @click="cancelTransfer(msg.id)"
+                  <button v-if="msg.status === 'sending'" @click.stop="cancelTransfer(msg.id)"
                     class="text-xs mt-1 underline opacity-70 hover:opacity-100">取消</button>
                 </div>
-                <!-- 已接收：下载 + 移除按钮 -->
-                <div v-if="msg.status === 'received'" class="mt-1.5 flex items-center gap-2">
-                  <button @click="downloadFile(msg.id)"
-                    class="text-xs px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 transition-colors">
-                    ⬇ 下载
-                  </button>
-                  <button @click="removeFileMsg(msg.id)"
-                    class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors">
-                    ✕ 移除
-                  </button>
+                <!-- 已接收：下载 + 移除按钮 + 存放信息 -->
+                <div v-if="msg.status === 'received'" class="mt-1.5">
+                  <div class="flex items-center gap-2">
+                    <button @click.stop="downloadFile(msg.id)"
+                      class="text-xs px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 transition-colors">
+                      ⬇ 下载
+                    </button>
+                    <button @click.stop="removeFileMsg(msg.id)"
+                      class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors">
+                      ✕ 移除
+                    </button>
+                  </div>
+                  <!-- 存放路径 -->
+                  <div class="mt-1 flex items-center gap-1 text-xs opacity-50">
+                    <span>📁</span>
+                    <span class="truncate">已保存到浏览器下载目录</span>
+                  </div>
                 </div>
                 <p v-if="msg.status === 'sent'" class="text-xs text-green-600 mt-0.5">已发送 ✓</p>
                 <p v-if="msg.status === 'cancelled'" class="text-xs text-red-400 mt-0.5">已取消</p>
@@ -151,8 +132,7 @@ import { useMessageTransfer } from '../composables/useMessageTransfer'
 
 const store = useMessageStore()
 const {
-  sendText, pickAndSendFile, cancelTransfer, disconnect,
-  pendingFile, confirmFile, rejectFile, downloadFile,
+  sendText, pickAndSendFile, cancelTransfer, disconnect, downloadFile,
 } = useMessageTransfer()
 
 const textInput = ref('')

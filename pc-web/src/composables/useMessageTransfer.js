@@ -22,15 +22,12 @@ export function useMessageTransfer() {
   const {
     handleOffer, handleAnswer, handleIceCandidate,
     onIceCandidate, offIceCandidate, onDataChannel, offDataChannel, close: rtcClose,
-  } = useWebRTC()
+  } = useWebRTC('message')
 
   let _currentRoomId = null
   let _dataChannel = null
   let _fileBuffers = {}
   let _fileMetas = {}
-
-  /** 待确认的文件列表（file_start 后、用户确认前） */
-  const pendingFile = shallowRef(null)
 
   // 回调引用
   let _invitationHandler = null
@@ -39,9 +36,19 @@ export function useMessageTransfer() {
   let _iceCandidateCb = null
   let _dataChannelCb = null
 
-  /** 开始监听消息房间邀请 */
+  /** 开始监听消息房间邀请（幂等：重复调用安全） */
   function startListening() {
     console.log('[Message] 启动全局消息通道监听')
+
+    // 先清理旧的 handler 避免重复注册
+    if (_invitationHandler) {
+      offMessage('room_invitation', _invitationHandler)
+      _invitationHandler = null
+    }
+    if (_roomClosedHandler) {
+      offMessage('room_closed', _roomClosedHandler)
+      _roomClosedHandler = null
+    }
 
     // 注册标记已读回调：进入消息页面时通过 DC 通知 App
     store.onMarkAllRead(() => {
@@ -153,24 +160,13 @@ export function useMessageTransfer() {
           console.error('[Message] 解析消息失败:', e)
         }
       } else if (event.data instanceof ArrayBuffer) {
-        // 二进制数据 → 转 base64 后按 chunk 协议解析（兼容性路径）
-        const bytes = new Uint8Array(event.data)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        // 构造与 JSON file_chunk 相同的结构
-        console.warn('[Message] 收到二进制数据，大小:', bytes.length, '转为 base64 处理')
-        _handleMessage({ type: 'file_chunk', id: 'bin_' + Date.now(), seq: 0, total: 1, data: base64 })
+        // 二进制 chunk: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data]
+        _handleBinaryChunk(event.data)
       } else if (event.data instanceof Blob) {
         // Blob → 读取后按二进制处理
         const reader = new FileReader()
         reader.onload = () => {
-          const bytes = new Uint8Array(reader.result)
-          let binary = ''
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-          const base64 = btoa(binary)
-          console.warn('[Message] 收到 Blob 数据，大小:', bytes.length, '转为 base64 处理')
-          _handleMessage({ type: 'file_chunk', id: 'blob_' + Date.now(), seq: 0, total: 1, data: base64 })
+          _handleBinaryChunk(reader.result)
         }
         reader.readAsArrayBuffer(event.data)
       }
@@ -238,11 +234,13 @@ export function useMessageTransfer() {
     _fileMetas[data.id] = data
     _fileBuffers[data.id] = new Array(data.totalChunks)
 
-    // 将文件设为待确认状态，弹出确认弹窗
-    const fileInfo = {
+    console.log('[Message] file_start: id=', data.id, 'fileName=', data.fileName, 'totalChunks=', data.totalChunks)
+
+    // 直接添加消息到列表，自动接收文件（无需用户确认）
+    store.addMessage({
       id: data.id,
       type: 'file',
-      status: 'pending_confirm',
+      status: 'receiving',
       fileName: data.fileName,
       fileSize: data.fileSize,
       fileMimeType: data.fileMimeType,
@@ -252,58 +250,72 @@ export function useMessageTransfer() {
       isFromMe: false,
       readStatus: store.isViewing ? 'read' : 'unread',
       timestamp: new Date().toLocaleTimeString(),
-    }
-    pendingFile.value = fileInfo
-  }
-
-  /** 用户确认接收文件 */
-  function confirmFile(fileId) {
-    const meta = _fileMetas[fileId]
-    if (!meta) return
-    const existing = pendingFile.value
-    if (!existing || existing.id !== fileId) return
-
-    // 计算已收到的 chunk 进度
-    const buf = _fileBuffers[fileId]
-    const received = buf ? buf.filter(Boolean).length : 0
-    const progress = meta.totalChunks > 0 ? received / meta.totalChunks : 0
-
-    store.addMessage({
-      id: fileId,
-      type: 'file',
-      status: progress >= 1 ? 'received' : 'receiving',
-      fileName: meta.fileName,
-      fileSize: meta.fileSize,
-      fileMimeType: meta.fileMimeType,
-      progress,
-      totalChunks: meta.totalChunks,
-      receivedChunks: received,
-      isFromMe: false,
-      readStatus: store.isViewing ? 'read' : 'unread',
-      timestamp: new Date().toLocaleTimeString(),
     })
 
-    // 如果所有 chunk 已经在确认前到达，立即组装并显示下载按钮
-    if (progress >= 1) {
-      _assembleAndStore(fileId)
+    // 处理早到的 pending chunks
+    if (_pendingChunks[data.id]) {
+      console.log('[Message] 处理暂存的 chunks:', _pendingChunks[data.id].length, '个')
+      const pending = _pendingChunks[data.id]
+      delete _pendingChunks[data.id]
+      pending.forEach(c => _handleFileChunkData(c))
     }
-
-    pendingFile.value = null
   }
 
-  /** 用户拒绝接收文件 */
-  function rejectFile(fileId) {
-    delete _fileBuffers[fileId]
-    delete _fileMetas[fileId]
-    if (_dataChannel && _dataChannel.readyState === 'open') {
-      _dataChannel.send(JSON.stringify({ type: 'cancel', id: fileId }))
+  /** 暂存早到的 chunk（file_start 尚未到达时） */
+  let _pendingChunks = {}
+
+  /** 解析二进制 chunk: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data] */
+  function _handleBinaryChunk(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer)
+    if (bytes.length < 9) {
+      console.warn('[Message] 二进制包太小:', bytes.length)
+      return
     }
-    pendingFile.value = null
+
+    const idLen = bytes[0]
+    const headerSize = 1 + idLen + 4 + 4
+    if (bytes.length < headerSize) {
+      console.warn('[Message] 二进制包头不完整: packet=', bytes.length, 'header=', headerSize, 'idLen=', idLen)
+      return
+    }
+
+    // 读取 file_id
+    let id = ''
+    for (let i = 0; i < idLen; i++) id += String.fromCharCode(bytes[1 + i])
+
+    // 读取 seq 和 total（big-endian uint32）
+    const view = new DataView(arrayBuffer)
+    const seq = view.getUint32(1 + idLen, false)
+    const total = view.getUint32(1 + idLen + 4, false)
+
+    // 提取 chunk 数据并转为 base64
+    const chunkData = bytes.slice(headerSize)
+    let binary = ''
+    for (let i = 0; i < chunkData.length; i++) binary += String.fromCharCode(chunkData[i])
+    const base64 = btoa(binary)
+
+    // 安全网：如果 file_start 还没到，暂存 chunk
+    if (!_fileBuffers[id]) {
+      if (!_pendingChunks[id]) _pendingChunks[id] = []
+      _pendingChunks[id].push({ id, seq, total, data: base64 })
+      console.warn('[Message] chunk 早于 file_start 到达, 暂存: id=', id, 'seq=', seq, '/', total)
+      return
+    }
+
+    // 每 10 个 chunk 或首尾打日志
+    if (seq === 0 || seq === total - 1 || seq % 10 === 0) {
+      console.log('[Message] chunk', seq, '/', total, 'size=', chunkData.length)
+    }
+
+    _handleFileChunkData({ id, seq, total, data: base64 })
   }
 
   function _handleFileChunkData(data) {
     const buf = _fileBuffers[data.id]
-    if (!buf) return
+    if (!buf) {
+      console.warn('[Message] ⚠ 收到未知文件 chunk: id=', data.id, 'seq=', data.seq, '/', data.total)
+      return
+    }
     try {
       const binary = atob(data.data)
       const bytes = new Uint8Array(binary.length)
@@ -318,45 +330,52 @@ export function useMessageTransfer() {
     const received = buf.filter(Boolean).length
     const progress = received / total
 
-    // 如果文件已确认（在消息列表中），更新消息进度
-    const existingMsg = store.messages.find(m => m.id === data.id)
-    if (existingMsg) {
-      store.updateMessage(data.id, { receivedChunks: received, progress })
+    // 每 10 个 chunk 或接近完成时打日志
+    if (data.seq % 10 === 0 || received >= total - 1) {
+      console.log('[Message] 接收进度:', received, '/', total, '=', Math.round(progress * 100), '%')
     }
 
-    // 更新待确认文件的进度
-    if (pendingFile.value && pendingFile.value.id === data.id) {
-      pendingFile.value = { ...pendingFile.value, receivedChunks: received, progress }
-    }
+    // 更新消息进度
+    store.updateMessage(data.id, { receivedChunks: received, progress })
 
-    // 全部 chunk 接收完毕
+    // 全部 chunk 接收完毕 → 组装并存入 blob，显示下载按钮
     if (received >= total) {
-      if (existingMsg) {
-        // 已确认 → 组装并存入 blob，显示下载按钮
-        _assembleAndStore(data.id)
-      }
-      // 未确认 → 不组装，等待用户确认后再组装
+      console.log('[Message] ✅ 所有chunk接收完毕，开始组装文件 id=', data.id)
+      _assembleAndStore(data.id)
     }
   }
 
   function _handleFileEnd(data) {
-    // 如果已确认，组装并存储 blob
-    const existingMsg = store.messages.find(m => m.id === data.id)
-    if (existingMsg) {
-      _assembleAndStore(data.id)
+    console.log('[Message] file_end 收到: id=', data.id)
+    const buf = _fileBuffers[data.id]
+    if (!buf) {
+      console.warn('[Message] file_end 但无缓冲区: id=', data.id)
+      return
     }
-    // 未确认则不做任何事，等待用户确认时再组装
+    const received = buf.filter(Boolean).length
+    console.log('[Message] file_end: 已收到', received, '个chunk')
+    _assembleAndStore(data.id)
   }
 
   /** 组装 chunks 并将 blob 存入消息，自动触发浏览器下载 */
   function _assembleAndStore(fileId) {
     const buf = _fileBuffers[fileId]
-    if (!buf) return
+    if (!buf) {
+      console.warn('[Message] _assembleAndStore: 无缓冲区 id=', fileId)
+      return
+    }
     const meta = _fileMetas[fileId] || {}
 
     let total = 0
-    buf.forEach(c => { if (c) total += c.length })
-    if (total === 0) return
+    let missing = 0
+    buf.forEach(c => { if (c) total += c.length; else missing++ })
+    if (total === 0) {
+      console.warn('[Message] _assembleAndStore: 没有数据 id=', fileId, 'missing=', missing)
+      return
+    }
+    if (missing > 0) {
+      console.warn('[Message] _assembleAndStore: 有', missing, '个chunk缺失 id=', fileId)
+    }
 
     const merged = new Uint8Array(total)
     let off = 0
@@ -375,6 +394,8 @@ export function useMessageTransfer() {
       blobUrl: url,
     })
 
+    console.log('[Message] 消息已更新为 received, blobUrl=', url ? '已创建' : '无')
+
     // 清理缓冲区
     delete _fileBuffers[fileId]
     delete _fileMetas[fileId]
@@ -387,9 +408,6 @@ export function useMessageTransfer() {
     delete _fileBuffers[data.id]
     delete _fileMetas[data.id]
     store.updateMessage(data.id, { status: 'cancelled' })
-    if (pendingFile.value && pendingFile.value.id === data.id) {
-      pendingFile.value = null
-    }
   }
 
   /** 发送文本 */
@@ -449,14 +467,24 @@ export function useMessageTransfer() {
         timestamp: new Date().toLocaleTimeString(),
       })
 
-      // 流控发送每个 chunk
+      // 流控发送每个 chunk（二进制格式）
       const arrayBuffer = await file.arrayBuffer()
       const fullData = new Uint8Array(arrayBuffer)
 
+      // 预先编码 file_id
+      const idEncoded = new TextEncoder().encode(msgId)
+
       for (let i = 0; i < totalChunks; i++) {
-        // 等待缓冲区释放（防止溢出断开）
-        while (_dataChannel && _dataChannel.bufferedAmount > chunkSize * 4) {
+        // 动态等待缓冲区释放（防止溢出断开）
+        let retryCount = 0
+        while (_dataChannel && _dataChannel.bufferedAmount > chunkSize * 8) {
           await new Promise(r => setTimeout(r, 10))
+          retryCount++
+          if (retryCount > 500) {
+            console.error('[Message] 文件传输超时：DC 缓冲区持续满载')
+            store.updateMessage(msgId, { status: 'failed' })
+            return
+          }
           if (!_dataChannel || _dataChannel.readyState !== 'open') {
             console.error('[Message] 文件传输中断：DC 已关闭')
             store.updateMessage(msgId, { status: 'failed' })
@@ -465,20 +493,25 @@ export function useMessageTransfer() {
         }
 
         const s = i * chunkSize
+        if (s >= file.size) break // 兜底：文件已发完
         const e = Math.min(s + chunkSize, file.size)
         const chunk = fullData.slice(s, e)
-        // 转为 base64
-        let binary = ''
-        for (let j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j])
-        const base64 = btoa(binary)
 
-        _dataChannel.send(JSON.stringify({
-          type: 'file_chunk', id: msgId, seq: i, total: totalChunks, data: base64,
-        }))
+        // 构造二进制头: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data]
+        const headerSize = 1 + idEncoded.length + 4 + 4
+        const packet = new Uint8Array(headerSize + chunk.length)
+        const view = new DataView(packet.buffer)
+        packet[0] = idEncoded.length
+        packet.set(idEncoded, 1)
+        view.setUint32(1 + idEncoded.length, i, false)
+        view.setUint32(1 + idEncoded.length + 4, totalChunks, false)
+        packet.set(chunk, headerSize)
+
+        _dataChannel.send(packet.buffer)
         store.updateMessage(msgId, { progress: Math.min(1, (i + 1) / totalChunks) })
 
-        // 每个 chunk 后固定延迟，防止 DataChannel 缓冲区溢出
-        await new Promise(r => setTimeout(r, 15))
+        // 每个 chunk 后短延迟，让缓冲区有时间排出
+        await new Promise(r => setTimeout(r, 5))
       }
 
       if (_dataChannel && _dataChannel.readyState === 'open') {
@@ -499,15 +532,23 @@ export function useMessageTransfer() {
     store.updateMessage(id, { status: 'cancelled' })
   }
 
-  /** 断开 */
+  /** 断开当前会话（保持 invitation 监听，可接受新连接） */
   function disconnect() {
-    console.log('[Message] 断开消息通道')
+    console.log('[Message] 断开消息通道（保持 invitation 监听）')
     if (_currentRoomId) send({ type: 'close_room', roomId: _currentRoomId })
-    if (_invitationHandler) offMessage('room_invitation', _invitationHandler)
-    if (_signalHandler) offMessage('signal', _signalHandler)
-    if (_roomClosedHandler) offMessage('room_closed', _roomClosedHandler)
-    if (_iceCandidateCb) offIceCandidate(_iceCandidateCb)
-    if (_dataChannelCb) offDataChannel(_dataChannelCb)
+    // 只清理当前会话的 handlers，不清理 invitation/room_closed（保持可重连）
+    if (_signalHandler) {
+      offMessage('signal', _signalHandler)
+      _signalHandler = null
+    }
+    if (_iceCandidateCb) {
+      offIceCandidate(_iceCandidateCb)
+      _iceCandidateCb = null
+    }
+    if (_dataChannelCb) {
+      offDataChannel(_dataChannelCb)
+      _dataChannelCb = null
+    }
     rtcClose()
     store.setConnected(false)
     store.isConnecting = false
@@ -516,7 +557,6 @@ export function useMessageTransfer() {
     _dataChannel = null
     _fileBuffers = {}
     _fileMetas = {}
-    pendingFile.value = null
   }
 
   /** 触发浏览器下载文件（由消息页面的下载按钮调用） */
@@ -537,9 +577,6 @@ export function useMessageTransfer() {
     pickAndSendFile,
     cancelTransfer,
     disconnect,
-    pendingFile,
-    confirmFile,
-    rejectFile,
     downloadFile,
   }
   return _instance

@@ -7,7 +7,8 @@ import 'package:path_provider/path_provider.dart';
 /// Android / iOS 平台的文件下载
 ///
 /// 将文件保存到应用的文档目录，Android 同时尝试保存到共享下载目录。
-Future<void> downloadFile(Uint8List bytes, String fileName) async {
+/// 返回最终保存的文件路径（优先返回公共下载目录的路径）。
+Future<String?> downloadFile(Uint8List bytes, String fileName) async {
   try {
     // 1. 保存到应用内部文档目录（始终可用）
     final dir = await getApplicationDocumentsDirectory();
@@ -23,12 +24,15 @@ Future<void> downloadFile(Uint8List bytes, String fileName) async {
           final downloadsFile = File('${downloadsDir.path}/$fileName');
           await downloadsFile.writeAsBytes(bytes);
           debugPrint('[File] 已保存到下载目录: ${downloadsFile.path}');
+          return downloadsFile.path;
         }
       } catch (e) {
         debugPrint('[File] 保存到下载目录失败（非致命）: $e');
       }
     }
+    return file.path;
   } catch (e) {
     debugPrint('[File] 下载失败: $e');
+    return null;
   }
 }

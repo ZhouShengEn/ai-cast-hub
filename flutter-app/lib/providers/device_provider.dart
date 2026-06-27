@@ -47,6 +47,27 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
 
   DeviceNotifier() : super(const DeviceState());
 
+  /// 将异常转换为用户友好的中文提示
+  String _friendlyError(Object e) {
+    final str = e.toString();
+    if (str.contains('401') || str.contains('Unauthorized')) {
+      return '设备未注册，正在自动注册...';
+    }
+    if (str.contains('Connection refused') || str.contains('SocketException') || str.contains('No route to host')) {
+      return '无法连接到服务器，请检查服务器地址和网络连接';
+    }
+    if (str.contains('Timeout') || str.contains('timed out')) {
+      return '连接超时，请检查网络是否正常';
+    }
+    if (str.contains('404')) {
+      return '服务器资源不存在，请检查服务器版本';
+    }
+    if (str.contains('500') || str.contains('Server')) {
+      return '服务器内部错误，请稍后重试';
+    }
+    return '操作失败，请检查网络后重试';
+  }
+
   /// 注册当前设备
   Future<void> registerDevice() async {
     state = state.copyWith(isLoading: true, error: null);
@@ -90,7 +111,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: '设备注册失败: $e',
+        error: '设备注册失败: ${_friendlyError(e)}',
       );
     }
   }
@@ -102,7 +123,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
       final device = Device.fromJson(result);
       state = state.copyWith(device: device);
     } catch (e) {
-      state = state.copyWith(error: '获取设备信息失败: $e');
+      state = state.copyWith(error: '获取设备信息失败: ${_friendlyError(e)}');
     }
   }
 
@@ -117,7 +138,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: '绑定失败: $e',
+        error: '绑定失败: ${_friendlyError(e)}',
       );
     }
   }
@@ -133,7 +154,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: '绑定失败: $e',
+        error: '绑定失败: ${_friendlyError(e)}',
       );
       rethrow;
     }
@@ -146,7 +167,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
       final devices = list.map((e) => Device.fromJson(e)).toList();
       state = state.copyWith(pairedDevices: devices);
     } catch (e) {
-      state = state.copyWith(error: '获取设备列表失败: $e');
+      state = state.copyWith(error: '获取设备列表失败: ${_friendlyError(e)}');
     }
   }
 
@@ -160,7 +181,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: '解除绑定失败: $e',
+        error: '解除绑定失败: ${_friendlyError(e)}',
       );
     }
   }

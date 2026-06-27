@@ -24,6 +24,30 @@ const connectionState = ref('disconnected')
 /** 是否已初始化（防止重复连接） */
 let initialized = false
 
+/** 调试模式：启用详细 WS 消息日志 */
+let debugMode = false
+const _msgLog = []
+const MAX_LOG_LINES = 200
+
+function _debugLog(msg) {
+  if (!debugMode) return
+  const entry = { time: new Date().toISOString(), ...msg }
+  _msgLog.push(entry)
+  if (_msgLog.length > MAX_LOG_LINES) _msgLog.shift()
+  console.log('[WS-Debug]', msg.type || msg.dir, msg.type || '')
+}
+
+/** 获取调试日志（最近 200 条） */
+function getDebugLog() {
+  return [..._msgLog]
+}
+
+/** 开启/关闭调试模式 */
+function setDebugMode(val) {
+  debugMode = !!val
+  console.log('[WS] 调试模式:', debugMode ? '开启' : '关闭')
+}
+
 /** 建立 WebSocket 连接 */
 function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -47,6 +71,7 @@ function connect() {
     connectionState.value = 'connected'
     reconnectDelay = 1000
     startHeartbeat()
+    _debugLog({ dir: '===', type: 'connected' })
     console.log('[WS] 连接已建立')
   }
 
@@ -55,8 +80,10 @@ function connect() {
       const msg = JSON.parse(event.data)
       if (msg.type === 'pong') {
         resetPongTimer()
+        _debugLog({ dir: '<<<', type: 'pong' })
         return
       }
+      _debugLog({ dir: '<<<', type: msg.type, payload: msg.payload })
       // 分发消息到注册的回调
       const type = msg.type || '*'
       const handlers = listeners.get(type) || []
@@ -100,7 +127,10 @@ function disconnect() {
 /** 发送消息 */
 function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(typeof data === 'string' ? data : JSON.stringify(data))
+    const str = typeof data === 'string' ? data : JSON.stringify(data)
+    ws.send(str)
+    const parsed = typeof data === 'string' ? JSON.parse(data) : data
+    _debugLog({ dir: '>>>', type: parsed.type, payload: parsed.payload })
   }
 }
 
@@ -146,6 +176,7 @@ function resetPongTimer() {
 function scheduleReconnect() {
   clearReconnect()
   connectionState.value = 'reconnecting'
+  _debugLog({ dir: '***', type: 'reconnecting', delay: reconnectDelay })
   reconnectTimer = setTimeout(() => {
     connect()
     reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY)
@@ -168,5 +199,7 @@ export function useWebSocket() {
     connectionState,
     connect,
     disconnect,
+    setDebugMode,
+    getDebugLog,
   }
 }

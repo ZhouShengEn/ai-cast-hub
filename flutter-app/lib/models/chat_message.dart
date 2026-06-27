@@ -20,6 +20,7 @@ class ChatMessage {
   final String? fileName;          // 文件名（文件消息）
   final int? fileSize;             // 文件大小（bytes）
   final String? fileMimeType;      // 文件 MIME 类型
+  final String? filePath;           // 下载后本地文件路径
   final double progress;            // 传输进度 0.0-1.0
   final bool isFromMe;              // 是否自己发送的
   final DateTime timestamp;
@@ -34,6 +35,7 @@ class ChatMessage {
     this.fileName,
     this.fileSize,
     this.fileMimeType,
+    this.filePath,
     this.progress = 0.0,
     this.isFromMe = true,
     required this.timestamp,
@@ -76,6 +78,7 @@ class ChatMessage {
     String? fileName,
     int? fileSize,
     String? fileMimeType,
+    String? filePath,
     double? progress,
     bool? isFromMe,
     DateTime? timestamp,
@@ -90,6 +93,7 @@ class ChatMessage {
       fileName: fileName ?? this.fileName,
       fileSize: fileSize ?? this.fileSize,
       fileMimeType: fileMimeType ?? this.fileMimeType,
+      filePath: filePath ?? this.filePath,
       progress: progress ?? this.progress,
       isFromMe: isFromMe ?? this.isFromMe,
       timestamp: timestamp ?? this.timestamp,
@@ -107,6 +111,7 @@ class ChatMessage {
       'fileName': fileName,
       'fileSize': fileSize,
       'fileMimeType': fileMimeType,
+      'filePath': filePath,
       'progress': progress,
       'isFromMe': isFromMe,
       'timestamp': timestamp.millisecondsSinceEpoch,
@@ -124,6 +129,7 @@ class ChatMessage {
       fileName: json['fileName'] as String?,
       fileSize: json['fileSize'] as int?,
       fileMimeType: json['fileMimeType'] as String?,
+      filePath: json['filePath'] as String?,
       progress: (json['progress'] as num?)?.toDouble() ?? 0.0,
       isFromMe: json['isFromMe'] as bool? ?? false,
       timestamp: DateTime.fromMillisecondsSinceEpoch(json['timestamp'] as int),

@@ -53,7 +53,6 @@ class LocalStorage {
   ///
   /// 优先级：用户自定义设置 > 平台默认值
   /// - Web: http://localhost:3000/api/v1
-  /// - Android 模拟器: http://10.0.2.2:3000/api/v1
   /// - 真机/其他: http://192.168.1.41:3000/api/v1
   String getServerUrl() {
     final saved = _prefs.getString('server_url');
@@ -64,14 +63,14 @@ class LocalStorage {
       }
       return saved;
     }
-    
+
     // 根据平台返回默认地址
     if (kIsWeb) {
       return 'http://localhost:3000/api/v1';
     }
-    // Android 模拟器专用地址（10.0.2.2 访问宿主机 localhost）
-    // 真机用户请在「设置」中填写服务器的局域网 IP
-    return 'http://10.0.2.2:3000/api/v1';
+    // 默认使用局域网 IP（真机通过 WiFi 连接）
+    // 模拟器用户请在「设置」中修改为 10.0.2.2
+    return 'http://192.168.1.41:3000/api/v1';
   }
 
   /// 保存服务器地址

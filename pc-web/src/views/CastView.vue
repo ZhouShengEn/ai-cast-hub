@@ -41,7 +41,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, inject } from 'vue'
+import { ref, onMounted, onUnmounted, watch, inject } from 'vue'
 import { useCastStore } from '../stores/cast'
 import CastReceiver from '../components/cast/CastReceiver.vue'
 import ConnectionBadge from '../components/cast/ConnectionBadge.vue'
@@ -54,11 +54,15 @@ const castReceiverRef = ref(null)
 // 将 CastReceiver 的 videoEl 传入 useCastReceiver，使视频流能正确绑定
 const { startListening, stopReceiving, connectionState, setVideoRef } = useCastReceiver()
 
-onMounted(() => {
-  // 等待 DOM 渲染完成后绑定 video 元素
-  if (castReceiverRef.value?.videoEl) {
-    setVideoRef(castReceiverRef.value.videoEl)
+// 当 CastReceiver 组件渲染后（connectionState 变为 connected），绑定 video 元素
+watch(castReceiverRef, (ref) => {
+  if (ref?.videoEl) {
+    setVideoRef(ref.videoEl)
+    console.log('[CastView] videoEl 已绑定到 useCastReceiver')
   }
+})
+
+onMounted(() => {
   startListening()
 })
 

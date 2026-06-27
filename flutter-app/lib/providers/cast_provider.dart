@@ -52,7 +52,10 @@ class CastNotifier extends StateNotifier<CastState> {
     _service = CastService();
     _service!.onStatusChanged = (status) {
       if (state.isCasting) {
-        state = state.copyWith(connectionState: status);
+        state = state.copyWith(
+          connectionState: status,
+          isCasting: status != 'disconnected',
+        );
       }
     };
 

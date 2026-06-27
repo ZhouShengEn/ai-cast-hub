@@ -10,6 +10,13 @@ import '../models/chat_message.dart';
 import 'websocket_service.dart';
 import 'webrtc_service.dart';
 
+/// 安全截取 ID 用于日志
+String _safeId(String? id) {
+  if (id == null || id.isEmpty) return '(空)';
+  if (id.length <= 8) return id;
+  return '${id.substring(0, 8)}...';
+}
+
 class MessageService {
   final WebSocketService _ws = WebSocketService.instance;
   final WebrtcService _webrtc = WebrtcService();
@@ -156,7 +163,11 @@ class MessageService {
   }
 
   void _onDC(webrtc.RTCDataChannelMessage msg) {
-    if (msg.isBinary) return;
+    if (msg.isBinary) {
+      // 二进制消息 = 文件 chunk（新协议）
+      _handleBinaryChunk(msg.binary);
+      return;
+    }
     try {
       final data = jsonDecode(msg.text) as Map<String, dynamic>;
       debugPrint('[Msg] DC 收到: ${data['type']}');
@@ -170,9 +181,11 @@ class MessageService {
           ));
           break;
         case 'file_start':
+          debugPrint('[Msg RECV] file_start: id=${_safeId(data['id'])} file=${data['fileName']} chunks=${data['totalChunks']}');
           _handleFileStart(data);
           break;
         case 'file_chunk':
+          // 兼容旧协议（JSON/base64），新协议用二进制通道
           _handleChunk(data);
           break;
         case 'file_end':
@@ -192,6 +205,44 @@ class MessageService {
           break;
       }
     } catch (e) { debugPrint('[Msg] DC error: $e'); }
+  }
+
+  /// 解析二进制 chunk: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data]
+  void _handleBinaryChunk(Uint8List packet) {
+    if (packet.length < 9) {
+      debugPrint('[Msg RECV] 二进制包太小: ${packet.length}B');
+      return;
+    }
+
+    final idLen = packet[0];
+    final headerSize = 1 + idLen + 4 + 4;
+    if (packet.length < headerSize) {
+      debugPrint('[Msg RECV] 二进制包头不完整: packet=${packet.length} header=$headerSize idLen=$idLen');
+      return;
+    }
+
+    final id = utf8.decode(packet.sublist(1, 1 + idLen));
+    final header = ByteData.sublistView(packet);
+    final seq = header.getUint32(1 + idLen, Endian.big);
+    final total = header.getUint32(1 + idLen + 4, Endian.big);
+
+    final chunkData = packet.sublist(headerSize);
+    final meta = _fileMetas[id];
+
+    if (meta == null) {
+      debugPrint('[Msg RECV] ⚠ 收到未知文件 chunk: id=${_safeId(id)} seq=$seq/$total size=${chunkData.length}');
+      return;
+    }
+
+    // 每 10 个 chunk 或首尾打日志
+    if (seq == 0 || seq == total - 1 || seq % 10 == 0) {
+      debugPrint('[Msg RECV] chunk $seq/$total size=${chunkData.length}B received=${meta['chunksReceived']}');
+    }
+
+    _handleChunk({
+      'id': id, 'seq': seq, 'total': total,
+      'data': base64Encode(chunkData),
+    });
   }
 
   // ---- 发送（Text + File，带流控） ----
@@ -236,7 +287,7 @@ class MessageService {
     }
   }
 
-  /// 发送文件（流控：防止 DataChannel 缓冲区溢出）
+  /// 发送文件（流控：二进制 DataChannel + 动态流控）
   Future<ChatMessage?> sendFile() async {
     final pick = await FilePicker.platform.pickFiles(allowMultiple: false, withData: true);
     if (pick == null || pick.files.isEmpty) return null;
@@ -263,43 +314,76 @@ class MessageService {
       'fileMimeType': _mime(f.name), 'isFromMe': true,
     });
 
-    const cs = 16384;
-    final total = ((bytes.length + cs - 1) / cs).ceil();
+    const cs = 16384; // 16KB per chunk
+    final total = (bytes.length + cs - 1) ~/ cs; // 整数除法，避免浮点精度问题
 
-    // 发送 file_start
+    // 发送 file_start（JSON 文本）
     dc.send(webrtc.RTCDataChannelMessage(jsonEncode({
       'type': 'file_start', 'id': msg.id, 'fileName': f.name,
       'fileSize': f.size, 'totalChunks': total,
       'fileMimeType': _mime(f.name),
     })));
 
-    // 流控发送每个 chunk
+    // 预编码 file_id 为 UTF-8 字节（头信息复用）
+    final idBytes = utf8.encode(msg.id);
+    final idLen = idBytes.length;
+
+    // 二进制流控发送每个 chunk
+    debugPrint('[Msg SEND] 开始发送文件 $total 个chunk, 文件大小=${f.size}, DC状态=${dc.state}');
     for (int i = 0; i < total; i++) {
-      // 等待 DataChannel 缓冲区释放（防止溢出断开）
-      // Web 端 bufferedAmount 可能返回 null，此时退化为固定延迟避免缓冲区溢出
-      final ba = dc.bufferedAmount;
-      while (ba != null && ba > cs * 4) {
+      // 动态等待 DataChannel 缓冲区释放（防止溢出断开）
+      var retryCount = 0;
+      int? ba = dc.bufferedAmount;
+      while (ba != null && ba > cs * 8) {
         await Future.delayed(const Duration(milliseconds: 10));
+        retryCount++;
+        if (retryCount > 500) {
+          debugPrint('[Msg SEND] 文件传输超时：DC 缓冲区持续满载 ba=$ba');
+          _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'failed': true});
+          throw Exception('连接超时');
+        }
         if (dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
-          debugPrint('[Msg] 文件传输中断：DC 已关闭');
+          debugPrint('[Msg SEND] 文件传输中断：DC 状态变为 ${dc.state}');
           _progressCtl.add({'id': msg.id, 'progress': 0, 'failed': true});
           throw Exception('连接中断');
         }
+        ba = dc.bufferedAmount;
       }
 
       final s = i * cs;
+      if (s >= bytes.length) break; // 兜底：文件已发完
       final e = (s + cs).clamp(0, bytes.length);
-      dc.send(webrtc.RTCDataChannelMessage(jsonEncode({
-        'type': 'file_chunk', 'id': msg.id, 'seq': i, 'total': total,
-        'data': base64Encode(bytes.sublist(s, e)),
-      })));
+      final chunkData = bytes.sublist(s, e);
+
+      // 构造二进制头: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data]
+      final header = ByteData(1 + idLen + 4 + 4);
+      header.setUint8(0, idLen);
+      for (int j = 0; j < idLen; j++) { header.setUint8(1 + j, idBytes[j]); }
+      header.setUint32(1 + idLen, i, Endian.big);
+      header.setUint32(1 + idLen + 4, total, Endian.big);
+
+      final packet = Uint8List(header.lengthInBytes + chunkData.length);
+      packet.setRange(0, header.lengthInBytes, header.buffer.asUint8List(0, header.lengthInBytes));
+      packet.setRange(header.lengthInBytes, header.lengthInBytes + chunkData.length, chunkData);
+
+      try {
+        dc.send(webrtc.RTCDataChannelMessage.fromBinary(packet));
+        // 每 10 个 chunk 或首尾打日志
+        if (i == 0 || i == total - 1 || i % 10 == 0) {
+          debugPrint('[Msg SEND] chunk $i/$total ba=${dc.bufferedAmount} size=${packet.length}');
+        }
+      } catch (sendErr) {
+        debugPrint('[Msg SEND] 发送 chunk $i/$total 失败: $sendErr');
+        _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'failed': true});
+        throw Exception('发送chunk失败: $sendErr');
+      }
       _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total});
 
-      // 每个 chunk 后固定延迟，防止 DataChannel 缓冲区溢出
-      // Web 端 bufferedAmount 不可靠时，这是主要流控手段
-      await Future.delayed(const Duration(milliseconds: 15));
+      // 每个 chunk 后短延迟，让缓冲区有时间排出
+      await Future.delayed(const Duration(milliseconds: 5));
     }
 
+    debugPrint('[Msg SEND] 所有chunk发送完毕，发送 file_end, id=${_safeId(msg.id)}');
     dc.send(webrtc.RTCDataChannelMessage(jsonEncode({'type': 'file_end', 'id': msg.id})));
     _progressCtl.add({'id': msg.id, 'progress': 1.0, 'sent': true});
     return msg.copyWith(status: MessageStatus.sent, progress: 1.0);
@@ -336,20 +420,30 @@ class MessageService {
   void _handleChunk(Map<String, dynamic> d) {
     final id = d['id'] as String;
     final meta = _fileMetas[id];
-    if (meta == null) return;
+    if (meta == null) {
+      debugPrint('[Msg RECV] ⚠ chunk 无对应 meta: id=${_safeId(id)}');
+      return;
+    }
     final buf = meta['buffer'] as List<Uint8List?>;
     final seq = d['seq'] as int;
     final total = d['total'] as int;
     buf[seq] = base64Decode(d['data'] as String);
     meta['chunksReceived'] = (meta['chunksReceived'] as int) + 1;
 
+    final rcvd = meta['chunksReceived'] as int;
+    if (seq % 10 == 0 || rcvd >= total) {
+      debugPrint('[Msg RECV] chunk进度: $rcvd/$total');
+    }
+
     // 检查是否全部接收完毕
-    if ((meta['chunksReceived'] as int) >= total) {
+    if (rcvd >= total) {
+      debugPrint('[Msg RECV] ✅ 所有chunk收齐，组装文件 id=${_safeId(id)}');
       _assembleFile(id);
     }
   }
 
   void _handleFileEnd(Map<String, dynamic> d) {
+    debugPrint('[Msg RECV] file_end: id=${_safeId(d['id'])}');
     // 兜底：如果 chunks 因某种原因未触发组装，file_end 确保完成
     _assembleFile(d['id'] as String);
   }
@@ -376,20 +470,14 @@ class MessageService {
       }
     }
 
-    debugPrint('[Msg] 文件接收完成: $fileName (${merged.length} bytes)');
-
-    // 更新消息状态
-    _incomingCtl.add(ChatMessage(
-      id: id, roomId: _roomId ?? '', type: MessageType.file,
-      status: MessageStatus.received, fileName: fileName,
-      fileSize: merged.length, progress: 1.0, isFromMe: false,
-      timestamp: DateTime.now(),
-    ));
+    debugPrint('[Msg RECV] 文件接收完成: $fileName (${merged.length} bytes)，触发下载');
 
     // 触发下载（Web 端浏览器下载 / 移动端保存到本地）
+    // 注意：不通过 _incomingCtl 重复添加消息，_handleFileStart 已添加过；
+    // message_provider 通过 onProgress 的 completed 事件将状态更新为 received
     _progressCtl.add({
       'id': id, 'progress': 1.0, 'completed': true,
-      'bytes': merged, 'fileName': fileName,
+      'bytes': merged, 'fileName': fileName, 'mimeType': meta['mimeType'],
     });
   }
 

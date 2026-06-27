@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/chat_message.dart';
 import '../providers/message_provider.dart';
 import '../providers/device_provider.dart';
+import '../utils/open_file.dart';
 
 class MessageScreen extends ConsumerStatefulWidget {
   const MessageScreen({super.key});
@@ -341,7 +343,68 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
         Text('${(m.progress * 100).toInt()}%', style: const TextStyle(fontSize: 12, color: Colors.black45)),
         if (me) TextButton(onPressed: () => n.cancelTransfer(m.id), child: const Text('取消', style: TextStyle(fontSize: 12))),
       ],
-      if (m.isCompleted) const Text('✓ 已接收', style: TextStyle(fontSize: 12, color: Colors.green)),
+      if (m.isCompleted) ...[
+        const SizedBox(height: 6),
+        const Text('✓ 已接收', style: TextStyle(fontSize: 12, color: Colors.green)),
+        if (!me) ...[
+          if (m.filePath != null) ...[
+            const SizedBox(height: 4),
+            // 下载路径（可点击复制）
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: m.filePath!));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('路径已复制'), duration: Duration(seconds: 1), behavior: SnackBarBehavior.floating),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(4)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.folder_open, size: 14, color: Colors.black54),
+                  const SizedBox(width: 4),
+                  Flexible(child: Text(m.filePath!, style: const TextStyle(fontSize: 10, color: Colors.black54), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                ]),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              // 打开文件按钮
+              TextButton.icon(
+                onPressed: () => openFile(m.filePath!),
+                icon: const Icon(Icons.open_in_new, size: 14),
+                label: const Text('打开', style: TextStyle(fontSize: 12)),
+                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              ),
+              const SizedBox(width: 8),
+              // 复制路径按钮
+              TextButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: m.filePath!));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('路径已复制'), duration: Duration(seconds: 1), behavior: SnackBarBehavior.floating),
+                  );
+                },
+                icon: const Icon(Icons.copy, size: 14),
+                label: const Text('复制', style: TextStyle(fontSize: 12)),
+                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              ),
+            ]),
+          ] else ...[
+            // filePath 为空（如 Web 平台下载），显示简要提示
+            const SizedBox(height: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(4)),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.check_circle_outline, size: 14, color: Colors.black54),
+                SizedBox(width: 4),
+                Text('文件已保存', style: TextStyle(fontSize: 10, color: Colors.black54)),
+              ]),
+            ),
+          ],
+        ],
+      ],
     ]);
   }
 }

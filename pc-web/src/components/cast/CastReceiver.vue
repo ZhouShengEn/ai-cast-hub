@@ -84,14 +84,16 @@ const stateMessage = computed(() => {
   return map[props.connectionState] || '等待手机连接...'
 })
 
-/** 绑定/解绑 MediaStream */
+/** 绑定/解绑 MediaStream（immediate: 组件挂载时 stream 可能已存在） */
 watch(
   () => props.stream,
   (stream) => {
     if (videoEl.value) {
       videoEl.value.srcObject = stream || null
+      console.log('[CastReceiver] video srcObject 已', stream ? '绑定' : '解绑')
     }
-  }
+  },
+  { immediate: true }
 )
 
 /** 取消静音 */

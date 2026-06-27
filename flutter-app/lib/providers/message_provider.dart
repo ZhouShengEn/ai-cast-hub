@@ -51,7 +51,7 @@ class MessageNotifier extends StateNotifier<MessageState> {
       state = state.copyWith(messages: [...state.messages, msg]);
     });
 
-    _svc!.onProgress.listen((d) {
+    _svc!.onProgress.listen((d) async {
       final id = d['id'] as String?; if (id == null) return;
 
       // 新文件消息开始（发送方：文件已选取，开始发送）
@@ -76,12 +76,17 @@ class MessageNotifier extends StateNotifier<MessageState> {
 
       final p = (d['progress'] as num?)?.toDouble(); if (p == null) return;
 
-      // 文件接收完成 → 触发下载
+      // 文件接收完成 → 触发下载并记录文件路径
+      String? savedPath;
       if (d['completed'] == true) {
         final bytes = d['bytes'] as Uint8List?;
         final fileName = d['fileName'] as String? ?? 'download';
+        debugPrint('[Msg PROV] 收到 completed 事件: file=$fileName bytes=${bytes?.length}');
         if (bytes != null) {
-          _downloadFile(bytes, fileName);
+          savedPath = await _downloadFile(bytes, fileName);
+          debugPrint('[Msg PROV] 下载完成: path=$savedPath');
+        } else {
+          debugPrint('[Msg PROV] ⚠ bytes 为空，无法下载');
         }
       }
 
@@ -96,7 +101,7 @@ class MessageNotifier extends StateNotifier<MessageState> {
         } else if (d['failed'] == true) {
           newStatus = MessageStatus.failed;
         }
-        list[idx] = list[idx].copyWith(progress: p, status: newStatus);
+        list[idx] = list[idx].copyWith(progress: p, status: newStatus, filePath: savedPath ?? list[idx].filePath);
         state = state.copyWith(messages: list);
       }
     });
@@ -110,8 +115,12 @@ class MessageNotifier extends StateNotifier<MessageState> {
   }
 
   /// 下载文件（Web 浏览器下载 / 移动端保存到本地）
-  void _downloadFile(Uint8List bytes, String fileName) {
-    downloadFile(bytes, fileName);
+  /// 返回保存的文件路径
+  Future<String?> _downloadFile(Uint8List bytes, String fileName) async {
+    debugPrint('[Msg PROV] 开始下载文件: $fileName (${bytes.length} bytes)');
+    final result = await downloadFile(bytes, fileName);
+    debugPrint('[Msg PROV] downloadFile 返回: $result');
+    return result;
   }
 
   void _handleReadReceipt(ChatMessage receiptMsg) {
