@@ -68,6 +68,9 @@ export function useSSE() {
             return
           }
 
+          // 先检查原始 payload 是否为错误类型（避免 JSON 解析失败时丢失错误）
+          const isErrorPayload = payload.includes('"type":"error"') || payload.includes("'type':'error'")
+
           let parsed
           try {
             parsed = JSON.parse(payload)
@@ -85,12 +88,14 @@ export function useSSE() {
               _onToken(token)
             }
           } catch (parseErr) {
-            // JSON 不完整，放回 buffer
-            if (parsed?.type !== 'error') {
-              buffer = line + '\n' + buffer
-            } else {
-              throw parseErr
+            // 如果是错误类型 payload 但 JSON 解析失败，直接抛出
+            if (isErrorPayload) {
+              const err = new Error('SSE 流错误')
+              if (_onError) _onError(err)
+              throw err
             }
+            // JSON 不完整（跨 TCP 分片），放回 buffer
+            buffer = line + '\n' + buffer
           }
         }
       }

@@ -51,10 +51,14 @@ const castStore = useCastStore()
 const showToast = inject('showToast', () => {})
 const castReceiverRef = ref(null)
 
-const { startListening, stopReceiving, connectionState } = useCastReceiver()
+// 将 CastReceiver 的 videoEl 传入 useCastReceiver，使视频流能正确绑定
+const { startListening, stopReceiving, connectionState, setVideoRef } = useCastReceiver()
 
 onMounted(() => {
-  // 监听手机端的投屏邀请（不再自动生成 roomId）
+  // 等待 DOM 渲染完成后绑定 video 元素
+  if (castReceiverRef.value?.videoEl) {
+    setVideoRef(castReceiverRef.value.videoEl)
+  }
   startListening()
 })
 

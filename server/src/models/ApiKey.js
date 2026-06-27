@@ -32,10 +32,10 @@ async function deleteById(id) {
   for (const [provider, key] of _keys) {
     if (key.id === Number(id)) {
       _keys.delete(provider);
-      return true;
+      return key; // 返回被删记录，供调用方获取 provider 名称
     }
   }
-  return false;
+  return null;
 }
 
 module.exports = { save, findByProvider, listAll, deleteById };

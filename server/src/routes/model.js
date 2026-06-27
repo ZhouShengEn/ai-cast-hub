@@ -112,6 +112,10 @@ router.delete('/apikey/:id', async (req, res, next) => {
       });
     }
 
+    // 失效对应的 Provider 实例
+    adapter.removeProvider(deleted.provider);
+    logger.info(`[Model] API Key 已删除并失效 Provider: id=${id} provider=${deleted.provider}`);
+
     res.json({
       code: 0,
       data: null,

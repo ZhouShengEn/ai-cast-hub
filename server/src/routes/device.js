@@ -350,7 +350,7 @@ router.get('/list', async (req, res, next) => {
         platform: d.platform || 'unknown',
         lastSeen: d.last_seen_at,
         lastSeenAt: d.last_seen_at,
-        isOnline: d.isOnline || true,
+        isOnline: !!d.isOnline,
       })),
       message: 'ok',
     });

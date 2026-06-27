@@ -13,7 +13,7 @@ const props = defineProps({
   state: {
     type: String,
     default: 'disconnected',
-    validator: (v) => ['connecting', 'connected', 'disconnected', 'error'].includes(v),
+    validator: (v) => ['connecting', 'connected', 'disconnected', 'error', 'reconnecting'].includes(v),
   },
 })
 
@@ -23,6 +23,7 @@ const config = computed(() => {
     connected: { dot: 'bg-green-400', badge: 'bg-green-50 text-green-700', label: '已连接' },
     disconnected: { dot: 'bg-gray-300', badge: 'bg-gray-50 text-gray-500', label: '未连接' },
     error: { dot: 'bg-red-400', badge: 'bg-red-50 text-red-700', label: '连接失败' },
+    reconnecting: { dot: 'bg-orange-400', badge: 'bg-orange-50 text-orange-700', label: '重连中...' },
   }
   return map[props.state] || map.disconnected
 })

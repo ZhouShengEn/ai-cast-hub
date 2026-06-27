@@ -40,17 +40,21 @@ class _CastScreenState extends ConsumerState<CastScreen> {
         ? deviceState.pairedDevices.first.deviceName
         : null;
 
-    // 错误提示
-    if (castState.error != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(castState.error!),
-            backgroundColor: theme.colorScheme.error,
-          ),
-        );
-      });
-    }
+    // 错误提示（使用 addPostFrameCallback 避免 build 期间调用 SnackBar，且防止重复弹出）
+    ref.listen(castProvider, (prev, next) {
+      if (next.error != null && next.error != prev?.error) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(next.error!),
+                backgroundColor: Theme.of(context).colorScheme.error,
+              ),
+            );
+          }
+        });
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(

@@ -13,6 +13,7 @@ const { WebSocketServer } = require('ws');
 const DeviceModel = require('../models/Device');
 const roomManager = require('./roomManager');
 const signaling = require('../services/webrtc/signaling');
+const sessionManager = require('../services/webrtc/sessionManager');
 const { handleMessage } = require('./handler');
 const logger = require('../utils/logger');
 
@@ -183,9 +184,16 @@ function initWebSocket(server) {
 
   wss.on('close', () => {
     clearInterval(heartbeatTimer);
+    clearInterval(roomCleanupTimer);
     deviceConnections.clear();
     logger.info('[WS] WebSocket 服务已关闭');
   });
+
+  // 房间过期清理定时器（每5分钟清理超过10分钟无活动的房间）
+  const roomCleanupTimer = setInterval(() => {
+    sessionManager.cleanupExpired();
+    roomManager.cleanupExpired();
+  }, 5 * 60 * 1000);
 
   // 返回 wss 以便外部管理
   return wss;

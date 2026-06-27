@@ -113,11 +113,10 @@ export function useFileTransfer() {
       if (_onComplete) _onComplete(blob, transferMeta)
     } catch (err) {
       fileStore.updateTransferProgress(transferMeta.id, {
-        receivedChunks,
+        receivedChunks: receivedCount,
         totalChunks: transferMeta.totalChunks,
+        status: 'failed',
       })
-      const t = fileStore.transfers.find((x) => x.id === transferMeta.id)
-      if (t) t.status = 'failed'
       if (_onError) _onError(err)
     }
   }

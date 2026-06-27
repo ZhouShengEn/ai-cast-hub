@@ -14,10 +14,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   final _ctrl = TextEditingController();
   final _scroll = ScrollController();
   bool _autoConnectTried = false;
+  bool _shouldScrollDown = false;
 
   void _scrollDown() {
+    if (!_shouldScrollDown) return;
     Future.delayed(const Duration(milliseconds: 150), () {
-      if (_scroll.hasClients) _scroll.animateTo(_scroll.position.maxScrollExtent, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+      if (_scroll.hasClients && _shouldScrollDown) {
+        _scroll.animateTo(_scroll.position.maxScrollExtent, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+      }
     });
   }
 
@@ -38,6 +42,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       Future.microtask(() => n.connect(pid));
     }
     if (pid.isEmpty) _autoConnectTried = false;
+
+    // 新消息到达时自动滚动到底部
+    ref.listen(messageProvider, (prev, next) {
+      if (next.messages.length > (prev?.messages.length ?? 0)) {
+        _shouldScrollDown = true;
+        _scrollDown();
+      }
+    });
 
     return Scaffold(
       backgroundColor: theme.brightness == Brightness.light ? const Color(0xFFEDEDED) : null,
@@ -139,7 +151,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
               : ListView.builder(
                   controller: _scroll, padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
                   itemCount: s.messages.length,
-                  itemBuilder: (ctx, i) { _scrollDown(); return _bubble(theme, s.messages[i], n); },
+                  itemBuilder: (ctx, i) => _bubble(theme, s.messages[i], n),
                 ),
         ),
         // 输入栏（微信风格）
@@ -221,6 +233,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     }
     ref.read(messageProvider.notifier).sendText(t);
     _ctrl.clear();
+    _shouldScrollDown = true;
+    _scrollDown();
   }
 
   Widget _bubble(ThemeData t, ChatMessage m, MessageNotifier n) {

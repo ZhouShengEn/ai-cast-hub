@@ -25,6 +25,8 @@ class MessageState {
 
 class MessageNotifier extends StateNotifier<MessageState> {
   MessageService? _svc;
+  bool _disposed = false;
+
   MessageNotifier() : super(const MessageState());
 
   Future<void> connect(String pcDeviceId) async {
@@ -34,12 +36,12 @@ class MessageNotifier extends StateNotifier<MessageState> {
 
     // 注册断开回调
     _svc!.onDisconnected = () {
-      if (!mounted) return;
+      if (_disposed) return;
       state = state.copyWith(isConnected: false, isConnecting: false);
     };
 
     _svc!.onIncoming.listen((msg) {
-      if (!mounted) return;
+      if (_disposed) return;
       if (msg.id.startsWith('read_all_')) {
         _handleReadReceipt(msg);
         return;
@@ -182,7 +184,7 @@ class MessageNotifier extends StateNotifier<MessageState> {
   }
 
   @override
-  void dispose() { _svc?.dispose(); super.dispose(); }
+  void dispose() { _disposed = true; _svc?.dispose(); super.dispose(); }
 }
 
 final messageProvider = StateNotifierProvider<MessageNotifier, MessageState>((ref) => MessageNotifier());

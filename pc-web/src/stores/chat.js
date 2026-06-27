@@ -136,6 +136,8 @@ export const useChatStore = defineStore('chat', {
       }
       this.messages.push(aiMsg)
 
+      const isTempConv = String(convId).startsWith('temp_')
+
       try {
         const { abort, stream } = await chatApi.sendMessage(convId, content, model)
         this._abortController = { abort }
@@ -166,6 +168,12 @@ export const useChatStore = defineStore('chat', {
               let parsed
               try {
                 parsed = JSON.parse(payload)
+                if (parsed.type === 'conversation_created') {
+                  // 服务端创建了真实对话 → 替换临时对话
+                  this._replaceTempConversation(convId, parsed.conversationId)
+                  convId = parsed.conversationId
+                  continue
+                }
                 if (parsed.type === 'error') {
                   throw new Error(parsed.error || '流式响应错误')
                 }
@@ -176,13 +184,12 @@ export const useChatStore = defineStore('chat', {
                   if (onToken) onToken(token)
                 }
               } catch (parseErr) {
-                // 可能是不完整的 JSON，忽略
-                if (parsed?.type !== 'error') {
-                  // 放回 buffer 等待更多数据
-                  buffer = line + '\n' + buffer
-                } else {
-                  throw parseErr
+                // 如果是错误类型 payload 但 JSON 解析失败，直接抛出
+                if (payload.includes('"type":"error"') || payload.includes("'type':'error'")) {
+                  throw new Error('SSE 流错误')
                 }
+                // JSON 不完整（跨 TCP 分片），放回 buffer
+                buffer = line + '\n' + buffer
               }
             }
           }
@@ -238,6 +245,15 @@ export const useChatStore = defineStore('chat', {
         msg.streaming = false
       }
       this.streamingContent = ''
+    },
+
+    /** 用服务端返回的真实 ID 替换临时对话 */
+    _replaceTempConversation(tempId, realId) {
+      const tempConv = this.conversations.find((c) => String(c.id) === String(tempId))
+      if (tempConv) {
+        tempConv.id = realId
+        this.activeConversationId = realId
+      }
     },
 
     /** 设置当前模型 */

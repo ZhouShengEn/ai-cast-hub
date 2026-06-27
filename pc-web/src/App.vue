@@ -72,7 +72,7 @@
 </template>
 
 <script setup>
-import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
+import { ref, computed, provide, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useWebSocket } from './composables/useWebSocket'
 import { useDeviceStore } from './stores/device'
@@ -113,7 +113,6 @@ function isActive(path) {
 }
 
 // 监听路由变化，更新消息页面查看状态
-import { watch } from 'vue'
 watch(() => route.path, (newPath) => {
   messageStore.setViewing(newPath === '/message')
 }, { immediate: false })

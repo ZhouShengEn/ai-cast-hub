@@ -18,9 +18,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // 初始化加载设备信息
-    Future.microtask(() {
-      ref.read(deviceProvider.notifier).registerDevice();
+    // 先尝试获取已有设备信息，仅当设备未注册时才注册
+    Future.microtask(() async {
+      final notifier = ref.read(deviceProvider.notifier);
+      try {
+        await notifier.fetchDeviceInfo();
+        await notifier.fetchDeviceList();
+      } catch (_) {
+        // 设备未注册或网络不通，尝试注册
+        await notifier.registerDevice();
+      }
     });
   }
 

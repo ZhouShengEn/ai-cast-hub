@@ -202,13 +202,13 @@ export function useWebRTC(config = {}) {
     console.log('[WebRTC] ICE servers updated:', _iceServers.length)
   }
 
-  /** 从服务器获取 ICE 配置 */
+  /** 从服务器获取 ICE 配置（使用 Axios 确保认证头） */
   async function fetchIceServers() {
     try {
-      const resp = await fetch('/api/v1/webrtc/config')
-      const body = await resp.json()
-      if (body.code === 0 && body.data?.iceServers) {
-        setIceServers(body.data.iceServers)
+      const client = (await import('../api/client.js')).default
+      const data = await client.get('/api/v1/webrtc/config')
+      if (data?.iceServers) {
+        setIceServers(data.iceServers)
         return
       }
     } catch (e) {

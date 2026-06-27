@@ -168,6 +168,17 @@ function refreshProvider(providerName, apiKey) {
 }
 
 /**
+ * 移除 Provider 实例（当 API Key 被删除时调用）
+ * @param {string} providerName - Provider 名称
+ */
+function removeProvider(providerName) {
+  const existed = providerInstances.delete(providerName);
+  if (existed) {
+    logger.info(`[AI Adapter] Provider "${providerName}" 已失效`);
+  }
+}
+
+/**
  * 获取所有可用模型列表（从所有已配置 Provider 聚合）
  * @returns {Array<{provider: string, models: Array<string>}>}
  */
@@ -202,6 +213,7 @@ module.exports = {
   countTokens,
   getProviderInstances,
   refreshProvider,
+  removeProvider,
   getAllModels,
   parseModelId,
 };

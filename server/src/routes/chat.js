@@ -11,8 +11,6 @@ const { Router } = require('express');
 const { chatSendSchema } = require('../utils/validators');
 const conversationService = require('../services/ai/conversation');
 const ConversationModel = require('../models/Conversation');
-const tokenCounter = require('../services/ai/tokenCounter');
-const { parseModelId } = require('../services/ai/adapter');
 const logger = require('../utils/logger');
 
 const router = Router();
@@ -76,21 +74,7 @@ router.post('/send', async (req, res, next) => {
       res.write(`data: ${JSON.stringify({ type: 'error', error: streamErr.message })}\n\n`);
     }
 
-    // 记录 token 用量
-    if (totalOutputTokens > 0) {
-      try {
-        const { provider, modelName } = parseModelId(model);
-        await tokenCounter.recordUsage(
-          req.deviceUuid,
-          modelName,
-          provider,
-          0, // input tokens 在 sendMessage 内部已记录
-          totalOutputTokens
-        );
-      } catch (e) {
-        logger.warn(`[Chat] Token 记录失败: ${e.message}`);
-      }
-    }
+    // Token 用量已在 conversationService.sendMessage 内部记录，此处无需重复记录
 
     res.write('data: [DONE]\n\n');
     res.end();

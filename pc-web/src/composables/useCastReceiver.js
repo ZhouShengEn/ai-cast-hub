@@ -9,11 +9,12 @@ import { useCastStore } from '../stores/cast'
  * 监听 room_invitation → 发送 join_room → 接收 offer/answer/ICE
  * 最终绑定 remoteStream 到 video 元素。
  *
- * @returns {{ startListening, stopReceiving, videoRef, connectionState }}
+ * @param {import('vue').Ref<HTMLVideoElement|null>} [externalVideoRef] - 外部传入的 video 元素引用
+ * @returns {{ startListening, stopReceiving, connectionState, setVideoRef }}
  */
-export function useCastReceiver() {
+export function useCastReceiver(externalVideoRef) {
   const castStore = useCastStore()
-  const videoRef = ref(null)
+  const videoRef = externalVideoRef || ref(null)
   const connectionState = ref('disconnected')
 
   const { send, onMessage, offMessage } = useWebSocket()
@@ -189,10 +190,15 @@ export function useCastReceiver() {
     _currentRoomId = null
   }
 
+  /** 允许外部更新 videoRef */
+  function setVideoRef(ref) {
+    videoRef.value = ref?.value || ref
+  }
+
   return {
     startListening,
     stopReceiving,
-    videoRef,
+    setVideoRef,
     connectionState,
   }
 }

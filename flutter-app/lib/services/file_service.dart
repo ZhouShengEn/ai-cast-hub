@@ -63,11 +63,13 @@ class FileService {
   /// 开始分片传输
   /// [transferId] 传输任务 ID
   /// [bytes] 文件二进制数据
+  /// [checksum] 文件 SHA-256 校验和
   /// [dataChannel] WebRTC DataChannel（可选，通过 P2P 发送）
   /// 返回进度流
   Stream<double> startTransfer({
     required String transferId,
     required Uint8List bytes,
+    required String checksum,
     webrtc.RTCDataChannel? dataChannel,
   }) async* {
     final totalChunks =
@@ -103,7 +105,7 @@ class FileService {
     }
 
     // 传输完成
-    await _sendComplete(transferId, checksum: '');
+    await _sendComplete(transferId, checksum: checksum);
     yield 1.0;
   }
 
@@ -120,7 +122,9 @@ class FileService {
         'total': total,
         'data': chunk,
       });
-    } catch (_) {}
+    } catch (e) {
+      throw Exception('分片 $seq 发送失败: $e');
+    }
   }
 
   /// 发送传输完成信号
@@ -129,7 +133,9 @@ class FileService {
       await _client.post('/file/transfer/$transferId/complete', data: {
         'checksum': checksum,
       });
-    } catch (_) {}
+    } catch (e) {
+      throw Exception('传输完成确认失败: $e');
+    }
   }
 
   /// 取消传输

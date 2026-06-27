@@ -48,7 +48,7 @@ router.get('/tokens', async (req, res, next) => {
 
 /**
  * GET /api/v1/stats/tokens/by-model
- * 按模型维度统计（当前设备）
+ * 按模型维度统计（当前设备），返回更详细的按模型分组的原始记录
  * Query: startDate, endDate
  */
 router.get('/tokens/by-model', async (req, res, next) => {
@@ -57,9 +57,20 @@ router.get('/tokens/by-model', async (req, res, next) => {
 
     const stats = await tokenCounter.getStats(req.deviceUuid, startDate, endDate);
 
+    // 返回按模型分组的详细统计（区别于 /tokens 的汇总+模型组合格式）
+    const byModel = stats.map(s => ({
+      model: s.model_name,
+      provider: s.provider,
+      totalTokens: s.total_tokens,
+      inputTokens: s.total_input_tokens,
+      outputTokens: s.total_output_tokens,
+      requests: s.request_count,
+      cost: s.total_cost,
+    }));
+
     res.json({
       code: 0,
-      data: { models: stats },
+      data: { models: byModel },
       message: 'ok',
     });
   } catch (err) {

@@ -133,10 +133,11 @@ class FileNotifier extends StateNotifier<FileState> {
 
       if (_cancelled) return;
 
-      // 开始分片传输
+      // 开始分片传输（传入 checksum）
       final progressStream = _service.startTransfer(
         transferId: transferId,
         bytes: fileBytes,
+        checksum: checksum,
       );
 
       _progressSubscription = progressStream.listen(
