@@ -122,6 +122,16 @@ function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
 
       roomManager.joinRoom(roomId, deviceUuid, ws, room.type);
 
+      // 通知房间创建者（对方）对端已加入，可以开始发 offer
+      const peerDevice = sessionManager.getPeerDevice(roomId, deviceUuid);
+      if (peerDevice) {
+        sendToDevice(peerDevice, {
+          type: 'peer_joined',
+          roomId,
+          payload: { roomId, peerDeviceUuid: deviceUuid },
+        }, getWsByDeviceUuid);
+      }
+
       return {
         type: 'room_joined',
         roomId,

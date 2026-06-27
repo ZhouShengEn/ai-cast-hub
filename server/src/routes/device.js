@@ -343,6 +343,7 @@ router.get('/list', async (req, res, next) => {
       code: 0,
       data: pairedDevices.map(d => ({
         uuid: d.device_uuid,
+        deviceUuid: d.device_uuid, // 前端使用此字段
         id: d.device_uuid, // 兼容前端
         name: d.device_name,
         deviceName: d.device_name,

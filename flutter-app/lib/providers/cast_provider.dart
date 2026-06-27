@@ -35,15 +35,9 @@ class CastState {
 
 /// 投屏状态管理
 class CastNotifier extends StateNotifier<CastState> {
-  final CastService _service = CastService();
+  CastService? _service;
 
   CastNotifier() : super(const CastState());
-
-  /// 扫描二维码并开始投屏
-  /// [pcDeviceId] 从二维码解析得到的目标设备 UUID
-  Future<void> scanQRCode(String pcDeviceId) async {
-    state = state.copyWith(error: null);
-  }
 
   /// 开始投屏
   Future<void> startCasting(String pcDeviceId) async {
@@ -55,12 +49,15 @@ class CastNotifier extends StateNotifier<CastState> {
       error: null,
     );
 
+    _service = CastService();
+    _service!.onStatusChanged = (status) {
+      if (state.isCasting) {
+        state = state.copyWith(connectionState: status);
+      }
+    };
+
     try {
-      final session = await _service.createCastSession(pcDeviceId);
-
-      // 开始屏幕捕获
-      await _service.startCapture();
-
+      final session = await _service!.createCastSession(pcDeviceId);
       state = state.copyWith(
         roomId: session.roomId,
         connectionState: session.status,
@@ -77,15 +74,21 @@ class CastNotifier extends StateNotifier<CastState> {
   /// 停止投屏
   Future<void> stopCasting() async {
     try {
-      await _service.endCastSession();
-      state = state.copyWith(
-        isCasting: false,
-        connectionState: 'disconnected',
-        roomId: null,
-      );
-    } catch (e) {
-      state = state.copyWith(error: '停止投屏失败: $e');
+      await _service?.endCastSession();
+    } catch (_) {
+      // 忽略停止时的错误
     }
+    state = state.copyWith(
+      isCasting: false,
+      connectionState: 'disconnected',
+      roomId: null,
+    );
+  }
+
+  @override
+  void dispose() {
+    _service?.dispose();
+    super.dispose();
   }
 }
 

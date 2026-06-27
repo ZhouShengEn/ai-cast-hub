@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../utils/constants.dart';
@@ -40,6 +41,9 @@ class WebSocketService {
   int _reconnectAttempts = 0;
   bool _intentionalClose = false;
 
+  /// 用于等待服务端 connected/error 确认
+  Completer<void>? _connectCompleter;
+
   /// 重连最大间隔（指数退避上限）
   static const Duration _maxReconnectDelay = Duration(seconds: 30);
 
@@ -61,35 +65,56 @@ class WebSocketService {
   Stream<Map<String, dynamic>> get messages => _messageController.stream;
 
   /// 连接到 WebSocket 服务器
+  ///
+  /// 等待服务端发回 connected 确认消息后才返回。
+  /// 如果认证失败（error 消息）或超时，抛出异常。
   Future<void> connect() async {
-    if (_connectionState == WsConnectionState.connected ||
-        _connectionState == WsConnectionState.connecting) {
+    if (_connectionState == WsConnectionState.connected) {
       return;
+    }
+
+    // 如果正在连接中，等待 5s
+    if (_connectionState == WsConnectionState.connecting) {
+      if (_connectCompleter != null) {
+        try {
+          await _connectCompleter!.future.timeout(
+            const Duration(seconds: 5),
+          );
+          return;
+        } catch (_) {}
+      }
     }
 
     _intentionalClose = false;
     _setConnectionState(WsConnectionState.connecting);
+    _connectCompleter = Completer<void>();
 
     try {
-      final uuid = _storage.getDeviceUuid() ?? '';
-      final key = _storage.getTransferKey() ?? '';
+      final uuid = _storage.getDeviceUuid();
+      final key = _storage.getTransferKey();
       final serverBase = _storage.getServerUrl();
 
-      // 从 HTTP URL 推导 WS URL
+      final uuidShort = (uuid?.length ?? 0) >= 8 ? uuid!.substring(0, 8) : (uuid ?? 'null');
+      debugPrint('[WS] 准备连接: server=$serverBase, uuid=$uuidShort...');
+
+      if (uuid == null || uuid.isEmpty) {
+        throw Exception('设备 UUID 未注册，请先返回首页完成设备注册');
+      }
+      if (key == null || key.isEmpty) {
+        throw Exception('设备 transferKey 未生成，请先返回首页完成设备注册');
+      }
+
       final wsUrl = serverBase
           .replaceFirst('http://', 'ws://')
           .replaceFirst('https://', 'wss://')
           .replaceFirst('/api/v1', '');
       final uri = Uri.parse('$wsUrl/ws?deviceUuid=$uuid&transferKey=$key');
 
+      debugPrint('[WS] 连接: $uri');
       _channel = WebSocketChannel.connect(uri);
 
       await _channel!.ready;
-
-      _setConnectionState(WsConnectionState.connected);
-      _reconnectAttempts = 0;
-
-      _startHeartbeat();
+      debugPrint('[WS] TCP 连接已建立，等待服务端确认...');
 
       _subscription = _channel!.stream.listen(
         _onMessage,
@@ -97,21 +122,42 @@ class WebSocketService {
         onDone: _onDone,
         cancelOnError: false,
       );
+
+      // 等待服务端发回 connected 确认（最多10秒）
+      await _connectCompleter!.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          throw TimeoutException(
+            'WebSocket 服务端确认超时，请检查:\n'
+            '1. 服务器是否在 ${_storage.getServerUrl()} 运行\n'
+            '2. 设备 UUID 和 transferKey 是否正确',
+          );
+        },
+      );
+
+      debugPrint('[WS] 连接成功');
     } catch (e) {
+      debugPrint('[WS] 连接失败: $e');
       _setConnectionState(WsConnectionState.disconnected);
-      _scheduleReconnect();
+      rethrow;
     }
   }
 
   /// 发送 JSON 消息
-  void send(Map<String, dynamic> message) {
+  /// 如果未连接则打印警告并返回 false
+  bool send(Map<String, dynamic> message) {
     if (_connectionState != WsConnectionState.connected || _channel == null) {
-      return;
+      debugPrint('[WS] 发送失败: 未连接, 消息=${message['type']}');
+      return false;
     }
     try {
-      _channel!.sink.add(jsonEncode(message));
-    } catch (_) {
-      // 发送失败，忽略
+      final json = jsonEncode(message);
+      _channel!.sink.add(json);
+      debugPrint('[WS] >> ${message['type']}');
+      return true;
+    } catch (e) {
+      debugPrint('[WS] 发送异常: $e');
+      return false;
     }
   }
 
@@ -136,7 +182,9 @@ class WebSocketService {
   // ---- 内部方法 ----
 
   void _setConnectionState(WsConnectionState state) {
+    if (_connectionState == state) return;
     _connectionState = state;
+    debugPrint('[WS] 状态: $state');
     if (!_connectionStateController.isClosed) {
       _connectionStateController.add(state);
     }
@@ -147,27 +195,54 @@ class WebSocketService {
       final message = jsonDecode(raw as String) as Map<String, dynamic>;
       final type = message['type'] as String?;
 
-      // 处理心跳 pong
+      // 心跳 pong
       if (type == 'pong') {
         _heartbeatTimeoutTimer?.cancel();
         return;
       }
 
-      // 发送到消息流
+      debugPrint('[WS] << $type');
+
+      // 服务端连接确认
+      if (type == 'connected') {
+        _setConnectionState(WsConnectionState.connected);
+        _reconnectAttempts = 0;
+        _startHeartbeat();
+        if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
+          _connectCompleter!.complete();
+        }
+        return;
+      }
+
+      // 服务端认证错误（连接阶段的 error 不转发给业务层）
+      if (type == 'error' && _connectionState == WsConnectionState.connecting) {
+        final errMsg = message['payload']?['message'] as String? ?? '认证失败';
+        debugPrint('[WS] 认证错误: $errMsg');
+        if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
+          _connectCompleter!.completeError(
+            Exception('WebSocket 认证失败: $errMsg\n请返回首页重新注册设备'),
+          );
+        }
+        return;
+      }
+
+      // 其他消息发送到业务流
       if (!_messageController.isClosed) {
         _messageController.add(message);
       }
-    } catch (_) {
-      // 解析失败，忽略
+    } catch (e) {
+      debugPrint('[WS] 解析消息失败: $e');
     }
   }
 
   void _onError(dynamic error) {
+    debugPrint('[WS] 错误: $error');
     _setConnectionState(WsConnectionState.disconnected);
     _maybeReconnect();
   }
 
   void _onDone() {
+    debugPrint('[WS] 连接关闭, code=${_channel?.closeCode}');
     _setConnectionState(WsConnectionState.disconnected);
     _maybeReconnect();
   }
@@ -175,9 +250,14 @@ class WebSocketService {
   /// 判断是否应该重连（认证失败不重连）
   void _maybeReconnect() {
     final closeCode = _channel?.closeCode ?? 0;
-    // 认证失败（4000-4003）不重连，避免无限循环
     if (closeCode >= 4000 && closeCode <= 4003) {
+      debugPrint('[WS] 认证失败(code=$closeCode)，放弃重连');
       _intentionalClose = true;
+      if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
+        _connectCompleter!.completeError(
+          Exception('WebSocket 认证失败(code=$closeCode)，请返回首页重新注册设备'),
+        );
+      }
       return;
     }
     _scheduleReconnect();
@@ -189,13 +269,13 @@ class WebSocketService {
     _heartbeatTimer = Timer.periodic(AppConstants.wsHeartbeatInterval, (_) {
       send({'type': 'ping'});
 
-      // 设置 pong 超时
       _heartbeatTimeoutTimer?.cancel();
-      _heartbeatTimeoutTimer =
-          Timer(AppConstants.wsHeartbeatTimeout - AppConstants.wsHeartbeatInterval, () {
-        // pong 超时，重连
-        _channel?.sink.close();
-      });
+      _heartbeatTimeoutTimer = Timer(
+        AppConstants.wsHeartbeatTimeout - AppConstants.wsHeartbeatInterval,
+        () {
+          _channel?.sink.close();
+        },
+      );
     });
   }
 
@@ -208,10 +288,7 @@ class WebSocketService {
     _heartbeatTimeoutTimer?.cancel();
 
     final delay = Duration(
-      seconds: min(
-        pow(2, _reconnectAttempts).toInt(),
-        _maxReconnectDelay.inSeconds,
-      ),
+      seconds: min(pow(2, _reconnectAttempts).toInt(), _maxReconnectDelay.inSeconds),
     );
     _reconnectAttempts++;
 

@@ -6,21 +6,19 @@ import { useCastStore } from '../stores/cast'
 /**
  * 投屏接收 Composable
  *
- * 组合 WebSocket 信令 + WebRTC，处理投屏房间的
- * offer/answer/ice 交换，最终绑定 remoteStream 到 video 元素。
+ * 监听 room_invitation → 发送 join_room → 接收 offer/answer/ICE
+ * 最终绑定 remoteStream 到 video 元素。
  *
- * @returns {{ startReceiving, stopReceiving, videoRef, connectionState }}
+ * @returns {{ startListening, stopReceiving, videoRef, connectionState }}
  */
 export function useCastReceiver() {
   const castStore = useCastStore()
   const videoRef = ref(null)
   const connectionState = ref('disconnected')
 
-  const { send, onMessage, offMessage, connectionState: wsState } = useWebSocket()
+  const { send, onMessage, offMessage } = useWebSocket()
   const {
-    connectionState: rtcState,
     remoteStream,
-    createOffer,
     handleOffer,
     handleAnswer,
     handleIceCandidate,
@@ -31,56 +29,79 @@ export function useCastReceiver() {
 
   let _currentRoomId = null
 
-  /** 开始接收投屏 */
-  function startReceiving(roomId) {
+  // 保存回调引用以便注销
+  let _invitationHandler = null
+  let _signalHandler = null
+  let _roomClosedHandler = null
+  let _iceCandidateCb = null
+  let _trackCb = null
+
+  /**
+   * 开始监听投屏邀请
+   * PC 端页面加载后调用，等待手机端发起 create_room
+   */
+  function startListening() {
+    connectionState.value = 'disconnected'
+    castStore.setConnectionState('disconnected')
+
+    // 监听房间邀请
+    _invitationHandler = (msg) => {
+      _handleInvitation(msg)
+    }
+    onMessage('room_invitation', _invitationHandler)
+
+    // 监听房间关闭
+    _roomClosedHandler = (msg) => {
+      if (_currentRoomId && msg.roomId === _currentRoomId) {
+        stopReceiving()
+      }
+    }
+    onMessage('room_closed', _roomClosedHandler)
+  }
+
+  /** 处理房间邀请 */
+  function _handleInvitation(msg) {
+    const roomId = msg.roomId
+    if (!roomId) return
+
     _currentRoomId = roomId
+    castStore.roomId = roomId
     connectionState.value = 'connecting'
     castStore.setConnectionState('connecting')
 
-    // WebSocket 连接由 App.vue 全局管理，这里只注册信令监听
-
-    // 监听 ICE 候选并发送
-    onIceCandidate((candidate) => {
-      send({
-        type: 'signal',
-        roomId: _currentRoomId,
-        payload: {
-          type: 'ice',
-          candidate: candidate.toJSON(),
-        },
-      })
+    // 加入房间
+    send({
+      type: 'join_room',
+      roomId,
     })
 
-    // 监听远程流
-    onTrack(() => {
-      if (remoteStream.value) {
-        castStore.setRemoteStream(remoteStream.value)
-        if (videoRef.value) {
-          videoRef.value.srcObject = remoteStream.value
-        }
-        connectionState.value = 'connected'
-        castStore.setConnectionState('connected')
-      }
-    })
+    // 设置 WebRTC 回调
+    _setupWebRTCCallbacks()
 
-    // 监听 WebSocket 信令消息
-    onMessage('signal', async (msg) => {
-      if (!msg.roomId || msg.roomId !== _currentRoomId) return
+    // 监听信令消息
+    _signalHandler = async (signalMsg) => {
+      if (!signalMsg.roomId || signalMsg.roomId !== _currentRoomId) return
 
-      const payload = msg.payload || {}
+      const payload = signalMsg.payload || {}
+      // 服务器转发时使用 signalType 字段
+      const signalType = payload.signalType || payload.type
+
       try {
-        if (payload.type === 'offer') {
-          // 收到手机端 offer
-          const answer = await handleOffer(payload.sdp, (localSdp) => {
+        if (signalType === 'offer') {
+          // 收到手机端 offer → 创建 answer 并回复
+          await handleOffer(payload.sdp, (localSdp) => {
             send({
               type: 'signal',
               roomId: _currentRoomId,
-              payload: { type: 'answer', sdp: localSdp },
+              payload: {
+                signalType: 'answer',
+                sdp: localSdp,
+              },
             })
           })
-        } else if (payload.type === 'answer') {
+        } else if (signalType === 'answer') {
           await handleAnswer(payload.sdp)
-        } else if (payload.type === 'ice') {
+        } else if (signalType === 'ice_candidate') {
           await handleIceCandidate(payload.candidate)
         }
       } catch (err) {
@@ -89,11 +110,56 @@ export function useCastReceiver() {
         castStore.setConnectionState('error')
         castStore.error = err.message
       }
-    })
+    }
+    onMessage('signal', _signalHandler)
+  }
+
+  /** 设置 WebRTC 回调 */
+  function _setupWebRTCCallbacks() {
+    // 监听 ICE 候选并发送给手机端
+    _iceCandidateCb = (candidate) => {
+      send({
+        type: 'signal',
+        roomId: _currentRoomId,
+        payload: {
+          signalType: 'ice_candidate',
+          candidate: candidate.toJSON(),
+        },
+      })
+    }
+    onIceCandidate(_iceCandidateCb)
+
+    // 监听远程媒体流
+    _trackCb = () => {
+      if (remoteStream.value) {
+        castStore.setRemoteStream(remoteStream.value)
+        if (videoRef.value) {
+          videoRef.value.srcObject = remoteStream.value
+        }
+        connectionState.value = 'connected'
+        castStore.setConnectionState('connected')
+      }
+    }
+    onTrack(_trackCb)
   }
 
   /** 停止接收 */
   function stopReceiving() {
+    if (_currentRoomId) {
+      send({ type: 'close_room', roomId: _currentRoomId })
+    }
+    if (_invitationHandler) {
+      offMessage('room_invitation', _invitationHandler)
+      _invitationHandler = null
+    }
+    if (_signalHandler) {
+      offMessage('signal', _signalHandler)
+      _signalHandler = null
+    }
+    if (_roomClosedHandler) {
+      offMessage('room_closed', _roomClosedHandler)
+      _roomClosedHandler = null
+    }
     rtcClose()
     if (videoRef.value) {
       videoRef.value.srcObject = null
@@ -104,7 +170,7 @@ export function useCastReceiver() {
   }
 
   return {
-    startReceiving,
+    startListening,
     stopReceiving,
     videoRef,
     connectionState,

@@ -27,9 +27,9 @@ class Device {
 
   factory Device.fromJson(Map<String, dynamic> json) {
     return Device(
-      id: json['id'] as String? ?? '',
-      deviceUuid: json['deviceUuid'] as String? ?? '',
-      deviceName: json['deviceName'] as String? ?? '',
+      id: (json['id'] as String?) ?? (json['deviceUuid'] as String?) ?? (json['uuid'] as String?) ?? '',
+      deviceUuid: (json['deviceUuid'] as String?) ?? (json['uuid'] as String?) ?? '',
+      deviceName: (json['deviceName'] as String?) ?? (json['name'] as String?) ?? '',
       platform: json['platform'] as String? ?? '',
       transferKey: json['transferKey'] as String?,
       createdAt: json['createdAt'] != null

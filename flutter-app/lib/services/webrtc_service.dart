@@ -11,6 +11,9 @@ class WebrtcService {
   webrtc.RTCDataChannel? _dataChannel;
   webrtc.MediaStream? _localStream;
 
+  /// ICE 候选回调
+  void Function(webrtc.RTCIceCandidate)? _onIceCandidateCallback;
+
   /// 远端媒体流通知
   final StreamController<webrtc.MediaStream> _remoteStreamController =
       StreamController<webrtc.MediaStream>.broadcast();
@@ -25,6 +28,11 @@ class WebrtcService {
   /// 数据通道消息
   Stream<webrtc.RTCDataChannelMessage> get onDataChannelMessage =>
       _dataChannelMessageController.stream;
+
+  /// 设置 ICE 候选回调
+  void onIceCandidate(void Function(webrtc.RTCIceCandidate) callback) {
+    _onIceCandidateCallback = callback;
+  }
 
   /// 创建 RTCPeerConnection
   Future<webrtc.RTCPeerConnection> createPeerConnection(
@@ -50,9 +58,9 @@ class WebrtcService {
       _setupDataChannelListeners(channel);
     };
 
-    // ICE 候选事件
+    // ICE 候选事件 → 通过回调传出
     _peerConnection!.onIceCandidate = (webrtc.RTCIceCandidate candidate) {
-      // ICE 候选将通过回调方式传出（在 cast_service 中处理）
+      _onIceCandidateCallback?.call(candidate);
     };
 
     // ICE 连接状态变化
@@ -136,14 +144,54 @@ class WebrtcService {
     _peerConnection!.addTrack(track);
   }
 
+  /// 将本地 MediaStream 的所有轨道添加到 PeerConnection
+  /// 接收端通过 onTrack 事件能拿到完整的 streams
+  Future<void> addStream(webrtc.MediaStream stream) async {
+    _ensureConnection();
+    _localStream = stream;
+    for (final track in stream.getTracks()) {
+      await _peerConnection!.addTrack(track, stream);
+    }
+  }
+
+  /// 屏幕捕获（Web 端使用 getDisplayMedia）
+  /// 返回包含视频轨（和可选音频轨）的 MediaStream
+  Future<webrtc.MediaStream> startScreenCapture() async {
+    final stream = await webrtc.navigator.mediaDevices.getDisplayMedia(
+      <String, dynamic>{
+        'video': <String, dynamic>{
+          'mandatory': <String, dynamic>{
+            'maxWidth': 1920,
+            'maxHeight': 1080,
+            'maxFrameRate': 30,
+          },
+        },
+        'audio': true,
+      },
+    );
+    _localStream = stream;
+    return stream;
+  }
+
+  /// 停止屏幕捕获
+  Future<void> stopScreenCapture() async {
+    if (_localStream != null) {
+      for (final track in _localStream!.getTracks()) {
+        await track.stop();
+      }
+      await _localStream!.dispose();
+      _localStream = null;
+    }
+  }
+
   /// 关闭连接并清理资源
   Future<void> close() async {
     _dataChannel?.close();
     _dataChannel = null;
-    _localStream?.dispose();
-    _localStream = null;
+    await stopScreenCapture();
     await _peerConnection?.close();
     _peerConnection = null;
+    _onIceCandidateCallback = null;
   }
 
   /// 释放所有资源
@@ -151,6 +199,7 @@ class WebrtcService {
     close();
     _remoteStreamController.close();
     _dataChannelMessageController.close();
+    _onIceCandidateCallback = null;
   }
 
   /// 获取当前 PeerConnection 实例

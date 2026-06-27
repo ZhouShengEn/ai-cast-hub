@@ -6,7 +6,7 @@
       class="w-full h-full object-contain"
       autoplay
       playsinline
-      muted
+      :muted="isMuted"
     ></video>
 
     <!-- 加载状态 -->
@@ -34,6 +34,24 @@
     >
       ⛶
     </button>
+
+    <!-- 取消静音按钮（浏览器自动播放策略需要用户交互才能播放声音） -->
+    <button
+      v-if="connectionState === 'connected' && isMuted"
+      class="absolute bottom-3 left-3 px-3 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white text-sm flex items-center gap-1 transition-colors"
+      @click="unmute"
+      title="开启声音"
+    >
+      🔇 点击开启声音
+    </button>
+    <button
+      v-else-if="connectionState === 'connected' && !isMuted"
+      class="absolute bottom-3 left-3 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors"
+      @click="mute"
+      title="静音"
+    >
+      🔊
+    </button>
   </div>
 </template>
 
@@ -52,6 +70,9 @@ const props = defineProps({
 /** 暴露 video ref 供 composable 绑定 */
 const videoEl = ref(null)
 defineExpose({ videoEl })
+
+/** 静音状态（默认静音以满足浏览器自动播放策略，用户可手动取消） */
+const isMuted = ref(true)
 
 const stateMessage = computed(() => {
   const map = {
@@ -72,6 +93,23 @@ watch(
     }
   }
 )
+
+/** 取消静音 */
+function unmute() {
+  isMuted.value = false
+  if (videoEl.value) {
+    videoEl.value.muted = false
+    videoEl.value.play().catch(() => {})
+  }
+}
+
+/** 静音 */
+function mute() {
+  isMuted.value = true
+  if (videoEl.value) {
+    videoEl.value.muted = true
+  }
+}
 
 /** 全屏切换 */
 function toggleFullscreen() {

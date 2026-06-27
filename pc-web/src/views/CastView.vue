@@ -51,13 +51,11 @@ const castStore = useCastStore()
 const showToast = inject('showToast', () => {})
 const castReceiverRef = ref(null)
 
-const { startReceiving, stopReceiving, connectionState } = useCastReceiver()
+const { startListening, stopReceiving, connectionState } = useCastReceiver()
 
 onMounted(() => {
-  const deviceUuid = localStorage.getItem('deviceUuid') || ''
-  const roomId = `cast_${deviceUuid}_${Date.now()}`
-  castStore.roomId = roomId
-  startReceiving(roomId)
+  // 监听手机端的投屏邀请（不再自动生成 roomId）
+  startListening()
 })
 
 onUnmounted(() => {
