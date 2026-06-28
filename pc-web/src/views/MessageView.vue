@@ -3,16 +3,26 @@
     <div class="px-6 py-3 bg-white border-b border-gray-100 flex items-center justify-between">
       <h2 class="text-lg font-semibold text-gray-800">消息</h2>
       <div class="flex items-center gap-3">
-        <span v-if="store.isConnecting" class="text-xs text-blue-600">连接中...</span>
+        <span v-if="store.error" class="text-xs text-red-600">连接失败</span>
+        <span v-else-if="store.isConnecting" class="text-xs text-blue-600">连接中...</span>
         <span v-else-if="store.isConnected" class="text-xs text-green-600">已连接</span>
         <span v-else-if="store.messages.length > 0" class="text-xs text-orange-500">已断开</span>
         <span v-else class="text-xs text-gray-400">等待连接</span>
         <button v-if="store.isConnected" @click="disconnectChannel" class="text-xs text-red-500 hover:text-red-600 underline">断开</button>
+        <button v-if="store.error" @click="retryConnect" class="text-xs text-blue-500 hover:text-blue-600 underline">重试</button>
       </div>
     </div>
 
+    <!-- 连接失败横幅 -->
+    <div v-if="store.error"
+      class="px-4 py-2 bg-red-50 border-b border-red-200 flex items-center justify-between">
+      <span class="text-sm text-red-600">{{ store.error }}</span>
+      <button @click="retryConnect"
+        class="px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600 transition-colors">重试</button>
+    </div>
+
     <!-- 断开连接横幅 -->
-    <div v-if="!store.isConnected && store.messages.length > 0"
+    <div v-if="!store.error && !store.isConnected && store.messages.length > 0"
       class="px-4 py-2 bg-orange-50 border-b border-orange-200 flex items-center justify-between">
       <span class="text-sm text-orange-600">连接已断开，等待 App 端重连</span>
     </div>
@@ -163,11 +173,17 @@ async function connectToApp() {
   if (!pairedDevices.value.length) return
   const targetDevice = pairedDevices.value[0]
   console.log('[MessageView] 主动连接 App:', targetDevice.deviceName, targetDevice.deviceUuid)
+  store.error = null
   try {
     await createRoom(targetDevice.deviceUuid)
   } catch (e) {
     console.error('[MessageView] 连接失败:', e)
   }
+}
+
+function retryConnect() {
+  store.error = null
+  connectToApp()
 }
 
 function removeFileMsg(id) {

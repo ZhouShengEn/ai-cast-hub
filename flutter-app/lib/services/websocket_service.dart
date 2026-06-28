@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../utils/constants.dart';
 import 'local_storage.dart';
+import 'debug_service.dart';
 
 /// WebSocket 连接状态
 enum WsConnectionState {
@@ -181,6 +182,7 @@ class WebSocketService {
       _channel!.sink.add(json);
       final type = message['type'] as String? ?? '?';
       _debugAdd('>>>', type, message);
+      DebugService().debug('[WS] >> $type ${_truncatePayload(message)}');
       if (!debugMode) debugPrint('[WS] >> $type');
       return true;
     } catch (e) {
@@ -212,6 +214,7 @@ class WebSocketService {
   void _setConnectionState(WsConnectionState state) {
     if (_connectionState == state) return;
     _connectionState = state;
+    DebugService().info('[WS] 连接状态: $state');
     debugPrint('[WS] 状态: $state');
     if (!_connectionStateController.isClosed) {
       _connectionStateController.add(state);
@@ -231,6 +234,7 @@ class WebSocketService {
       }
 
       _debugAdd('<<<', type ?? '?', message);
+      DebugService().debug('[WS] << $type ${_truncatePayload(message)}');
       if (!debugMode) debugPrint('[WS] << $type');
 
       // 服务端连接确认

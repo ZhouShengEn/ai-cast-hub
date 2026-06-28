@@ -95,6 +95,18 @@ export function useCastReceiver(externalVideoRef) {
     console.log('[CastReceiver] 收到room_invitation, roomId:', roomId)
     if (!roomId) return
 
+    // 防止重复处理同一个房间（服务器可能因重连等原因重复发送邀请）
+    if (_currentRoomId === roomId && connectionState.value !== 'disconnected') {
+      console.log('[CastReceiver] 已在处理同一房间，跳过重复邀请')
+      return
+    }
+
+    // 先清理旧的信令处理器（避免累积重复handler导致同一条offer被处理两次）
+    if (_signalHandler) {
+      offMessage('signal', _signalHandler)
+      _signalHandler = null
+    }
+
     // 先清理之前的连接状态（确保每次投屏使用全新的 PC，避免 SDP m-line 顺序错误）
     _cleanupCallbacks()
     rtcClose()
@@ -140,10 +152,15 @@ export function useCastReceiver(externalVideoRef) {
           console.log('[CastReceiver] 收到answer, SDP长度:', payload.sdp?.length)
           await handleAnswer(payload.sdp)
         } else if (signalType === 'ice_candidate') {
-          console.log('[CastReceiver] 收到ice_candidate')
-          await handleIceCandidate(payload.candidate)
+          // ICE 候选失败不影响已有连接（视频可能已经在播放）
+          try {
+            await handleIceCandidate(payload.candidate)
+          } catch (iceErr) {
+            console.warn('[CastReceiver] ICE候选添加失败（非致命）:', iceErr.message)
+          }
         }
       } catch (err) {
+        // offer/answer 处理失败才是致命错误
         console.error('[CastReceiver] 投屏信令处理失败:', err)
         connectionState.value = 'error'
         castStore.setConnectionState('error')
@@ -191,11 +208,12 @@ export function useCastReceiver(externalVideoRef) {
     }
     onTrack(_trackCb)
 
-    // 监听 WebRTC 连接状态变化：连接断开时自动清理
+    // 监听 WebRTC 连接状态变化：仅在连接彻底失败或关闭时自动清理
+    // 注意: 'disconnected' 在 WebRTC 中是可恢复状态（ICE consent 短暂失败），不应销毁连接
     _connectionStateCb = (state) => {
       console.log('[CastReceiver] WebRTC连接状态变化:', state)
-      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-        console.log('[CastReceiver] WebRTC 连接断开 (state=%s)，清理投屏状态', state)
+      if (state === 'failed' || state === 'closed') {
+        console.log('[CastReceiver] WebRTC 连接不可恢复 (state=%s)，清理投屏状态', state)
         stopReceiving()
       }
     }

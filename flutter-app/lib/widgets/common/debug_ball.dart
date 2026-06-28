@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../services/debug_service.dart';
 
 /// 可拖拽悬浮调试球
@@ -170,6 +171,15 @@ class _DebugBallState extends State<DebugBall> {
                     _tab('Console', 0),
                     _tab('Network', 1),
                     const Spacer(),
+                    // 一键复制按钮
+                    if (_tabIndex == 0)
+                      GestureDetector(
+                        onTap: () => _copyConsole(),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8),
+                          child: Icon(Icons.copy_all, size: 16, color: Colors.grey),
+                        ),
+                      ),
                     GestureDetector(
                       onTap: () { _debug.clear(); setState(() {}); },
                       child: const Padding(
@@ -212,28 +222,76 @@ class _DebugBallState extends State<DebugBall> {
   }
 
   // ==================== Console ====================
+
+  /// 复制控制台全部日志到剪贴板
+  void _copyConsole() {
+    final logs = _debug.logs;
+    if (logs.isEmpty) return;
+    final buffer = StringBuffer();
+    for (final e in logs.reversed) {
+      buffer.writeln('[${_fmtTime(e.time)}][${_lvlTag(e.level)}] ${e.message}');
+    }
+    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('已复制 ${logs.length} 条日志', style: TextStyle(fontSize: 12)),
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+          width: 200,
+        ),
+      );
+    }
+  }
+
   Widget _consolePanel() {
     final logs = _debug.logs;
     if (logs.isEmpty) return _empty('暂无日志');
-    return ListView.builder(
-      padding: const EdgeInsets.all(8),
-      itemCount: logs.length,
-      itemBuilder: (_, i) {
-        final e = logs[logs.length - 1 - i];
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 4),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SelectableText(_fmtTime(e.time), style: const TextStyle(color: Colors.grey, fontSize: 10, fontFamily: 'monospace'), enableInteractiveSelection: true),
-              const SizedBox(width: 4),
-              SelectableText(_lvlTag(e.level), style: TextStyle(color: _lvlColor(e.level), fontSize: 10, fontFamily: 'monospace', fontWeight: FontWeight.bold), enableInteractiveSelection: true),
-              const SizedBox(width: 4),
-              Expanded(child: SelectableText(e.message, style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace'), enableInteractiveSelection: true)),
-            ],
+    return Column(
+      children: [
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(8),
+            itemCount: logs.length,
+            itemBuilder: (_, i) {
+              final e = logs[logs.length - 1 - i];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SelectableText(_fmtTime(e.time), style: const TextStyle(color: Colors.grey, fontSize: 10, fontFamily: 'monospace'), enableInteractiveSelection: true),
+                    const SizedBox(width: 4),
+                    SelectableText(_lvlTag(e.level), style: TextStyle(color: _lvlColor(e.level), fontSize: 10, fontFamily: 'monospace', fontWeight: FontWeight.bold), enableInteractiveSelection: true),
+                    const SizedBox(width: 4),
+                    Expanded(child: SelectableText(e.message, style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace'), enableInteractiveSelection: true)),
+                  ],
+                ),
+              );
+            },
           ),
-        );
-      },
+        ),
+        // 一键复制按钮
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: const BoxDecoration(
+            color: Color(0xFF2D2D2D),
+            border: Border(top: BorderSide(color: Color(0xFF444444), width: 0.5)),
+          ),
+          child: GestureDetector(
+            onTap: () => _copyConsole(),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                Icon(Icons.copy_all, size: 14, color: Colors.grey),
+                SizedBox(width: 4),
+                Text('一键复制全部日志', style: TextStyle(color: Colors.grey, fontSize: 11)),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 

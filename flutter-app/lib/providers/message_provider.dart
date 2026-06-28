@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/chat_message.dart';
 import '../services/message_service.dart';
+import '../services/debug_service.dart';
 import '../utils/file_download.dart';
 
 class MessageState {
@@ -137,6 +138,7 @@ class MessageNotifier extends StateNotifier<MessageState> {
       await _svc!.connect(pcDeviceId);
       state = state.copyWith(isConnected: true, isConnecting: false);
     } catch (e) {
+      DebugService().error('[MsgProvider] 连接失败: $e');
       state = state.copyWith(isConnecting: false, error: '$e');
     }
   }

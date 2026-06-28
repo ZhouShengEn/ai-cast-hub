@@ -30,6 +30,7 @@ export function useMessageTransfer() {
   let _dataChannel = null
   let _fileBuffers = {}
   let _fileMetas = {}
+  let _connectionTimeout = null
 
   // 回调引用
   let _invitationHandler = null
@@ -207,6 +208,17 @@ export function useMessageTransfer() {
       }})
     })
 
+    // 设置连接超时（30 秒后若 DC 仍未打开则标记失败）
+    _clearConnectionTimeout()
+    _connectionTimeout = setTimeout(() => {
+      if (store.isConnecting && !store.isConnected) {
+        console.error('[Message] 连接超时（30 秒），App 端未响应')
+        store.isConnecting = false
+        store.error = '连接超时，请确认 App 端已打开消息页面后重试'
+        disconnect()
+      }
+    }, 30000)
+
     console.log('[Message] PC端主动连接流程已启动')
   }
 
@@ -216,10 +228,23 @@ export function useMessageTransfer() {
       console.warn('[Message] room_invitation 缺少 roomId')
       return
     }
+
+    // 防止重复处理同一个房间
+    if (_currentRoomId === roomId && store.isConnecting) {
+      console.log('[Message] 已在处理同一房间，跳过重复邀请')
+      return
+    }
+
     console.log('[Message] 处理房间邀请 roomId=', roomId)
     _currentRoomId = roomId
     store.roomId = roomId
     store.isConnecting = true
+
+    // 先清理旧的 signal handler，避免累积重复处理
+    if (_signalHandler) {
+      offMessage('signal', _signalHandler)
+      _signalHandler = null
+    }
 
     // 加入房间
     console.log('[Message] 发送 join_room')
@@ -280,7 +305,9 @@ export function useMessageTransfer() {
     }
     channel.onopen = () => {
       console.log('[Message] DataChannel 已打开 (onopen)')
+      _clearConnectionTimeout()
       store.setConnected(true)
+      store.error = null
     }
     channel.onmessage = (event) => {
       if (typeof event.data === 'string') {
@@ -666,6 +693,7 @@ export function useMessageTransfer() {
   /** 断开当前会话（保持 invitation 监听，可接受新连接） */
   function disconnect() {
     console.log('[Message] 断开消息通道（保持 invitation 监听）')
+    _clearConnectionTimeout()
     if (_currentRoomId) send({ type: 'close_room', roomId: _currentRoomId })
     // 只清理当前会话的 handlers，不清理 invitation/room_closed（保持可重连）
     if (_signalHandler) {
@@ -689,6 +717,13 @@ export function useMessageTransfer() {
     _dataChannel = null
     _fileBuffers = {}
     _fileMetas = {}
+  }
+
+  function _clearConnectionTimeout() {
+    if (_connectionTimeout) {
+      clearTimeout(_connectionTimeout)
+      _connectionTimeout = null
+    }
   }
 
   /** 触发浏览器下载文件（由消息页面的下载按钮调用） */

@@ -1,6 +1,6 @@
 <template>
   <div class="relative w-full aspect-video bg-black rounded-lg overflow-hidden">
-    <!-- 视频区域 -->
+    <!-- 视频区域（始终渲染，确保 videoEl 始终可用） -->
     <video
       ref="videoEl"
       class="w-full h-full object-contain"
@@ -9,7 +9,7 @@
       :muted="isMuted"
     ></video>
 
-    <!-- 加载状态 -->
+    <!-- 等待/加载状态覆盖层 -->
     <div
       v-if="connectionState !== 'connected'"
       class="absolute inset-0 flex flex-col items-center justify-center bg-black/60 text-white"
@@ -56,7 +56,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Spinner from '../common/Spinner.vue'
 import ConnectionBadge from './ConnectionBadge.vue'
 
@@ -77,29 +77,39 @@ const isMuted = ref(true)
 const stateMessage = computed(() => {
   const map = {
     connecting: '正在连接手机...',
-    disconnected: '等待手机连接...',
+    disconnected: '等待手机投屏…',
     error: '连接失败，请重试',
     reconnecting: '正在重新连接...',
   }
-  return map[props.connectionState] || '等待手机连接...'
+  return map[props.connectionState] || '等待手机投屏…'
 })
 
-/** 绑定/解绑 MediaStream（immediate: 组件挂载时 stream 可能已存在） */
+/** 绑定远程流到 video 元素 */
+function _bindStream(stream) {
+  if (!videoEl.value) return
+  videoEl.value.srcObject = stream || null
+  if (stream) {
+    console.log('[CastReceiver] video.srcObject 已绑定, tracks:', stream.getTracks().map(t => `${t.kind}(id=${t.id.substring(0, 8)})`).join(', '))
+  } else {
+    console.log('[CastReceiver] video.srcObject 已解绑')
+  }
+}
+
+onMounted(() => {
+  // 组件挂载后，如果 stream 已存在（可能在挂载前就已到达），立即绑定
+  if (props.stream) {
+    console.log('[CastReceiver] 挂载时绑定已有流:', props.stream.id)
+    _bindStream(props.stream)
+  }
+})
+
+/** 监听 stream prop 变化 */
 watch(
   () => props.stream,
   (stream) => {
-    console.log('[CastReceiver] watch stream变化:', stream ? `有新流(stream id: ${stream.id})` : 'null')
-    if (videoEl.value) {
-      videoEl.value.srcObject = stream || null
-      console.log('[CastReceiver] video srcObject 已', stream ? '绑定' : '解绑')
-      if (stream) {
-        console.log('[CastReceiver] 流的tracks:', stream.getTracks().map(t => `${t.kind}(id=${t.id})`).join(', '))
-      }
-    } else {
-      console.log('[CastReceiver] ⚠️ videoEl.value为空，跳过srcObject设置')
-    }
+    console.log('[CastReceiver] watch stream变化:', stream ? `有新流(id=${stream.id.substring(0, 8)})` : 'null')
+    _bindStream(stream)
   },
-  { immediate: true }
 )
 
 /** 取消静音 */

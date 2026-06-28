@@ -142,11 +142,16 @@ class _CastScreenState extends ConsumerState<CastScreen> {
         const SizedBox(height: 24),
         // 投屏控制面板
         Expanded(
-          child: Center(
+          child: SingleChildScrollView(
             child: CastControlPanel(
               isCasting: castState.isCasting,
               connectionState: castState.connectionState,
               pcDeviceName: pcName,
+              captureMode: castState.captureMode,
+              frontCamera: castState.frontCamera,
+              onSwitchToScreen: () => castNotifier.setScreenMode(),
+              onSwitchToCamera: () => castNotifier.setCameraMode(),
+              onToggleCamera: () => castNotifier.toggleCamera(),
               onStartCast: () {
                 // 直接开始投屏（已绑定设备）
                 if (pcName != null) {

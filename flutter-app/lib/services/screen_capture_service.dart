@@ -8,19 +8,21 @@ import 'debug_service.dart';
 /// 屏幕捕获服务
 ///
 /// 跨平台屏幕捕获：
-/// - Android: flutter_webrtc 内建 MediaProjection + ForegroundService
-///   直接调用 getUserMedia(sourceId:'screen')，无需自定义 MethodChannel
+/// - Android: getDisplayMedia（flutter_webrtc MediaProjection 内建支持）
 /// - Web: 浏览器原生 getDisplayMedia
 class ScreenCaptureService {
   bool _isCapturing = false;
   webrtc.MediaStream? _localStream;
+  String? _lastCaptureSource; // 'screen' | 'camera:front' | 'camera:back'
 
   bool get isCapturing => _isCapturing;
+  String? get lastCaptureSource => _lastCaptureSource;
 
   /// 开始屏幕捕获
   ///
-  /// Android: flutter_webrtc 内部自动处理 MediaProjection 权限弹窗和 ForegroundService
-  /// Web: 浏览器弹出屏幕选择器（标签页/窗口/整个屏幕）
+  /// 统一使用 getDisplayMedia：
+  /// - Android: flutter_webrtc 处理后启动 MediaProjection 系统弹窗
+  /// - Web: 浏览器弹出屏幕选择器（标签页/窗口/整个屏幕）
   ///
   /// 返回包含视频轨和可选音频轨的 MediaStream
   Future<webrtc.MediaStream> startCapture() async {
@@ -28,8 +30,8 @@ class ScreenCaptureService {
       throw StateError('屏幕捕获已在进行中');
     }
 
-    if (kIsWeb) {
-      debugPrint('[ScreenCapture] Web: 使用 getDisplayMedia');
+    DebugService().log('[ScreenCapture] 使用 getDisplayMedia 进行屏幕捕获 (平台: ${kIsWeb ? "Web" : "Native"})');
+    try {
       final stream = await webrtc.navigator.mediaDevices.getDisplayMedia(
         <String, dynamic>{
           'video': <String, dynamic>{
@@ -39,46 +41,24 @@ class ScreenCaptureService {
               'maxFrameRate': 30,
             },
           },
-          'audio': true,
-        },
-      );
-      _localStream = stream;
-      _isCapturing = true;
-      return stream;
-    }
-
-    // Android / iOS: 使用 flutter_webrtc 内建屏幕捕获
-    // flutter_webrtc 自动处理 MediaProjection 权限 + ForegroundService
-    debugPrint('[ScreenCapture] 平台: 使用 flutter_webrtc 内建屏幕捕获');
-    try {
-      final stream = await webrtc.navigator.mediaDevices.getUserMedia(
-        <String, dynamic>{
           'audio': false,
-          'video': <String, dynamic>{
-            'sourceId': 'screen',
-            'mandatory': <String, dynamic>{
-              'maxWidth': 1920,
-              'maxHeight': 1080,
-              'maxFrameRate': 30,
-            },
-          },
         },
       );
       _localStream = stream;
       _isCapturing = true;
-      debugPrint('[ScreenCapture] 屏幕捕获流已创建, tracks=${stream.getTracks().length}');
-      DebugService().log('[ScreenCapture] 屏幕捕获流已创建, tracks=${stream.getTracks().length}');
+      _lastCaptureSource = 'screen';
+
+      final tracks = stream.getTracks();
+      DebugService().log('[ScreenCapture] 屏幕捕获成功, tracks=${tracks.length}', level: LogLevel.info);
 
       // 详细打印每个track的信息
-      for (final track in stream.getTracks()) {
+      for (final track in tracks) {
         final trackInfo = 'track: kind=${track.kind}, enabled=${track.enabled}, muted=${track.muted}, id=${track.id}';
-        debugPrint('[ScreenCapture] $trackInfo');
-        DebugService().log('[ScreenCapture] $trackInfo');
+        DebugService().debug('[ScreenCapture] $trackInfo');
       }
       return stream;
     } catch (e) {
-      debugPrint('[ScreenCapture] 捕获失败: $e');
-      DebugService().log('[ScreenCapture] 捕获失败: $e', level: LogLevel.error);
+      DebugService().error('[ScreenCapture] 屏幕捕获失败: $e');
       rethrow;
     }
   }
@@ -97,6 +77,6 @@ class ScreenCaptureService {
     }
 
     _isCapturing = false;
-    debugPrint('[ScreenCapture] 停止');
+    DebugService().log('[ScreenCapture] 停止');
   }
 }

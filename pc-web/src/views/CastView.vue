@@ -9,31 +9,21 @@
     <!-- 内容区 -->
     <div class="flex-1 p-6 overflow-auto">
       <div class="max-w-4xl mx-auto">
-        <!-- 未连接 → 等待投屏 -->
-        <div v-if="castStore.connectionState !== 'connected'" class="card text-center py-12">
-          <div class="text-6xl mb-4">📱→💻</div>
-          <h3 class="text-lg font-semibold mb-2">等待手机投屏</h3>
-          <p class="text-sm text-gray-500">
-            请先在手机 App 输入首页的连接码完成设备绑定<br/>
-            然后在手机端发起投屏，画面将显示在此处
-          </p>
-        </div>
+        <!-- CastReceiver 始终渲染（v-show 保持 DOM 存在），等待状态由组件内部覆盖层处理 -->
+        <CastReceiver
+          ref="castReceiverRef"
+          :connection-state="castStore.connectionState"
+          :stream="castStore.remoteStream"
+        />
 
-        <!-- 已连接 → 显示投屏视频 -->
-        <div v-else>
-          <CastReceiver
-            ref="castReceiverRef"
-            :connection-state="castStore.connectionState"
-            :stream="castStore.remoteStream"
-          />
-          <div class="flex justify-center mt-4">
-            <button
-              class="px-4 py-2 text-sm rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition-colors"
-              @click="stopCasting"
-            >
-              ⏹ 停止接收
-            </button>
-          </div>
+        <!-- 停止投屏按钮（仅连接后显示） -->
+        <div v-if="castStore.connectionState === 'connected'" class="flex justify-center mt-4">
+          <button
+            class="px-4 py-2 text-sm rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition-colors"
+            @click="stopCasting"
+          >
+            ⏹ 停止接收
+          </button>
         </div>
       </div>
     </div>
@@ -52,16 +42,13 @@ const showToast = inject('showToast', () => {})
 const castReceiverRef = ref(null)
 
 // 将 CastReceiver 的 videoEl 传入 useCastReceiver，使视频流能正确绑定
-const { startListening, stopReceiving, connectionState, setVideoRef } = useCastReceiver()
+const { startListening, stopReceiving, setVideoRef } = useCastReceiver()
 
-// 当 CastReceiver 组件渲染后（connectionState 变为 connected），绑定 video 元素
+// 当 CastReceiver 组件渲染后，绑定 video 元素
 watch(castReceiverRef, (ref) => {
   if (ref?.videoEl) {
-    console.log('[CastView] videoEl已获取，准备绑定到useCastReceiver')
+    console.log('[CastView] videoEl已获取，绑定到useCastReceiver')
     setVideoRef(ref.videoEl)
-    console.log('[CastView] videoEl已绑定到useCastReceiver')
-  } else {
-    console.log('[CastView] ⚠️ videoEl未获取到, ref:', ref)
   }
 })
 

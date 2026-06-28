@@ -6,6 +6,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'websocket_service.dart';
 import 'webrtc_service.dart';
 import 'screen_capture_service.dart';
+import 'camera_capture_service.dart';
 import 'api_client.dart';
 import 'debug_service.dart';
 import '../models/cast_session.dart';
@@ -38,10 +39,13 @@ class CastService {
   final WebSocketService _ws = WebSocketService.instance;
   final WebrtcService _webrtc = WebrtcService();
   final ScreenCaptureService _screenCapture = ScreenCaptureService();
+  final CameraCaptureService _cameraCapture = CameraCaptureService();
 
   StreamSubscription? _wsSubscription;
   CastSession? _currentSession;
   bool _isDisposed = false;
+  String _captureMode = 'screen'; // 'screen' | 'camera'
+  bool _cameraFacing = true; // true=前置, false=后置
 
   /// 用于等待 room_created 消息
   Completer<String>? _roomCreatedCompleter;
@@ -60,9 +64,16 @@ class CastService {
 
   /// 创建投屏会话
   /// [pcDeviceId] 目标 PC 设备的 UUID
-  Future<CastSession> createCastSession(String pcDeviceId) async {
+  /// [captureMode] 'screen'（投屏）或 'camera'（手机摄像）
+  /// [frontCamera] 摄像头模式下 true=前置, false=后置
+  Future<CastSession> createCastSession(String pcDeviceId, {
+    String captureMode = 'screen',
+    bool frontCamera = true,
+  }) async {
+    _captureMode = captureMode;
+    _cameraFacing = frontCamera;
     _castLog('═══════════════════════════════════════════');
-    _castLog('开始创建投屏会话, 目标PC: ${_safeId(pcDeviceId)}', level: LogLevel.info);
+    _castLog('开始创建投屏会话, 目标PC: ${_safeId(pcDeviceId)}, 模式: $_captureMode', level: LogLevel.info);
     _isDisposed = false;
 
     try {
@@ -158,12 +169,14 @@ class CastService {
       );
       _castLog('步骤6: peer_joined ✓');
 
-      // 7. 捕获屏幕（跨平台：Android MediaProjection / Web getDisplayMedia）
-      _castLog('步骤7: 开始屏幕捕获...', level: LogLevel.info);
+      // 7. 根据模式捕获画面（屏幕或摄像头）
+      _castLog('步骤7: 开始$_captureMode捕获...', level: LogLevel.info);
       onStatusChanged?.call('capturing');
-      final stream = await _screenCapture.startCapture();
+      final stream = _captureMode == 'camera'
+          ? await _cameraCapture.startCapture(frontCamera: _cameraFacing)
+          : await _screenCapture.startCapture();
       final tracks = stream.getTracks();
-      _castLog('步骤7: 屏幕捕获完成, tracks=${tracks.length}', level: LogLevel.info);
+      _castLog('步骤7: $_captureMode捕获完成, tracks=${tracks.length}', level: LogLevel.info);
       for (final t in tracks) {
         _castLog('  track: kind=${t.kind}, enabled=${t.enabled}, muted=${t.muted}, id=${_safeId(t.id)}');
       }
@@ -224,7 +237,11 @@ class CastService {
 
     await _wsSubscription?.cancel();
     _wsSubscription = null;
-    await _screenCapture.stopCapture();
+    if (_captureMode == 'camera') {
+      await _cameraCapture.stopCapture();
+    } else {
+      await _screenCapture.stopCapture();
+    }
     await _webrtc.close();
 
     if (_currentSession != null) {
@@ -354,6 +371,7 @@ class CastService {
   void dispose() {
     _isDisposed = true;
     _wsSubscription?.cancel();
+    _cameraCapture.dispose();
     _webrtc.dispose();
   }
 }

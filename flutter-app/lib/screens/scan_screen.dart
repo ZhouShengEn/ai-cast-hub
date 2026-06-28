@@ -125,7 +125,17 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         ),
       ),
       body: GestureDetector(
-        onTap: () => _focusNode.requestFocus(),
+        onTap: () {
+          // 点击空白区域重新拉起键盘
+          if (_focusNode.hasFocus) {
+            _focusNode.unfocus();
+            Future.delayed(const Duration(milliseconds: 50), () {
+              if (mounted) _focusNode.requestFocus();
+            });
+          } else {
+            _focusNode.requestFocus();
+          }
+        },
         behavior: HitTestBehavior.opaque,
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -165,27 +175,34 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               // 6 位数字展示框 + 隐藏的单个 TextField
               Stack(
                 children: [
-                  // 隐藏的输入框，捕获所有键盘输入
-                  Opacity(
-                    opacity: 0,
-                    child: SizedBox(
-                      height: 1,
-                      child: TextField(
-                        controller: _controller,
-                        focusNode: _focusNode,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        maxLength: 6,
-                        onChanged: (_) {
-                          setState(() {});
-                          _checkComplete();
-                        },
-                      ),
+                  // 隐藏的输入框，捕获所有键盘输入（使用 Offstage 代替 Opacity 避免焦点问题）
+                  Offstage(
+                    offstage: true,
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      maxLength: 6,
+                      onChanged: (_) {
+                        setState(() {});
+                        _checkComplete();
+                      },
                     ),
                   ),
                   // 可视化的 6 个方框
                   GestureDetector(
-                    onTap: () => _focusNode.requestFocus(),
+                    onTap: () {
+                      // 键盘被系统收起后 focusNode 可能仍有焦点，需先失焦再聚焦才能重新拉起键盘
+                      if (_focusNode.hasFocus) {
+                        _focusNode.unfocus();
+                        Future.delayed(const Duration(milliseconds: 50), () {
+                          if (mounted) _focusNode.requestFocus();
+                        });
+                      } else {
+                        _focusNode.requestFocus();
+                      }
+                    },
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: List.generate(6, (index) {

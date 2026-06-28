@@ -28,7 +28,21 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   @override
-  void dispose() { _ctrl.dispose(); _scroll.dispose(); super.dispose(); }
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(messageProvider.notifier).startListening();
+      ref.read(messageProvider.notifier).setViewing(true);
+    });
+  }
+
+  @override
+  void dispose() {
+    ref.read(messageProvider.notifier).setViewing(false);
+    _ctrl.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext ctx) {

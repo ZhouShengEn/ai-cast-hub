@@ -9,12 +9,20 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import '../models/chat_message.dart';
 import 'websocket_service.dart';
 import 'webrtc_service.dart';
+import 'debug_service.dart';
 
 /// 安全截取 ID 用于日志
 String _safeId(String? id) {
   if (id == null || id.isEmpty) return '(空)';
   if (id.length <= 8) return id;
   return '${id.substring(0, 8)}...';
+}
+
+/// 消息服务日志（输出到 debugPrint + 悬浮球 console）
+void _msgLog(String msg, {LogLevel level = LogLevel.debug}) {
+  final text = '[Msg] $msg';
+  debugPrint(text);
+  DebugService().log(text, level: level);
 }
 
 class MessageService {
@@ -24,6 +32,10 @@ class MessageService {
   StreamSubscription? _wsSub;
   String? _roomId;
   bool _connected = false;
+
+  /// 缓冲早到的 ICE 候选（remote description 设置前到达）
+  final List<Map<String, dynamic>> _pendingIceCandidates = [];
+  bool _remoteDescSet = false;
 
   Completer<void>? _dcOpenCompleter;
 
@@ -47,7 +59,7 @@ class MessageService {
   Future<void> startListening() async {
     if (_ws.connectionState != WsConnectionState.connected) {
       await _ws.connect().timeout(const Duration(seconds: 10), onTimeout: () {
-        debugPrint('[Msg] WebSocket 连接超时，稍后重试');
+        _msgLog('WebSocket 连接超时，稍后重试');
         return;
       });
     }
@@ -56,7 +68,7 @@ class MessageService {
     if (_wsStateSub == null) {
       _wsStateSub = _ws.connectionStateStream.listen((state) {
         if (state == WsConnectionState.connected) {
-          debugPrint('[Msg] WebSocket重连成功，重新注册消息监听');
+          _msgLog('WebSocket重连成功，重新注册消息监听');
           if (_wsSub != null) {
             _wsSub?.cancel();
             _wsSub = null;
@@ -64,7 +76,7 @@ class MessageService {
           _wsSub = _ws.messages.listen(_onMsg);
           // 如果之前是连接状态，重连后尝试恢复连接
           if (_connected) {
-            debugPrint('[Msg] 重连后尝试恢复消息连接');
+            _msgLog('重连后尝试恢复消息连接');
             _connected = false;
             onDisconnected?.call();
           }
@@ -74,13 +86,16 @@ class MessageService {
 
     if (_wsSub != null) return;
 
-    debugPrint('[Msg] 启动消息通道监听（被动模式）');
+    _msgLog('启动消息通道监听（被动模式）');
     _wsSub = _ws.messages.listen(_onMsg);
   }
 
   Future<void> connect(String pcDeviceId) async {
     if (_connected) return;
-    debugPrint('[Msg] 连接消息通道...');
+    _msgLog('连接消息通道...', level: LogLevel.info);
+
+    _pendingIceCandidates.clear();
+    _remoteDescSet = false;
 
     if (_ws.connectionState != WsConnectionState.connected) {
       await _ws.connect().timeout(const Duration(seconds: 10), onTimeout: () {
@@ -106,13 +121,13 @@ class MessageService {
     final dc = await _webrtc.createDataChannel('message');
     dc.onMessage = (webrtc.RTCDataChannelMessage msg) => _onDC(msg);
     dc.onDataChannelState = (webrtc.RTCDataChannelState state) {
-      debugPrint('[Msg] DC 状态: $state');
+      _msgLog('DC 状态: $state');
       if (state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
         if (_dcOpenCompleter != null && !_dcOpenCompleter!.isCompleted) {
           _dcOpenCompleter!.complete();
         }
       } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
-        debugPrint('[Msg] DC 已关闭，断开连接');
+        _msgLog('DC 已关闭，断开连接');
         _connected = false;
         _dcOpenCompleter = null;
         onDisconnected?.call();
@@ -138,13 +153,13 @@ class MessageService {
     });
 
     // 等待 PC 加入房间 (peer_joined)
-    debugPrint('[Msg] 等待 PC 加入房间 (peer_joined)...');
+    _msgLog('等待 PC 加入房间 (peer_joined)...', level: LogLevel.info);
     await _wsSub?.cancel();
     final peerJoinedCompleter = Completer<void>();
     _wsSub = _ws.messages.listen((msg) {
       final t = msg['type'] as String?;
       if (t == 'peer_joined') {
-        debugPrint('[Msg] peer_joined 收到 ✓');
+        _msgLog('peer_joined 收到 ✓');
         if (!peerJoinedCompleter.isCompleted) peerJoinedCompleter.complete();
       }
     });
@@ -154,7 +169,7 @@ class MessageService {
     });
 
     // 创建并发送 offer
-    debugPrint('[Msg] 创建并发送 offer...');
+    _msgLog('创建并发送 offer...');
     final offer = await _webrtc.createOffer();
     _ws.send({
       'type': 'signal', 'roomId': _roomId!,
@@ -169,16 +184,16 @@ class MessageService {
     try {
       await _dcOpenCompleter!.future.timeout(const Duration(seconds: 15));
       _connected = true;
-      debugPrint('[Msg] 通道已建立 (DC open)');
+      _msgLog('通道已建立 (DC open)');
     } catch (e) {
-      debugPrint('[Msg] DC open 超时: $e');
+      _msgLog('DC open 超时: $e');
       final dc2 = _webrtc.dataChannel;
       if (dc2 != null && dc2.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
         _connected = true;
-        debugPrint('[Msg] DC 已打开，标记已连接');
+        _msgLog('DC 已打开，标记已连接');
       } else {
         _connected = true;
-        debugPrint('[Msg] 标记已连接（DC 可能未完全打开，sendText 会重试）');
+        _msgLog('标记已连接（DC 可能未完全打开，sendText 会重试）');
       }
     }
   }
@@ -206,22 +221,25 @@ class MessageService {
     final fromDeviceUuid = payload['fromDeviceUuid'] as String?;
 
     if (roomId == null || roomType != 'message') {
-      debugPrint('[Msg] 忽略无效房间邀请: type=$roomType roomId=$roomId');
+      _msgLog('忽略无效房间邀请: type=$roomType roomId=$roomId');
       return;
     }
 
     if (_connected) {
-      debugPrint('[Msg] 已有活跃连接，忽略房间邀请');
+      _msgLog('已有活跃连接，忽略房间邀请');
       return;
     }
 
-    debugPrint('[Msg] 收到PC端房间邀请: roomId=${_safeId(roomId)} from=${_safeId(fromDeviceUuid)}');
+    _msgLog('收到PC端房间邀请: roomId=${_safeId(roomId)} from=${_safeId(fromDeviceUuid)}');
     _acceptRoomInvitation(roomId, fromDeviceUuid);
   }
 
   /// 接受房间邀请（PC端主动发起时，App端作为被动方）
   Future<void> _acceptRoomInvitation(String roomId, String? fromDeviceUuid) async {
     if (_connected) return;
+
+    _pendingIceCandidates.clear();
+    _remoteDescSet = false;
 
     try {
       await _webrtc.createPeerConnection({
@@ -242,13 +260,13 @@ class MessageService {
       final dc = await _webrtc.createDataChannel('message');
       dc.onMessage = (webrtc.RTCDataChannelMessage msg) => _onDC(msg);
       dc.onDataChannelState = (webrtc.RTCDataChannelState state) {
-        debugPrint('[Msg] DC 状态: $state');
+        _msgLog('DC 状态: $state');
         if (state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
           if (_dcOpenCompleter != null && !_dcOpenCompleter!.isCompleted) {
             _dcOpenCompleter!.complete();
           }
         } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
-          debugPrint('[Msg] DC 已关闭，断开连接');
+          _msgLog('DC 已关闭，断开连接');
           _connected = false;
           _dcOpenCompleter = null;
           onDisconnected?.call();
@@ -257,7 +275,7 @@ class MessageService {
 
       _roomId = roomId;
 
-      debugPrint('[Msg] 发送 join_room 响应邀请');
+      _msgLog('发送 join_room 响应邀请');
       _ws.send({'type': 'join_room', 'roomId': roomId});
 
       // 等待信号和DC打开
@@ -266,31 +284,83 @@ class MessageService {
       try {
         await _dcOpenCompleter!.future.timeout(const Duration(seconds: 15));
         _connected = true;
-        debugPrint('[Msg] 通道已建立 (DC open) - 响应PC邀请');
+        _msgLog('通道已建立 (DC open) - 响应PC邀请');
         onConnected?.call();
       } catch (e) {
-        debugPrint('[Msg] DC open 超时: $e');
+        _msgLog('DC open 超时: $e');
         final dc2 = _webrtc.dataChannel;
         if (dc2 != null && dc2.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
           _connected = true;
-          debugPrint('[Msg] DC 已打开，标记已连接');
+          _msgLog('DC 已打开，标记已连接');
           onConnected?.call();
         } else {
           _connected = true;
-          debugPrint('[Msg] 标记已连接（DC 可能未完全打开）');
+          _msgLog('标记已连接（DC 可能未完全打开）');
           onConnected?.call();
         }
       }
     } catch (e) {
-      debugPrint('[Msg] 接受房间邀请失败: $e');
+      _msgLog('接受房间邀请失败: $e');
     }
   }
 
-  void _onSignal(Map<String, dynamic> msg) {
+  void _onSignal(Map<String, dynamic> msg) async {
     final p = msg['payload'] as Map<String, dynamic>? ?? {};
     final st = p['signalType'] as String? ?? p['type'];
-    if (st == 'answer') _webrtc.handleAnswer(p['sdp'] as String);
-    else if (st == 'ice_candidate') _webrtc.handleIceCandidate(p['candidate'] as Map<String, dynamic>);
+    _msgLog('_onSignal: $st');
+
+    if (st == 'offer') {
+      // PC 端发来 offer（被动接受邀请流程）
+      _msgLog('收到PC的offer，设置远程SDP并创建answer');
+      try {
+        final answer = await _webrtc.handleOffer(p['sdp'] as String);
+        _remoteDescSet = true;
+        if (_roomId != null) {
+          _ws.send({
+            'type': 'signal', 'roomId': _roomId!,
+            'payload': {'signalType': 'answer', 'sdp': answer.sdp},
+          });
+        }
+        _flushIceCandidates();
+      } catch (e) {
+        _msgLog('处理offer失败: $e');
+      }
+    } else if (st == 'answer') {
+      // PC 端发来 answer（主动连接流程）
+      _msgLog('收到PC的answer，设置远程SDP');
+      try {
+        await _webrtc.handleAnswer(p['sdp'] as String);
+        _remoteDescSet = true;
+        _flushIceCandidates();
+      } catch (e) {
+        _msgLog('处理answer失败: $e');
+      }
+    } else if (st == 'ice_candidate') {
+      if (_remoteDescSet) {
+        try {
+          await _webrtc.handleIceCandidate(p['candidate'] as Map<String, dynamic>);
+        } catch (e) {
+          _msgLog('ICE候选添加失败（非致命）: $e');
+        }
+      } else {
+        _msgLog('缓冲ICE候选（remote description未设置）');
+        _pendingIceCandidates.add(p['candidate'] as Map<String, dynamic>);
+      }
+    }
+  }
+
+  /// 刷新缓冲的 ICE 候选（在 setRemoteDescription 后调用）
+  void _flushIceCandidates() {
+    if (_pendingIceCandidates.isEmpty) return;
+    _msgLog('刷新${_pendingIceCandidates.length}个缓冲的ICE候选');
+    for (final c in _pendingIceCandidates) {
+      try {
+        _webrtc.handleIceCandidate(c);
+      } catch (e) {
+        _msgLog('缓冲ICE候选添加失败: $e');
+      }
+    }
+    _pendingIceCandidates.clear();
   }
 
   void _onDC(webrtc.RTCDataChannelMessage msg) {
@@ -301,7 +371,7 @@ class MessageService {
     }
     try {
       final data = jsonDecode(msg.text) as Map<String, dynamic>;
-      debugPrint('[Msg] DC 收到: ${data['type']}');
+      _msgLog('DC 收到: ${data['type']}');
       switch (data['type']) {
         case 'text':
           _incomingCtl.add(ChatMessage(
@@ -312,7 +382,7 @@ class MessageService {
           ));
           break;
         case 'file_start':
-          debugPrint('[Msg RECV] file_start: id=${_safeId(data['id'])} file=${data['fileName']} chunks=${data['totalChunks']}');
+          _msgLog('RECV file_start: id=${_safeId(data['id'])} file=${data['fileName']} chunks=${data['totalChunks']}');
           _handleFileStart(data);
           break;
         case 'file_chunk':
@@ -326,7 +396,7 @@ class MessageService {
           _cancelReceive(data['id'] as String);
           break;
         case 'read_all':
-          debugPrint('[Msg] PC 端已读所有消息');
+          _msgLog('PC 端已读所有消息');
           _incomingCtl.add(ChatMessage(
             id: 'read_all_${DateTime.now().millisecondsSinceEpoch}', roomId: _roomId ?? '',
             type: MessageType.text, status: MessageStatus.sent,
@@ -335,20 +405,20 @@ class MessageService {
           ));
           break;
       }
-    } catch (e) { debugPrint('[Msg] DC error: $e'); }
+    } catch (e) { _msgLog('DC error: $e'); }
   }
 
   /// 解析二进制 chunk: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data]
   void _handleBinaryChunk(Uint8List packet) {
     if (packet.length < 9) {
-      debugPrint('[Msg RECV] 二进制包太小: ${packet.length}B');
+      _msgLog('RECV 二进制包太小: ${packet.length}B');
       return;
     }
 
     final idLen = packet[0];
     final headerSize = 1 + idLen + 4 + 4;
     if (packet.length < headerSize) {
-      debugPrint('[Msg RECV] 二进制包头不完整: packet=${packet.length} header=$headerSize idLen=$idLen');
+      _msgLog('RECV 二进制包头不完整: packet=${packet.length} header=$headerSize idLen=$idLen');
       return;
     }
 
@@ -361,13 +431,13 @@ class MessageService {
     final meta = _fileMetas[id];
 
     if (meta == null) {
-      debugPrint('[Msg RECV] ⚠ 收到未知文件 chunk: id=${_safeId(id)} seq=$seq/$total size=${chunkData.length}');
+      _msgLog('RECV ⚠ 收到未知文件 chunk: id=${_safeId(id)} seq=$seq/$total size=${chunkData.length}');
       return;
     }
 
     // 每 10 个 chunk 或首尾打日志
     if (seq == 0 || seq == total - 1 || seq % 10 == 0) {
-      debugPrint('[Msg RECV] chunk $seq/$total size=${chunkData.length}B received=${meta['chunksReceived']}');
+      _msgLog('RECV chunk $seq/$total size=${chunkData.length}B received=${meta['chunksReceived']}');
     }
 
     _handleChunk({
@@ -388,7 +458,7 @@ class MessageService {
     if (dc == null) return msg.copyWith(status: MessageStatus.failed);
 
     if (dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
-      debugPrint('[Msg] DC 未打开 (${dc.state})，等待...');
+      _msgLog('DC 未打开 (${dc.state})，等待...');
       if (_dcOpenCompleter == null || _dcOpenCompleter!.isCompleted) {
         _dcOpenCompleter = Completer<void>();
       }
@@ -410,10 +480,10 @@ class MessageService {
         'type': 'text', 'id': msg.id, 'text': text,
         'timestamp': msg.timestamp.millisecondsSinceEpoch,
       })));
-      debugPrint('[Msg] 文本已发送: $text');
+      _msgLog('文本已发送: $text');
       return msg.copyWith(status: MessageStatus.sent);
     } catch (e) {
-      debugPrint('[Msg] 发送失败: $e');
+      _msgLog('发送失败: $e');
       return msg.copyWith(status: MessageStatus.failed);
     }
   }
@@ -460,7 +530,7 @@ class MessageService {
     final idLen = idBytes.length;
 
     // 二进制流控发送每个 chunk
-    debugPrint('[Msg SEND] 开始发送文件 $total 个chunk, 文件大小=${f.size}, DC状态=${dc.state}');
+    _msgLog('SEND 开始发送文件 $total 个chunk, 文件大小=${f.size}, DC状态=${dc.state}');
     for (int i = 0; i < total; i++) {
       // 动态等待 DataChannel 缓冲区释放（防止溢出断开）
       var retryCount = 0;
@@ -469,12 +539,12 @@ class MessageService {
         await Future.delayed(const Duration(milliseconds: 10));
         retryCount++;
         if (retryCount > 500) {
-          debugPrint('[Msg SEND] 文件传输超时：DC 缓冲区持续满载 ba=$ba');
+          _msgLog('SEND 文件传输超时：DC 缓冲区持续满载 ba=$ba');
           _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'failed': true});
           throw Exception('连接超时');
         }
         if (dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
-          debugPrint('[Msg SEND] 文件传输中断：DC 状态变为 ${dc.state}');
+          _msgLog('SEND 文件传输中断：DC 状态变为 ${dc.state}');
           _progressCtl.add({'id': msg.id, 'progress': 0, 'failed': true});
           throw Exception('连接中断');
         }
@@ -501,10 +571,10 @@ class MessageService {
         dc.send(webrtc.RTCDataChannelMessage.fromBinary(packet));
         // 每 10 个 chunk 或首尾打日志
         if (i == 0 || i == total - 1 || i % 10 == 0) {
-          debugPrint('[Msg SEND] chunk $i/$total ba=${dc.bufferedAmount} size=${packet.length}');
+          _msgLog('SEND chunk $i/$total ba=${dc.bufferedAmount} size=${packet.length}');
         }
       } catch (sendErr) {
-        debugPrint('[Msg SEND] 发送 chunk $i/$total 失败: $sendErr');
+        _msgLog('SEND 发送 chunk $i/$total 失败: $sendErr');
         _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'failed': true});
         throw Exception('发送chunk失败: $sendErr');
       }
@@ -514,7 +584,7 @@ class MessageService {
       await Future.delayed(const Duration(milliseconds: 5));
     }
 
-    debugPrint('[Msg SEND] 所有chunk发送完毕，发送 file_end, id=${_safeId(msg.id)}');
+    _msgLog('SEND 所有chunk发送完毕，发送 file_end, id=${_safeId(msg.id)}');
     dc.send(webrtc.RTCDataChannelMessage(jsonEncode({'type': 'file_end', 'id': msg.id})));
     _progressCtl.add({'id': msg.id, 'progress': 1.0, 'sent': true});
     return msg.copyWith(status: MessageStatus.sent, progress: 1.0);
@@ -532,7 +602,7 @@ class MessageService {
         'type': 'read_all',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       })));
-      debugPrint('[Msg] 发送 read_all 给 PC');
+      _msgLog('发送 read_all 给 PC');
     }
   }
 
@@ -570,7 +640,7 @@ class MessageService {
     final id = d['id'] as String;
     final meta = _fileMetas[id];
     if (meta == null) {
-      debugPrint('[Msg RECV] ⚠ chunk 无对应 meta: id=${_safeId(id)}');
+      _msgLog('RECV ⚠ chunk 无对应 meta: id=${_safeId(id)}');
       return;
     }
     final buf = meta['buffer'] as List<Uint8List?>;
@@ -581,7 +651,7 @@ class MessageService {
 
     final rcvd = meta['chunksReceived'] as int;
     if (seq % 10 == 0 || rcvd >= total) {
-      debugPrint('[Msg RECV] chunk进度: $rcvd/$total');
+      _msgLog('RECV chunk进度: $rcvd/$total');
     }
 
     // 通知进度更新
@@ -590,13 +660,13 @@ class MessageService {
 
     // 检查是否全部接收完毕
     if (rcvd >= total) {
-      debugPrint('[Msg RECV] ✅ 所有chunk收齐，组装文件 id=${_safeId(id)}');
+      _msgLog('RECV ✅ 所有chunk收齐，组装文件 id=${_safeId(id)}');
       _assembleFile(id);
     }
   }
 
   void _handleFileEnd(Map<String, dynamic> d) {
-    debugPrint('[Msg RECV] file_end: id=${_safeId(d['id'])}');
+    _msgLog('RECV file_end: id=${_safeId(d['id'])}');
     // 兜底：如果 chunks 因某种原因未触发组装，file_end 确保完成
     _assembleFile(d['id'] as String);
   }
@@ -623,7 +693,7 @@ class MessageService {
       }
     }
 
-    debugPrint('[Msg RECV] 文件接收完成: $fileName (${merged.length} bytes)，触发下载');
+    _msgLog('RECV 文件接收完成: $fileName (${merged.length} bytes)，触发下载');
 
     // 触发下载（Web 端浏览器下载 / 移动端保存到本地）
     // 注意：不通过 _incomingCtl 重复添加消息，_handleFileStart 已添加过；
@@ -662,8 +732,10 @@ class MessageService {
     _roomId = null;
     _connected = false;
     _dcOpenCompleter = null;
+    _pendingIceCandidates.clear();
+    _remoteDescSet = false;
     onDisconnected?.call();
-    debugPrint('[Msg] 已断开');
+    _msgLog('已断开');
   }
 
   void dispose() { disconnect(); _incomingCtl.close(); _progressCtl.close(); }

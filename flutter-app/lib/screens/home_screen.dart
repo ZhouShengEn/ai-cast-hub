@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/device_provider.dart';
 import '../providers/message_provider.dart';
 import '../services/local_storage.dart';
+import '../services/local_storage.dart';
 import '../models/device.dart';
 import '../utils/extensions.dart';
 
@@ -26,6 +27,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 先尝试获取已有设备信息，仅当设备未注册时才注册
     Future.microtask(() async {
       final notifier = ref.read(deviceProvider.notifier);
+      final storage = LocalStorage.instance;
+
+      // 首次安装：没有 UUID 则直接注册，避免 fetchDeviceInfo 吞掉异常
+      final uuid = storage.getDeviceUuid();
+      if (uuid == null || uuid.isEmpty) {
+        await notifier.registerDevice();
+        return;
+      }
+
       try {
         await notifier.fetchDeviceInfo();
         await notifier.fetchDeviceList();
