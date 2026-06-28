@@ -3,7 +3,8 @@
     <div class="px-6 py-3 bg-white border-b border-gray-100 flex items-center justify-between">
       <h2 class="text-lg font-semibold text-gray-800">消息</h2>
       <div class="flex items-center gap-3">
-        <span v-if="store.isConnected" class="text-xs text-green-600">已连接</span>
+        <span v-if="store.isConnecting" class="text-xs text-blue-600">连接中...</span>
+        <span v-else-if="store.isConnected" class="text-xs text-green-600">已连接</span>
         <span v-else-if="store.messages.length > 0" class="text-xs text-orange-500">已断开</span>
         <span v-else class="text-xs text-gray-400">等待连接</span>
         <button v-if="store.isConnected" @click="disconnectChannel" class="text-xs text-red-500 hover:text-red-600 underline">断开</button>
@@ -21,7 +22,12 @@
       <div v-if="store.messages.length === 0" class="flex flex-col items-center justify-center h-full text-gray-400">
         <span class="text-4xl mb-3"></span>
         <p>暂无消息</p>
-        <p class="text-xs mt-1">等待手机端发起消息连接</p>
+        <p class="text-xs mt-1">等待连接或主动发起连接</p>
+        <button v-if="pairedDevices.length > 0 && !store.isConnected && !store.isConnecting"
+          @click="connectToApp"
+          class="mt-4 px-4 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600 transition-colors">
+          主动连接 App 端
+        </button>
       </div>
 
       <div v-for="msg in store.messages" :key="msg.id"
@@ -126,17 +132,21 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
 import { useMessageStore } from '../stores/message'
+import { useDeviceStore } from '../stores/device'
 import { useMessageTransfer } from '../composables/useMessageTransfer'
 
 const store = useMessageStore()
+const deviceStore = useDeviceStore()
 const {
-  sendText, pickAndSendFile, cancelTransfer, disconnect, downloadFile,
+  sendText, pickAndSendFile, cancelTransfer, disconnect, downloadFile, createRoom,
 } = useMessageTransfer()
 
 const textInput = ref('')
 const msgList = ref(null)
+
+const pairedDevices = computed(() => deviceStore.pairedDevices)
 
 function sendTextMsg() {
   const t = textInput.value.trim()
@@ -147,6 +157,17 @@ function sendTextMsg() {
 
 function disconnectChannel() {
   disconnect()
+}
+
+async function connectToApp() {
+  if (!pairedDevices.value.length) return
+  const targetDevice = pairedDevices.value[0]
+  console.log('[MessageView] 主动连接 App:', targetDevice.deviceName, targetDevice.deviceUuid)
+  try {
+    await createRoom(targetDevice.deviceUuid)
+  } catch (e) {
+    console.error('[MessageView] 连接失败:', e)
+  }
 }
 
 function removeFileMsg(id) {

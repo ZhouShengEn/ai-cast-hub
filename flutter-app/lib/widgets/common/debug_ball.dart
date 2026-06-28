@@ -225,11 +225,11 @@ class _DebugBallState extends State<DebugBall> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(_fmtTime(e.time), style: const TextStyle(color: Colors.grey, fontSize: 10, fontFamily: 'monospace')),
+              SelectableText(_fmtTime(e.time), style: const TextStyle(color: Colors.grey, fontSize: 10, fontFamily: 'monospace'), enableInteractiveSelection: true),
               const SizedBox(width: 4),
-              Text(_lvlTag(e.level), style: TextStyle(color: _lvlColor(e.level), fontSize: 10, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+              SelectableText(_lvlTag(e.level), style: TextStyle(color: _lvlColor(e.level), fontSize: 10, fontFamily: 'monospace', fontWeight: FontWeight.bold), enableInteractiveSelection: true),
               const SizedBox(width: 4),
-              Expanded(child: Text(e.message, style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace'))),
+              Expanded(child: SelectableText(e.message, style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace'), enableInteractiveSelection: true)),
             ],
           ),
         );

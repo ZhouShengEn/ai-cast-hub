@@ -241,6 +241,14 @@ export function useCastReceiver(externalVideoRef) {
   /** 允许外部更新 videoRef */
   function setVideoRef(ref) {
     videoRef.value = ref?.value || ref
+    console.log('[CastReceiver] setVideoRef: videoEl=', videoRef.value ? '存在' : 'null')
+    // 如果视频元素已可用且远程流已存在，立即绑定
+    if (videoRef.value && remoteStream.value) {
+      videoRef.value.srcObject = remoteStream.value
+      console.log('[CastReceiver] ✅ setVideoRef时重新绑定了远程流')
+    } else if (videoRef.value && !remoteStream.value) {
+      console.log('[CastReceiver] ⚠️ videoEl已就绪，但remoteStream尚未到达')
+    }
   }
 
   return {

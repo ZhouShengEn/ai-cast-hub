@@ -22,9 +22,11 @@ export function useMessageTransfer() {
   const {
     handleOffer, handleAnswer, handleIceCandidate,
     onIceCandidate, offIceCandidate, onDataChannel, offDataChannel, close: rtcClose,
+    createOffer, createDataChannel, dataChannel,
   } = useWebRTC('message')
 
   let _currentRoomId = null
+  let _currentRoomType = null
   let _dataChannel = null
   let _fileBuffers = {}
   let _fileMetas = {}
@@ -35,6 +37,7 @@ export function useMessageTransfer() {
   let _roomClosedHandler = null
   let _iceCandidateCb = null
   let _dataChannelCb = null
+  let _peerJoinedHandler = null
 
   /** 开始监听消息房间邀请（幂等：重复调用安全） */
   function startListening() {
@@ -65,18 +68,146 @@ export function useMessageTransfer() {
         console.log('[Message] 跳过非 message 类型:', msg.payload?.type)
         return
       }
+      _currentRoomType = 'message'
       _handleInvitation(msg)
     }
     onMessage('room_invitation', _invitationHandler)
 
     _roomClosedHandler = (msg) => {
       console.log('[Message] 收到 room_closed:', msg.roomId)
-      if (_currentRoomId && msg.roomId === _currentRoomId) {
+      // 只处理消息类型房间的关闭，避免误关闭投屏连接
+      if (_currentRoomId && _currentRoomType === 'message' && msg.roomId === _currentRoomId) {
         console.log('[Message] 房间关闭，断开消息通道')
         disconnect()
+      } else if (_currentRoomId && _currentRoomType !== 'message') {
+        console.log('[Message] 跳过非 message 类型房间的关闭:', _currentRoomType)
       }
     }
     onMessage('room_closed', _roomClosedHandler)
+  }
+
+  /** PC端主动创建消息房间并邀请App端 */
+  async function createRoom(targetDeviceUuid) {
+    console.log('[Message] PC端主动创建房间，目标设备:', targetDeviceUuid)
+
+    if (!targetDeviceUuid) {
+      console.warn('[Message] 缺少目标设备 UUID')
+      throw new Error('缺少目标设备 UUID')
+    }
+
+    if (_currentRoomId) {
+      console.warn('[Message] 已有活跃房间，先断开')
+      disconnect()
+    }
+
+    store.isConnecting = true
+
+    // 注册 ICE 候选回调
+    _iceCandidateCb = (candidate) => {
+      console.log('[Message] 生成 ICE candidate，转发给 App')
+      send({ type: 'signal', roomId: _currentRoomId, payload: {
+        signalType: 'ice_candidate',
+        candidate: candidate.toJSON(),
+      }})
+    }
+    onIceCandidate(_iceCandidateCb)
+
+    // 创建 DataChannel（PC 作为主动方创建）
+    _dataChannel = createDataChannel('message')
+    _setupDataChannel(_dataChannel)
+
+    // 监听信令
+    _signalHandler = async (signalMsg) => {
+      if (!signalMsg.roomId || signalMsg.roomId !== _currentRoomId) {
+        return
+      }
+      const payload = signalMsg.payload || {}
+      const st = payload.signalType || payload.type
+      console.log('[Message] 收到信令:', st)
+      try {
+        if (st === 'offer') {
+          console.log('[Message] 处理 offer，创建 answer...')
+          await handleOffer(payload.sdp, (answerPayload) => {
+            console.log('[Message] 发送 answer 给 App')
+            send({ type: 'signal', roomId: _currentRoomId, payload: answerPayload })
+          })
+          console.log('[Message] answer 已发送')
+        } else if (st === 'answer') {
+          await handleAnswer(payload.sdp)
+        } else if (st === 'ice_candidate') {
+          await handleIceCandidate(payload.candidate)
+        }
+      } catch (err) {
+        console.error('[Message] signal error:', err)
+      }
+    }
+    onMessage('signal', _signalHandler)
+
+    // 创建房间
+    const roomCreatedCompleter = new Promise((resolve, reject) => {
+      const handler = (msg) => {
+        if (msg.type === 'room_created') {
+          offMessage('room_created', handler)
+          resolve(msg.roomId)
+        } else if (msg.type === 'error') {
+          offMessage('room_created', handler)
+          reject(new Error(msg.payload?.message || '创建房间失败'))
+        }
+      }
+      onMessage('room_created', handler)
+      onMessage('error', handler)
+
+      send({
+        type: 'create_room',
+        payload: { targetDeviceUuid, type: 'message' },
+      })
+    })
+
+    try {
+      _currentRoomId = await roomCreatedCompleter
+      store.roomId = _currentRoomId
+      console.log('[Message] 房间创建成功:', _currentRoomId)
+    } catch (e) {
+      console.error('[Message] 创建房间失败:', e)
+      store.isConnecting = false
+      throw e
+    }
+
+    // 等待 App 加入房间
+    const peerJoinedCompleter = new Promise((resolve, reject) => {
+      const handler = (msg) => {
+        if (msg.type === 'peer_joined' && msg.roomId === _currentRoomId) {
+          offMessage('peer_joined', handler)
+          console.log('[Message] App 已加入房间')
+          resolve()
+        } else if (msg.type === 'room_closed' && msg.roomId === _currentRoomId) {
+          offMessage('peer_joined', handler)
+          reject(new Error('房间已关闭'))
+        }
+      }
+      onMessage('peer_joined', handler)
+      onMessage('room_closed', handler)
+    })
+
+    try {
+      await peerJoinedCompleter
+    } catch (e) {
+      console.error('[Message] App 未加入房间:', e)
+      store.isConnecting = false
+      throw e
+    }
+
+    // 创建并发送 Offer
+    console.log('[Message] 创建并发送 Offer...')
+    await createOffer((offer) => {
+      console.log('[Message] 发送 Offer 给 App')
+      send({ type: 'signal', roomId: _currentRoomId, payload: {
+        signalType: 'offer',
+        sdp: offer.sdp,
+      }})
+    })
+
+    console.log('[Message] PC端主动连接流程已启动')
   }
 
   async function _handleInvitation(msg) {
@@ -554,6 +685,7 @@ export function useMessageTransfer() {
     store.isConnecting = false
     store.roomId = null
     _currentRoomId = null
+    _currentRoomType = null
     _dataChannel = null
     _fileBuffers = {}
     _fileMetas = {}
@@ -573,6 +705,7 @@ export function useMessageTransfer() {
 
   _instance = {
     startListening,
+    createRoom,
     sendText,
     pickAndSendFile,
     cancelTransfer,

@@ -12,13 +12,16 @@ class MessageState {
   final bool isConnected;
   final bool isConnecting;
   final String? error;
+  final int unreadCount;
+  final bool isViewing;
 
-  const MessageState({this.messages = const [], this.isConnected = false, this.isConnecting = false, this.error});
+  const MessageState({this.messages = const [], this.isConnected = false, this.isConnecting = false, this.error, this.unreadCount = 0, this.isViewing = false});
 
-  MessageState copyWith({List<ChatMessage>? messages, bool? isConnected, bool? isConnecting, String? error}) {
+  MessageState copyWith({List<ChatMessage>? messages, bool? isConnected, bool? isConnecting, String? error, int? unreadCount, bool? isViewing}) {
     return MessageState(
       messages: messages ?? this.messages, isConnected: isConnected ?? this.isConnected,
       isConnecting: isConnecting ?? this.isConnecting, error: error,
+      unreadCount: unreadCount ?? this.unreadCount, isViewing: isViewing ?? this.isViewing,
     );
   }
 }
@@ -29,15 +32,19 @@ class MessageNotifier extends StateNotifier<MessageState> {
 
   MessageNotifier() : super(const MessageState());
 
-  Future<void> connect(String pcDeviceId) async {
-    if (state.isConnected || state.isConnecting) return;
-    state = state.copyWith(isConnecting: true, error: null);
+  void _initService() {
+    if (_svc != null) return;
+
     _svc = MessageService();
 
-    // 注册断开回调
     _svc!.onDisconnected = () {
       if (_disposed) return;
       state = state.copyWith(isConnected: false, isConnecting: false);
+    };
+
+    _svc!.onConnected = () {
+      if (_disposed) return;
+      state = state.copyWith(isConnected: true, isConnecting: false);
     };
 
     _svc!.onIncoming.listen((msg) {
@@ -46,15 +53,24 @@ class MessageNotifier extends StateNotifier<MessageState> {
         _handleReadReceipt(msg);
         return;
       }
-      // 过滤掉内部消息（如 disconnect_xxx）
       if (msg.id.startsWith('disconnect_')) return;
-      state = state.copyWith(messages: [...state.messages, msg]);
+
+      final isUnread = !state.isViewing && !msg.isFromMe;
+      final newMsg = msg.copyWith(readStatus: isUnread ? ReadStatus.unread : ReadStatus.read);
+
+      state = state.copyWith(
+        messages: [...state.messages, newMsg],
+        unreadCount: isUnread ? state.unreadCount + 1 : state.unreadCount,
+      );
+
+      if (state.isViewing && !msg.isFromMe) {
+        _sendReadAll();
+      }
     });
 
     _svc!.onProgress.listen((d) async {
       final id = d['id'] as String?; if (id == null) return;
 
-      // 新文件消息开始（发送方：文件已选取，开始发送）
       if (d['start'] == true) {
         final existing = state.messages.indexWhere((m) => m.id == id);
         if (existing < 0) {
@@ -76,7 +92,6 @@ class MessageNotifier extends StateNotifier<MessageState> {
 
       final p = (d['progress'] as num?)?.toDouble(); if (p == null) return;
 
-      // 文件接收完成 → 触发下载并记录文件路径
       String? savedPath;
       if (d['completed'] == true) {
         final bytes = d['bytes'] as Uint8List?;
@@ -105,6 +120,18 @@ class MessageNotifier extends StateNotifier<MessageState> {
         state = state.copyWith(messages: list);
       }
     });
+  }
+
+  Future<void> startListening() async {
+    _initService();
+    await _svc!.startListening();
+  }
+
+  Future<void> connect(String pcDeviceId) async {
+    if (state.isConnected || state.isConnecting) return;
+    state = state.copyWith(isConnecting: true, error: null);
+
+    _initService();
 
     try {
       await _svc!.connect(pcDeviceId);
@@ -114,8 +141,6 @@ class MessageNotifier extends StateNotifier<MessageState> {
     }
   }
 
-  /// 下载文件（Web 浏览器下载 / 移动端保存到本地）
-  /// 返回保存的文件路径
   Future<String?> _downloadFile(Uint8List bytes, String fileName) async {
     debugPrint('[Msg PROV] 开始下载文件: $fileName (${bytes.length} bytes)');
     final result = await downloadFile(bytes, fileName);
@@ -163,10 +188,7 @@ class MessageNotifier extends StateNotifier<MessageState> {
     if (_svc == null) return;
     try {
       final msg = await _svc!.sendFile();
-      // 消息已通过 _progressCtl 流添加到 state（start 事件）
-      // 但如果 sendFile 返回 null（用户取消选择）则无需处理
       if (msg == null) return;
-      // 确保消息已添加（兜底：如果 start 事件漏了，这里补上）
       final idx = state.messages.indexWhere((m) => m.id == msg.id);
       if (idx < 0) {
         state = state.copyWith(messages: [...state.messages, msg]);
@@ -190,6 +212,30 @@ class MessageNotifier extends StateNotifier<MessageState> {
     _svc?.disconnect();
     _svc = null;
     state = state.copyWith(isConnected: false, isConnecting: false);
+  }
+
+  void setViewing(bool viewing) {
+    state = state.copyWith(isViewing: viewing);
+    if (viewing) {
+      markAllAsRead();
+    }
+  }
+
+  void markAllAsRead() {
+    if (state.unreadCount == 0) return;
+    final list = state.messages.map((m) {
+      if (!m.isFromMe && m.readStatus == ReadStatus.unread) {
+        return m.copyWith(readStatus: ReadStatus.read);
+      }
+      return m;
+    }).toList();
+    state = state.copyWith(messages: list, unreadCount: 0);
+    _sendReadAll();
+  }
+
+  void _sendReadAll() {
+    if (_svc == null) return;
+    _svc!.sendReadAll();
   }
 
   @override

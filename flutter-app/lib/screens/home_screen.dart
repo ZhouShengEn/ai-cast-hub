@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/device_provider.dart';
+import '../providers/message_provider.dart';
 import '../services/local_storage.dart';
 import '../models/device.dart';
 import '../utils/extensions.dart';
@@ -32,6 +33,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // 设备未注册或网络不通，尝试注册
         await notifier.registerDevice();
       }
+    });
+    // 启动消息监听（被动接收PC端连接邀请），App启动时就开始监听
+    Future.microtask(() async {
+      await ref.read(messageProvider.notifier).startListening();
     });
     // 每 60 秒刷新一次设备在线状态，保持与服务器同步
     _deviceRefreshTimer = Timer.periodic(const Duration(seconds: 60), (_) {
@@ -107,6 +112,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               title: '消息',
               subtitle: '发送消息和文件到 PC',
               route: '/message',
+              badgeCount: ref.watch(messageProvider).unreadCount,
             ),
             const SizedBox(height: 12),
             _buildFeatureCard(
@@ -387,6 +393,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     required String title,
     required String subtitle,
     required String route,
+    int badgeCount = 0,
   }) {
     final theme = Theme.of(context);
 
@@ -394,7 +401,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         leading: Icon(icon, size: 32, color: theme.colorScheme.primary),
-        title: Text(title, style: theme.textTheme.titleMedium),
+        title: Row(
+          children: [
+            Text(title, style: theme.textTheme.titleMedium),
+            if (badgeCount > 0) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.error,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  badgeCount > 99 ? '99+' : badgeCount.toString(),
+                  style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ],
+        ),
         subtitle: Text(subtitle),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.pushNamed(context, route),

@@ -36,7 +36,47 @@ class MessageService {
   /// 连接断开回调（通知 provider 更新状态）
   void Function()? onDisconnected;
 
+  /// 连接建立回调（PC端主动连接时通知UI）
+  void Function()? onConnected;
+
   bool get isConnected => _connected;
+
+  StreamSubscription? _wsStateSub;
+
+  /// 启动监听（被动接收PC端连接邀请）
+  Future<void> startListening() async {
+    if (_ws.connectionState != WsConnectionState.connected) {
+      await _ws.connect().timeout(const Duration(seconds: 10), onTimeout: () {
+        debugPrint('[Msg] WebSocket 连接超时，稍后重试');
+        return;
+      });
+    }
+
+    // 监听WebSocket连接状态变化，重连后自动重新注册监听
+    if (_wsStateSub == null) {
+      _wsStateSub = _ws.connectionStateStream.listen((state) {
+        if (state == WsConnectionState.connected) {
+          debugPrint('[Msg] WebSocket重连成功，重新注册消息监听');
+          if (_wsSub != null) {
+            _wsSub?.cancel();
+            _wsSub = null;
+          }
+          _wsSub = _ws.messages.listen(_onMsg);
+          // 如果之前是连接状态，重连后尝试恢复连接
+          if (_connected) {
+            debugPrint('[Msg] 重连后尝试恢复消息连接');
+            _connected = false;
+            onDisconnected?.call();
+          }
+        }
+      });
+    }
+
+    if (_wsSub != null) return;
+
+    debugPrint('[Msg] 启动消息通道监听（被动模式）');
+    _wsSub = _ws.messages.listen(_onMsg);
+  }
 
   Future<void> connect(String pcDeviceId) async {
     if (_connected) return;
@@ -148,10 +188,101 @@ class MessageService {
       case 'signal':
         _onSignal(msg);
         break;
+      case 'room_invitation':
+        _onRoomInvitation(msg);
+        break;
       case 'room_closed':
       case 'peer_disconnected':
         disconnect();
         break;
+    }
+  }
+
+  /// 处理来自PC端的房间邀请
+  void _onRoomInvitation(Map<String, dynamic> msg) {
+    final roomId = msg['roomId'] as String?;
+    final payload = msg['payload'] as Map<String, dynamic>? ?? {};
+    final roomType = payload['type'] as String?;
+    final fromDeviceUuid = payload['fromDeviceUuid'] as String?;
+
+    if (roomId == null || roomType != 'message') {
+      debugPrint('[Msg] 忽略无效房间邀请: type=$roomType roomId=$roomId');
+      return;
+    }
+
+    if (_connected) {
+      debugPrint('[Msg] 已有活跃连接，忽略房间邀请');
+      return;
+    }
+
+    debugPrint('[Msg] 收到PC端房间邀请: roomId=${_safeId(roomId)} from=${_safeId(fromDeviceUuid)}');
+    _acceptRoomInvitation(roomId, fromDeviceUuid);
+  }
+
+  /// 接受房间邀请（PC端主动发起时，App端作为被动方）
+  Future<void> _acceptRoomInvitation(String roomId, String? fromDeviceUuid) async {
+    if (_connected) return;
+
+    try {
+      await _webrtc.createPeerConnection({
+        'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}],
+      });
+
+      _webrtc.onIceCandidate((c) {
+        if (_roomId == null) return;
+        _ws.send({
+          'type': 'signal', 'roomId': _roomId!,
+          'payload': {'signalType': 'ice_candidate', 'candidate': {
+            'candidate': c.candidate, 'sdpMid': c.sdpMid, 'sdpMLineIndex': c.sdpMLineIndex,
+          }},
+        });
+      });
+
+      _dcOpenCompleter = Completer<void>();
+      final dc = await _webrtc.createDataChannel('message');
+      dc.onMessage = (webrtc.RTCDataChannelMessage msg) => _onDC(msg);
+      dc.onDataChannelState = (webrtc.RTCDataChannelState state) {
+        debugPrint('[Msg] DC 状态: $state');
+        if (state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+          if (_dcOpenCompleter != null && !_dcOpenCompleter!.isCompleted) {
+            _dcOpenCompleter!.complete();
+          }
+        } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
+          debugPrint('[Msg] DC 已关闭，断开连接');
+          _connected = false;
+          _dcOpenCompleter = null;
+          onDisconnected?.call();
+        }
+      };
+
+      _roomId = roomId;
+
+      debugPrint('[Msg] 发送 join_room 响应邀请');
+      _ws.send({'type': 'join_room', 'roomId': roomId});
+
+      // 等待信号和DC打开
+      _wsSub = _ws.messages.listen(_onMsg);
+
+      try {
+        await _dcOpenCompleter!.future.timeout(const Duration(seconds: 15));
+        _connected = true;
+        debugPrint('[Msg] 通道已建立 (DC open) - 响应PC邀请');
+        onConnected?.call();
+      } catch (e) {
+        debugPrint('[Msg] DC open 超时: $e');
+        final dc2 = _webrtc.dataChannel;
+        if (dc2 != null && dc2.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+          _connected = true;
+          debugPrint('[Msg] DC 已打开，标记已连接');
+          onConnected?.call();
+        } else {
+          _connected = true;
+          debugPrint('[Msg] 标记已连接（DC 可能未完全打开）');
+          onConnected?.call();
+        }
+      }
+    } catch (e) {
+      debugPrint('[Msg] 接受房间邀请失败: $e');
     }
   }
 
@@ -394,6 +525,17 @@ class MessageService {
     if (dc != null) dc.send(webrtc.RTCDataChannelMessage(jsonEncode({'type': 'cancel', 'id': id})));
   }
 
+  void sendReadAll() {
+    final dc = _webrtc.dataChannel;
+    if (dc != null && dc.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+      dc.send(webrtc.RTCDataChannelMessage(jsonEncode({
+        'type': 'read_all',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      })));
+      debugPrint('[Msg] 发送 read_all 给 PC');
+    }
+  }
+
   // ---- 接收文件（含自动下载触发） ----
   final Map<String, Map<String, dynamic>> _fileMetas = {};
 
@@ -415,6 +557,13 @@ class MessageService {
       fileSize: d['fileSize'] as int,
       isFromMe: false, timestamp: DateTime.now(),
     ));
+    _progressCtl.add({
+      'id': id, 'progress': 0.0, 'start': true,
+      'fileName': d['fileName'] as String?,
+      'fileSize': d['fileSize'] as int,
+      'fileMimeType': d['fileMimeType'] as String?,
+      'isFromMe': false,
+    });
   }
 
   void _handleChunk(Map<String, dynamic> d) {
@@ -434,6 +583,10 @@ class MessageService {
     if (seq % 10 == 0 || rcvd >= total) {
       debugPrint('[Msg RECV] chunk进度: $rcvd/$total');
     }
+
+    // 通知进度更新
+    final progress = rcvd / total;
+    _progressCtl.add({'id': id, 'progress': progress});
 
     // 检查是否全部接收完毕
     if (rcvd >= total) {
@@ -502,6 +655,9 @@ class MessageService {
   void disconnect() {
     if (_roomId != null) _ws.send({'type': 'close_room', 'roomId': _roomId!});
     _wsSub?.cancel();
+    _wsSub = null;
+    _wsStateSub?.cancel();
+    _wsStateSub = null;
     _webrtc.close();
     _roomId = null;
     _connected = false;

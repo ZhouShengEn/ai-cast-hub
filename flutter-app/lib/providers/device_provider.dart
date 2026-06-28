@@ -68,8 +68,8 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     return '操作失败，请检查网络后重试';
   }
 
-  /// 注册当前设备
-  Future<void> registerDevice() async {
+  /// 注册当前设备（最多重试3次，指数退避）
+  Future<void> registerDevice({int retryCount = 0}) async {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
@@ -87,7 +87,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
 
       // 3. 发送 POST 注册请求
       final name = DeviceService.generateDeviceName();
-      DebugService().info('[注册] 发送注册请求: $name ($platform)');
+      DebugService().info('[注册] 发送注册请求(第${retryCount + 1}次): $name ($platform)');
       final result = await _service.register(name, platform);
 
       DebugService().info('[注册] 注册成功: $result');
@@ -109,10 +109,19 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
       await fetchDeviceInfo();
       await fetchDeviceList();
     } catch (e) {
-      state = state.copyWith(
-        isLoading: false,
-        error: '设备注册失败: ${_friendlyError(e)}',
-      );
+      DebugService().warn('[注册] 注册失败(第${retryCount + 1}次): $e');
+      // 最多重试3次，指数退避
+      if (retryCount < 3) {
+        final delay = Duration(seconds: pow(2, retryCount).toInt());
+        DebugService().info('[注册] 等待${delay.inSeconds}秒后重试...');
+        await Future.delayed(delay);
+        await registerDevice(retryCount: retryCount + 1);
+      } else {
+        state = state.copyWith(
+          isLoading: false,
+          error: '设备注册失败: ${_friendlyError(e)}',
+        );
+      }
     }
   }
 
