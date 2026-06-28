@@ -23,13 +23,45 @@ class RemoteControlService : AccessibilityService() {
         var instance: RemoteControlService? = null
 
         fun isServiceEnabled(context: Context): Boolean {
-            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-            val enabledServices = am.getEnabledAccessibilityServiceList(
-                AccessibilityServiceInfo.FEEDBACK_GENERIC
-            )
-            return enabledServices.any {
-                it.resolveInfo.serviceInfo.name == RemoteControlService::class.java.name
+            // 方法1：通过 AccessibilityManager 检查
+            try {
+                val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+                // 使用 FEEDBACK_GENERIC 过滤我们自己的服务类型
+                val enabledServices = am.getEnabledAccessibilityServiceList(
+                    AccessibilityServiceInfo.FEEDBACK_GENERIC
+                )
+                val targetServiceName = RemoteControlService::class.java.name
+                val found = enabledServices.any { serviceInfo ->
+                    val enabledName = serviceInfo.resolveInfo.serviceInfo.name
+                    Log.d(TAG, "Checking service: $enabledName")
+                    enabledName == targetServiceName
+                }
+                Log.d(TAG, "isServiceEnabled via AccessibilityManager: $found (count: ${enabledServices.size})")
+                if (found) return true
+            } catch (e: Exception) {
+                Log.e(TAG, "AccessibilityManager check failed: ${e.message}")
             }
+
+            // 方法2：通过 Settings.Secure 检查（备用方案）
+            try {
+                val enabledServicesString = Settings.Secure.getString(
+                    context.contentResolver,
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                ) ?: ""
+                Log.d(TAG, "Enabled services string: $enabledServicesString")
+                // 格式通常是 "package1/service1:package2/service2"
+                val ourServicePattern = "${context.packageName}/"
+                val found = enabledServicesString.contains(ourServicePattern)
+                Log.d(TAG, "isServiceEnabled via Settings: $found")
+                return found
+            } catch (e: Exception) {
+                Log.e(TAG, "Settings.Secure check failed: ${e.message}")
+            }
+
+            // 方法3：检查服务实例是否存在
+            val instanceExists = instance != null
+            Log.d(TAG, "Service instance exists: $instanceExists")
+            return instanceExists
         }
 
         fun openAccessibilitySettings(context: Context) {

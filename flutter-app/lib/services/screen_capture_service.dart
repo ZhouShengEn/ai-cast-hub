@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
+import 'package:permission_handler/permission_handler.dart';
 
 import 'background_service.dart';
 import 'debug_service.dart';
@@ -45,15 +46,35 @@ class ScreenCaptureService {
       level: LogLevel.info,
     );
 
-    // Android 14+ 需要在调用 getDisplayMedia() 之前启动 mediaProjection 前台服务，
-    // 否则 createVirtualDisplay() 会因缺少前台服务而抛出 SecurityException 崩溃。
-    // 必须在 App 处于前台时启动（此时用户刚点击"开始投屏"按钮）。
     if (isNative) {
+      // Android 13+ (API 33+) 需要通知权限才能显示前台服务通知，
+      // 如果没有通知权限，前台服务会启动失败导致屏幕捕获崩溃
+      if (await Permission.notification.isDenied) {
+        DebugService().log(
+          '[ScreenCapture] 请求通知权限...',
+          level: LogLevel.info,
+        );
+        final result = await Permission.notification.request();
+        if (result != PermissionStatus.granted) {
+          DebugService().warn('[ScreenCapture] 通知权限被拒绝');
+        }
+      }
+
+      // Android 14+ 需要在调用 getDisplayMedia() 之前启动 mediaProjection 前台服务，
+      // 否则 createVirtualDisplay() 会因缺少前台服务而抛出 SecurityException 崩溃。
+      // 必须在 App 处于前台时启动（此时用户刚点击"开始投屏"按钮）。
       final started = await BackgroundService.startMediaProjectionService();
       DebugService().log(
         '[ScreenCapture] MediaProjection 前台服务启动: $started',
         level: LogLevel.info,
       );
+      if (!started) {
+        throw Exception('MediaProjection 前台服务启动失败，无法进行屏幕捕获\n'
+            '请检查：\n'
+            '1. 是否授予了通知权限（Android 13+ 需要）\n'
+            '2. 应用是否在前台运行\n'
+            '3. 设备系统版本是否支持此功能');
+      }
     }
 
     try {

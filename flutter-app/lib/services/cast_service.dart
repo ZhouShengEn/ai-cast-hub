@@ -190,9 +190,20 @@ class CastService {
       // 7. 根据模式捕获画面（屏幕或摄像头）
       _castLog('步骤7: 开始$_captureMode捕获...', level: LogLevel.info);
       onStatusChanged?.call('capturing');
-      final stream = _captureMode == 'camera'
-          ? await _cameraCapture.startCapture(frontCamera: _cameraFacing)
-          : await _screenCapture.startCapture();
+      webrtc.MediaStream stream;
+      try {
+        stream = _captureMode == 'camera'
+            ? await _cameraCapture.startCapture(frontCamera: _cameraFacing)
+            : await _screenCapture.startCapture();
+      } catch (captureError) {
+        _castLog('步骤7: 捕获失败: $captureError', level: LogLevel.error);
+        throw Exception('屏幕捕获失败: $captureError\n\n'
+            '常见原因：\n'
+            '1. 未授予屏幕录制权限\n'
+            '2. 应用在后台运行（需要在前台）\n'
+            '3. 系统版本不支持（Android 5.0+）\n'
+            '请返回重试或检查系统设置');
+      }
       final tracks = stream.getTracks();
       _castLog('步骤7: $_captureMode捕获完成, tracks=${tracks.length}', level: LogLevel.info);
       for (final t in tracks) {

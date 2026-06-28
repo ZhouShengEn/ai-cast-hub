@@ -180,7 +180,7 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                     context: context,
                     builder: (context) => AlertDialog(
                       title: const Text('需要开启无障碍服务'),
-                      content: const Text('为了实现PC端远程控制手机功能，需要开启无障碍服务。请在设置中允许"AI Cast Hub"的无障碍权限。'),
+                      content: const Text('为了实现PC端远程控制手机功能，需要开启无障碍服务。请在设置中允许"AI Cast Hub"的无障碍权限。开启后请返回本应用继续。'),
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(context, false),
@@ -197,14 +197,33 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                     ),
                   );
                   if (confirmed != true) return;
-                  await Future.delayed(const Duration(seconds: 3));
+                  await Future.delayed(const Duration(seconds: 5));
+                  final stillNotEnabled = !(await RemoteControlService().checkServiceEnabled());
+                  if (stillNotEnabled) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('无障碍服务未开启，投屏将无法使用远程控制功能')),
+                      );
+                    }
+                  }
                 }
 
                 final deviceState = ref.read(deviceProvider);
                 if (deviceState.pairedDevices.isNotEmpty) {
-                  castNotifier.startCasting(
-                    deviceState.pairedDevices.first.deviceUuid,
-                  );
+                  try {
+                    await castNotifier.startCasting(
+                      deviceState.pairedDevices.first.deviceUuid,
+                    );
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('投屏失败: $e'),
+                          backgroundColor: Theme.of(context).colorScheme.error,
+                        ),
+                      );
+                    }
+                  }
                 }
               },
               onStopCast: () => castNotifier.stopCasting(),
