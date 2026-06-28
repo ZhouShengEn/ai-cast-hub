@@ -2,13 +2,16 @@ package com.example.ai_cast_hub
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
 import android.graphics.Point
+import android.graphics.Rect
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
@@ -57,8 +60,7 @@ class RemoteControlService : AccessibilityService() {
         val info = AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPES_ALL_MASK
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_DEFAULT or
-                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+            flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE
         }
         serviceInfo = info
@@ -214,7 +216,10 @@ class RemoteControlService : AccessibilityService() {
     }
 
     private fun findScrollableNode(node: AccessibilityNodeInfo, x: Int, y: Int): AccessibilityNodeInfo? {
-        if (node.contains(x, y)) {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        
+        if (bounds.contains(x, y)) {
             if (node.isScrollable) {
                 return node
             }
@@ -233,11 +238,12 @@ class RemoteControlService : AccessibilityService() {
     }
 
     private fun getScreenSize(): Point {
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display
+            this.display
         } else {
             @Suppress("DEPRECATION")
-            windowManager.defaultDisplay
+            wm.defaultDisplay
         }
         val size = Point()
         display?.getRealSize(size)
