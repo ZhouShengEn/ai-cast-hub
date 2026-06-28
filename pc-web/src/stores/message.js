@@ -64,7 +64,7 @@ export const useMessageStore = defineStore('message', () => {
   function setViewing(val) {
     isViewing.value = val
     if (val) {
-      markAllAsRead()
+      markAllAsRead('incoming')
     }
   }
 
@@ -74,9 +74,7 @@ export const useMessageStore = defineStore('message', () => {
 
   function setConnected(val) {
     isConnected.value = val
-    if (!val) {
-      isConnecting.value = false
-    }
+    isConnecting.value = false
   }
 
   function cleanup() {

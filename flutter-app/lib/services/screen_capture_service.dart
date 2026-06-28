@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
+import 'background_service.dart';
 import 'debug_service.dart';
 
 /// 屏幕捕获服务
@@ -14,6 +15,13 @@ import 'debug_service.dart';
 ///
 /// 注意：flutter_webrtc 的 getUserMedia 在 Android 上始终返回摄像头。
 /// 屏幕捕获必须使用 getDisplayMedia。
+///
+/// Android 14+ (API 34+) 注意：
+/// flutter_webrtc 的 OrientationAwareScreenCapturer 内部直接调用
+/// MediaProjection.createVirtualDisplay()，但不会启动前台服务。
+/// Android 14+ 要求此时必须有一个 foregroundServiceType="mediaProjection"
+/// 的前台服务正在运行，否则会抛出 SecurityException 导致应用崩溃。
+/// 因此在调用 getDisplayMedia() 之前需要先启动 MediaProjectionService。
 class ScreenCaptureService {
   bool _isCapturing = false;
   webrtc.MediaStream? _localStream;
@@ -36,6 +44,17 @@ class ScreenCaptureService {
       'API: getDisplayMedia)',
       level: LogLevel.info,
     );
+
+    // Android 14+ 需要在调用 getDisplayMedia() 之前启动 mediaProjection 前台服务，
+    // 否则 createVirtualDisplay() 会因缺少前台服务而抛出 SecurityException 崩溃。
+    // 必须在 App 处于前台时启动（此时用户刚点击"开始投屏"按钮）。
+    if (isNative) {
+      final started = await BackgroundService.startMediaProjectionService();
+      DebugService().log(
+        '[ScreenCapture] MediaProjection 前台服务启动: $started',
+        level: LogLevel.info,
+      );
+    }
 
     try {
       final stream = await webrtc.navigator.mediaDevices.getDisplayMedia(
@@ -74,6 +93,10 @@ class ScreenCaptureService {
 
       return stream;
     } catch (e) {
+      // 捕获失败时停止前台服务，避免遗留
+      if (isNative) {
+        await BackgroundService.stopMediaProjectionService();
+      }
       DebugService().error('[ScreenCapture] 屏幕捕获失败: $e');
       rethrow;
     }
@@ -92,6 +115,12 @@ class ScreenCaptureService {
     }
 
     _isCapturing = false;
+
+    // 停止 MediaProjection 前台服务
+    if (!kIsWeb) {
+      await BackgroundService.stopMediaProjectionService();
+    }
+
     DebugService().log('[ScreenCapture] 停止');
   }
 }

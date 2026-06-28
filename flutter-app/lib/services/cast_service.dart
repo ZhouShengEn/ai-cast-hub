@@ -215,10 +215,16 @@ class CastService {
 
       return _currentSession!;
     } catch (e) {
-      // 失败时清理 WS 订阅和 WebRTC 资源，避免泄漏
+      // 失败时清理 WS 订阅、WebRTC 资源和捕获资源（含 MediaProjection 前台服务），避免泄漏
       _castLog('创建会话失败，清理资源: $e', level: LogLevel.error);
       await _wsSubscription?.cancel();
       _wsSubscription = null;
+      // 清理屏幕/摄像头捕获资源（会停止 MediaProjection 前台服务）
+      if (_captureMode == 'camera') {
+        await _cameraCapture.stopCapture();
+      } else {
+        await _screenCapture.stopCapture();
+      }
       await _webrtc.close();
       _roomCreatedCompleter = null;
       _peerJoinedCompleter = null;

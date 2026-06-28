@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// 后台连接保持服务
@@ -37,6 +38,36 @@ class BackgroundService {
       });
     } catch (e) {
       print('[BackgroundService] 更新通知失败: $e');
+    }
+  }
+
+  /// 启动 MediaProjection 前台服务（仅 Android 14+ 需要）
+  ///
+  /// Android 14+ (API 34+) 要求调用 MediaProjection.createVirtualDisplay() 时，
+  /// 必须有一个 foregroundServiceType="mediaProjection" 的前台服务正在运行，
+  /// 否则会抛出 SecurityException 导致应用崩溃。
+  ///
+  /// 必须在 App 处于前台时调用，且要在 getDisplayMedia() 之前启动。
+  static Future<bool> startMediaProjectionService() async {
+    if (kIsWeb) return true;
+    try {
+      final result = await _channel.invokeMethod<bool>('startMediaProjectionService');
+      return result ?? false;
+    } catch (e) {
+      print('[BackgroundService] 启动 MediaProjection 服务失败: $e');
+      return false;
+    }
+  }
+
+  /// 停止 MediaProjection 前台服务
+  static Future<bool> stopMediaProjectionService() async {
+    if (kIsWeb) return true;
+    try {
+      final result = await _channel.invokeMethod<bool>('stopMediaProjectionService');
+      return result ?? false;
+    } catch (e) {
+      print('[BackgroundService] 停止 MediaProjection 服务失败: $e');
+      return false;
     }
   }
 }

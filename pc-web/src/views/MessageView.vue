@@ -6,10 +6,10 @@
         <span v-if="store.error" class="text-xs text-red-600">连接失败</span>
         <span v-else-if="store.isConnecting" class="text-xs text-blue-600">连接中...</span>
         <span v-else-if="store.isConnected" class="text-xs text-green-600">已连接</span>
-        <span v-else-if="store.messages.length > 0" class="text-xs text-orange-500">已断开</span>
+        <span v-else-if="store.messages.length > 0" class="text-xs text-orange-500">未连接</span>
         <span v-else class="text-xs text-gray-400">等待连接</span>
         <button v-if="store.isConnected" @click="disconnectChannel" class="text-xs text-red-500 hover:text-red-600 underline">断开</button>
-        <button v-if="store.error" @click="retryConnect" class="text-xs text-blue-500 hover:text-blue-600 underline">重试</button>
+        <button v-if="store.error || (!store.isConnected && !store.isConnecting && store.messages.length > 0)" @click="retryConnect" class="text-xs text-blue-500 hover:text-blue-600 underline">重连</button>
       </div>
     </div>
 

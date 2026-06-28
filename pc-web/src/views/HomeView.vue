@@ -60,8 +60,8 @@
               <span class="text-2xl">{{ device.platform === 'ios' ? '🍎' : '📱' }}</span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium text-gray-800 truncate">{{ device.name || '未知设备' }}</p>
-                <p class="text-xs" :class="device.isOnline ? 'text-green-500' : 'text-gray-400'">
-                  {{ device.platform || 'android' }} · {{ device.isOnline ? '在线' : '离线 — ' + formatTime(device.lastSeen) }}
+                <p class="text-xs" :class="device.isOnline ? 'text-green-500' : 'text-orange-500'">
+                  {{ device.platform || 'android' }} · {{ device.isOnline ? '在线' : '已绑定设备下线 — ' + formatTime(device.lastSeen) }}
                 </p>
               </div>
               <span

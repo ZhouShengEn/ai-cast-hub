@@ -36,6 +36,14 @@ class MainActivity : FlutterActivity() {
                     updateServiceNotification(title, content)
                     result.success(null)
                 }
+                "startMediaProjectionService" -> {
+                    val started = startMediaProjectionService()
+                    result.success(started)
+                }
+                "stopMediaProjectionService" -> {
+                    val stopped = stopMediaProjectionService()
+                    result.success(stopped)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -78,6 +86,38 @@ class MainActivity : FlutterActivity() {
             startForegroundService(serviceIntent)
         } else {
             startService(serviceIntent)
+        }
+    }
+
+    /**
+     * 启动 MediaProjection 前台服务
+     *
+     * 必须在 App 处于前台时调用（用户点击"开始投屏"时），
+     * 且要在调用 getDisplayMedia() 之前启动，以确保 createVirtualDisplay() 时服务已在运行。
+     */
+    private fun startMediaProjectionService(): Boolean {
+        return try {
+            val serviceIntent = Intent(this, MediaProjectionService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun stopMediaProjectionService(): Boolean {
+        return try {
+            val serviceIntent = Intent(this, MediaProjectionService::class.java)
+            stopService(serviceIntent)
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
         }
     }
 }

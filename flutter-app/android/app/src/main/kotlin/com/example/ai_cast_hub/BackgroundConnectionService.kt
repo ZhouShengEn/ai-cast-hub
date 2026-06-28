@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -24,13 +25,23 @@ class BackgroundConnectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 处理通知更新
-        if (intent?.action == "UPDATE_NOTIFICATION") {
-            val title = intent.getStringExtra("title") ?: "AI Cast Hub"
-            val content = intent.getStringExtra("content") ?: "保持连接中..."
-            updateNotification(title, content)
+        val title = if (intent?.action == "UPDATE_NOTIFICATION") {
+            intent.getStringExtra("title") ?: "AI Cast Hub"
         } else {
-            val notification = buildNotification("AI Cast Hub", "保持连接中...")
+            "AI Cast Hub"
+        }
+        val content = if (intent?.action == "UPDATE_NOTIFICATION") {
+            intent.getStringExtra("content") ?: "保持连接中..."
+        } else {
+            "保持连接中..."
+        }
+
+        val notification = buildNotification(title, content)
+        // Android 14+ (API 34+) 要求 startForeground 必须指定 foregroundServiceType
+        // 无论什么 action，只要是通过 startForegroundService 启动的，都必须调用 startForeground
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
             startForeground(NOTIFICATION_ID, notification)
         }
         return START_STICKY
