@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
 import 'webrtc_codec_prefs_stub.dart'
@@ -45,29 +46,40 @@ class WebrtcService {
 
     // 调用 flutter_webrtc 包的全局函数（通过库前缀避免与类方法同名递归）
     _peerConnection = await webrtc.createPeerConnection(configuration);
+    debugPrint('[WebRTC] PeerConnection已创建');
 
     // 远端媒体流监听
     _peerConnection!.onTrack = (webrtc.RTCTrackEvent event) {
+      debugPrint('[WebRTC] 🔔 收到远端track: kind=${event.track?.kind}, id=${event.track?.id}, streams数量=${event.streams.length}');
       if (event.streams.isNotEmpty) {
+        debugPrint('[WebRTC]   stream id: ${event.streams.first.id}');
         if (!_remoteStreamController.isClosed) {
           _remoteStreamController.add(event.streams.first);
+          debugPrint('[WebRTC]   stream已添加到_remoteStreamController');
         }
+      } else {
+        debugPrint('[WebRTC] ⚠️ track没有关联的stream');
       }
     };
 
     // 数据通道监听（远端创建的 DataChannel）
     _peerConnection!.onDataChannel = (webrtc.RTCDataChannel channel) {
+      debugPrint('[WebRTC] 收到远端DataChannel: ${channel.label}');
       _dataChannel = channel;
       _setupDataChannelListeners(channel);
     };
 
     // ICE 候选事件 → 通过回调传出
     _peerConnection!.onIceCandidate = (webrtc.RTCIceCandidate candidate) {
+      final cand = candidate.candidate ?? '';
+      debugPrint('[WebRTC] 🧊 ICE候选: ${cand.length > 50 ? cand.substring(0, 50) : cand}...');
       _onIceCandidateCallback?.call(candidate);
     };
 
     // ICE 连接状态变化
-    _peerConnection!.onIceConnectionState = (webrtc.RTCIceConnectionState state) {};
+    _peerConnection!.onIceConnectionState = (webrtc.RTCIceConnectionState state) {
+      debugPrint('[WebRTC] 🧊 ICE连接状态变化: $state');
+    };
 
     return _peerConnection!;
   }
@@ -75,41 +87,52 @@ class WebrtcService {
   /// 创建 SDP Offer
   Future<webrtc.RTCSessionDescription> createOffer() async {
     _ensureConnection();
+    debugPrint('[WebRTC] createOffer: 创建中...');
     final offer = await _peerConnection!.createOffer({});
     await _peerConnection!.setLocalDescription(offer);
+    debugPrint('[WebRTC] createOffer: 已创建, SDP长度=${offer.sdp?.length ?? 0}');
     return offer;
   }
 
   /// 创建 SDP Answer
   Future<webrtc.RTCSessionDescription> createAnswer() async {
     _ensureConnection();
+    debugPrint('[WebRTC] createAnswer: 创建中...');
     final answer = await _peerConnection!.createAnswer({});
     await _peerConnection!.setLocalDescription(answer);
+    debugPrint('[WebRTC] createAnswer: 已创建, SDP长度=${answer.sdp?.length ?? 0}');
     return answer;
   }
 
   /// 处理远端 Offer
   Future<webrtc.RTCSessionDescription> handleOffer(String sdp) async {
     _ensureConnection();
+    debugPrint('[WebRTC] handleOffer: 设置远程SDP, 长度=${sdp.length}');
     await _peerConnection!.setRemoteDescription(
       webrtc.RTCSessionDescription(sdp, 'offer'),
     );
+    debugPrint('[WebRTC] handleOffer: 远程SDP已设置，创建answer');
     final answer = await _peerConnection!.createAnswer({});
     await _peerConnection!.setLocalDescription(answer);
+    debugPrint('[WebRTC] handleOffer: answer已创建');
     return answer;
   }
 
   /// 处理远端 Answer
   Future<void> handleAnswer(String sdp) async {
     _ensureConnection();
+    debugPrint('[WebRTC] handleAnswer: 设置远程SDP, 长度=${sdp.length}');
     await _peerConnection!.setRemoteDescription(
       webrtc.RTCSessionDescription(sdp, 'answer'),
     );
+    debugPrint('[WebRTC] handleAnswer: 远程SDP已设置');
   }
 
   /// 处理远端 ICE 候选
   Future<void> handleIceCandidate(Map<String, dynamic> candidate) async {
     _ensureConnection();
+    final candStr = candidate['candidate'] as String? ?? '';
+    debugPrint('[WebRTC] handleIceCandidate: 添加ICE候选, candidate=${candStr.length > 50 ? candStr.substring(0, 50) : candStr}...');
     await _peerConnection!.addCandidate(
       webrtc.RTCIceCandidate(
         candidate['candidate'] as String? ?? '',
@@ -117,6 +140,7 @@ class WebrtcService {
         candidate['sdpMLineIndex'] as int? ?? 0,
       ),
     );
+    debugPrint('[WebRTC] handleIceCandidate: ICE候选已添加');
   }
 
   /// 创建 DataChannel
@@ -152,9 +176,12 @@ class WebrtcService {
   Future<void> addStream(webrtc.MediaStream stream) async {
     _ensureConnection();
     _localStream = stream;
+    debugPrint('[WebRTC] addStream: 准备添加${stream.getTracks().length}个轨道');
     for (final track in stream.getTracks()) {
+      debugPrint('[WebRTC] addStream: 添加轨道 kind=${track.kind}, id=${track.id}');
       await _peerConnection!.addTrack(track, stream);
     }
+    debugPrint('[WebRTC] addStream: 所有轨道已添加完成');
   }
 
   /// 设置 H.264 视频编码偏好

@@ -49,31 +49,33 @@ function _createInstance(ns, config) {
 
     state.pc.onconnectionstatechange = () => {
       state.connectionState.value = state.pc.connectionState
-      log('连接状态:', state.pc.connectionState)
+      log('📡 连接状态变化:', state.pc.connectionState)
       state.connectionStateCallbacks.forEach((fn) => fn(state.pc.connectionState))
     }
 
     state.pc.oniceconnectionstatechange = () => {
-      log('ICE 状态:', state.pc.iceConnectionState)
+      log('🧊 ICE连接状态:', state.pc.iceConnectionState)
     }
 
     state.pc.onicecandidate = (event) => {
-      log('ICE candidate:', event.candidate ? '已生成' : '完成')
+      log('�冰 ICE candidate:', event.candidate ? `已生成 (${event.candidate.candidate?.substring(0, 50)}...)` : '完成(gathering done)');
       if (event.candidate) {
         state.iceCandidateCallbacks.forEach((fn) => fn(event.candidate))
       }
     }
 
     state.pc.ontrack = (event) => {
-      log('收到 track')
+      log('🎬 收到track事件:', event.track?.kind, 'track id:', event.track?.id)
+      log('    streams数量:', event.streams?.length)
       if (event.streams && event.streams[0]) {
+        log('    stream id:', event.streams[0].id)
         state.remoteStream.value = event.streams[0]
       }
       state.trackCallbacks.forEach((fn) => fn(event))
     }
 
     state.pc.ondatachannel = (event) => {
-      log('收到远端 DataChannel:', event.channel.label)
+      log('📡 收到远端DataChannel:', event.channel.label)
       state.dataChannel.value = event.channel
       state.dataChannelCallbacks.forEach((fn) => fn(event.channel))
     }

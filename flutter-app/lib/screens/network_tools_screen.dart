@@ -161,7 +161,7 @@ class _NetworkToolsScreenState extends State<NetworkToolsScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('网络工具')),
       body: ListView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(16),
         children: [
           // 本机 IP
           Card(
@@ -172,25 +172,25 @@ class _NetworkToolsScreenState extends State<NetworkToolsScreen> {
                 children: [
                   Icon(Icons.phone_iphone, color: theme.colorScheme.onPrimaryContainer),
                   const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('本机 IP', style: TextStyle(color: theme.colorScheme.onPrimaryContainer, fontSize: 12)),
-                      const SizedBox(height: 2),
-                      SizedBox(
-                        width: 200,
-                        child: Text(_localIp, style: TextStyle(
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('本机 IP', style: TextStyle(color: theme.colorScheme.onPrimaryContainer, fontSize: 12)),
+                        const SizedBox(height: 2),
+                        Text(_localIp, style: TextStyle(
                           color: theme.colorScheme.onPrimaryContainer,
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
                         ), overflow: TextOverflow.ellipsis),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                  const Spacer(),
+                  const SizedBox(width: 8),
                   IconButton(
                     icon: Icon(Icons.refresh, color: theme.colorScheme.onPrimaryContainer),
                     onPressed: _getLocalIp,
+                    padding: EdgeInsets.zero,
                   ),
                   IconButton(
                     icon: Icon(Icons.copy, color: theme.colorScheme.onPrimaryContainer, size: 20),
@@ -200,6 +200,7 @@ class _NetworkToolsScreenState extends State<NetworkToolsScreen> {
                         const SnackBar(content: Text('已复制到剪贴板')),
                       );
                     },
+                    padding: EdgeInsets.zero,
                   ),
                 ],
               ),

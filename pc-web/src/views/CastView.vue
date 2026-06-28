@@ -57,8 +57,11 @@ const { startListening, stopReceiving, connectionState, setVideoRef } = useCastR
 // 当 CastReceiver 组件渲染后（connectionState 变为 connected），绑定 video 元素
 watch(castReceiverRef, (ref) => {
   if (ref?.videoEl) {
+    console.log('[CastView] videoEl已获取，准备绑定到useCastReceiver')
     setVideoRef(ref.videoEl)
-    console.log('[CastView] videoEl 已绑定到 useCastReceiver')
+    console.log('[CastView] videoEl已绑定到useCastReceiver')
+  } else {
+    console.log('[CastView] ⚠️ videoEl未获取到, ref:', ref)
   }
 })
 

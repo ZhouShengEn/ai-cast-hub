@@ -92,6 +92,7 @@ export function useCastReceiver(externalVideoRef) {
   /** 处理房间邀请 */
   function _handleInvitation(msg) {
     const roomId = msg.roomId
+    console.log('[CastReceiver] 收到room_invitation, roomId:', roomId)
     if (!roomId) return
 
     // 先清理之前的连接状态（确保每次投屏使用全新的 PC，避免 SDP m-line 顺序错误）
@@ -104,6 +105,7 @@ export function useCastReceiver(externalVideoRef) {
     castStore.setConnectionState('connecting')
 
     // 加入房间
+    console.log('[CastReceiver] 发送join_room, roomId:', roomId)
     send({
       type: 'join_room',
       roomId,
@@ -120,23 +122,29 @@ export function useCastReceiver(externalVideoRef) {
       // 服务器转发时使用 signalType 字段
       const signalType = payload.signalType || payload.type
 
+      console.log('[CastReceiver] 收到signal:', signalType, 'roomId:', signalMsg.roomId)
       try {
         if (signalType === 'offer') {
+          console.log('[CastReceiver] 收到offer, SDP长度:', payload.sdp?.length)
           // 收到手机端 offer → 创建 answer 并回复
           await handleOffer(payload.sdp, (answerPayload) => {
+            console.log('[CastReceiver] 发送answer, SDP长度:', answerPayload.sdp?.length)
             send({
               type: 'signal',
               roomId: _currentRoomId,
               payload: answerPayload,
             })
           })
+          console.log('[CastReceiver] answer已发送')
         } else if (signalType === 'answer') {
+          console.log('[CastReceiver] 收到answer, SDP长度:', payload.sdp?.length)
           await handleAnswer(payload.sdp)
         } else if (signalType === 'ice_candidate') {
+          console.log('[CastReceiver] 收到ice_candidate')
           await handleIceCandidate(payload.candidate)
         }
       } catch (err) {
-        console.error('投屏信令处理失败:', err)
+        console.error('[CastReceiver] 投屏信令处理失败:', err)
         connectionState.value = 'error'
         castStore.setConnectionState('error')
         castStore.error = err.message
@@ -149,6 +157,7 @@ export function useCastReceiver(externalVideoRef) {
   function _setupWebRTCCallbacks() {
     // 监听 ICE 候选并发送给手机端
     _iceCandidateCb = (candidate) => {
+      console.log('[CastReceiver] ICE候选已生成，发送给手机端')
       send({
         type: 'signal',
         roomId: _currentRoomId,
@@ -162,19 +171,29 @@ export function useCastReceiver(externalVideoRef) {
 
     // 监听远程媒体流
     _trackCb = () => {
+      console.log('[CastReceiver] 🔔 track回调触发')
+      console.log('[CastReceiver]   remoteStream:', remoteStream.value ? `存在(stream id: ${remoteStream.value.id})` : 'null')
+      console.log('[CastReceiver]   videoRef:', videoRef.value ? '存在' : 'null')
       if (remoteStream.value) {
         castStore.setRemoteStream(remoteStream.value)
         if (videoRef.value) {
           videoRef.value.srcObject = remoteStream.value
+          console.log('[CastReceiver] ✅ video.srcObject已绑定远程流')
+        } else {
+          console.log('[CastReceiver] ⚠️ videoRef不存在，无法绑定流')
         }
         connectionState.value = 'connected'
         castStore.setConnectionState('connected')
+        console.log('[CastReceiver] ✅ 投屏连接已建立')
+      } else {
+        console.log('[CastReceiver] ⚠️ remoteStream为空，无法绑定')
       }
     }
     onTrack(_trackCb)
 
     // 监听 WebRTC 连接状态变化：连接断开时自动清理
     _connectionStateCb = (state) => {
+      console.log('[CastReceiver] WebRTC连接状态变化:', state)
       if (state === 'failed' || state === 'disconnected' || state === 'closed') {
         console.log('[CastReceiver] WebRTC 连接断开 (state=%s)，清理投屏状态', state)
         stopReceiving()

@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
+import 'debug_service.dart';
+
 /// 屏幕捕获服务
 ///
 /// 跨平台屏幕捕获：
@@ -65,9 +67,18 @@ class ScreenCaptureService {
       _localStream = stream;
       _isCapturing = true;
       debugPrint('[ScreenCapture] 屏幕捕获流已创建, tracks=${stream.getTracks().length}');
+      DebugService().log('[ScreenCapture] 屏幕捕获流已创建, tracks=${stream.getTracks().length}');
+
+      // 详细打印每个track的信息
+      for (final track in stream.getTracks()) {
+        final trackInfo = 'track: kind=${track.kind}, enabled=${track.enabled}, muted=${track.muted}, id=${track.id}';
+        debugPrint('[ScreenCapture] $trackInfo');
+        DebugService().log('[ScreenCapture] $trackInfo');
+      }
       return stream;
     } catch (e) {
       debugPrint('[ScreenCapture] 捕获失败: $e');
+      DebugService().log('[ScreenCapture] 捕获失败: $e', level: LogLevel.error);
       rethrow;
     }
   }

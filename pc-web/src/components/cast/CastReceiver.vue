@@ -88,9 +88,15 @@ const stateMessage = computed(() => {
 watch(
   () => props.stream,
   (stream) => {
+    console.log('[CastReceiver] watch stream变化:', stream ? `有新流(stream id: ${stream.id})` : 'null')
     if (videoEl.value) {
       videoEl.value.srcObject = stream || null
       console.log('[CastReceiver] video srcObject 已', stream ? '绑定' : '解绑')
+      if (stream) {
+        console.log('[CastReceiver] 流的tracks:', stream.getTracks().map(t => `${t.kind}(id=${t.id})`).join(', '))
+      }
+    } else {
+      console.log('[CastReceiver] ⚠️ videoEl.value为空，跳过srcObject设置')
     }
   },
   { immediate: true }

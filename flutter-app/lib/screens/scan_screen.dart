@@ -127,7 +127,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       body: GestureDetector(
         onTap: () => _focusNode.requestFocus(),
         behavior: HitTestBehavior.opaque,
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
@@ -260,7 +260,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                   ),
                 ),
               ],
-              const Spacer(),
+              const SizedBox(height: 32),
               Text(
                 '提示：连接码 5 分钟内有效，过期请刷新',
                 style: theme.textTheme.bodySmall?.copyWith(
