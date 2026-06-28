@@ -63,7 +63,14 @@ class CastNotifier extends StateNotifier<CastState> {
 
     _service = CastService();
     _service!.onStatusChanged = (status) {
-      if (state.isCasting) {
+      if (status == 'disconnected') {
+        // ICE断开或房间关闭，完全重置状态
+        state = state.copyWith(
+          connectionState: 'disconnected',
+          isCasting: false,
+          roomId: null,
+        );
+      } else if (state.isCasting) {
         state = state.copyWith(
           connectionState: status,
           isCasting: status != 'disconnected',

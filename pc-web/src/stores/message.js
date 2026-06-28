@@ -41,16 +41,21 @@ export const useMessageStore = defineStore('message', () => {
     }
   }
 
-  /** 标记所有接收的消息为已读（进入消息页时调用） */
-  function markAllAsRead() {
+  /**
+   * 标记消息为已读
+   * @param {'incoming'|'outgoing'} direction - 'incoming': PC查看App发来的消息（进入消息页时调用）
+   *   'outgoing': App已读PC发出的消息（收到read_all时调用）
+   */
+  function markAllAsRead(direction = 'incoming') {
     messages.value = messages.value.map((m) => {
-      if (!m.isFromMe && m.readStatus !== 'read') {
+      const target = direction === 'outgoing' ? m.isFromMe : !m.isFromMe
+      if (target && m.readStatus !== 'read') {
         return { ...m, readStatus: 'read' }
       }
       return m
     })
-    // 通过 DC 通知 App：所有消息已读
-    if (_onMarkAllReadCallback) {
+    // 仅当 PC 主动查看时，才通过 DC 通知 App
+    if (direction === 'incoming' && _onMarkAllReadCallback) {
       _onMarkAllReadCallback()
     }
   }

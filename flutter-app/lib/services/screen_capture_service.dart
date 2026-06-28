@@ -8,29 +8,35 @@ import 'debug_service.dart';
 /// 屏幕捕获服务
 ///
 /// 跨平台屏幕捕获：
-/// - Android: getDisplayMedia（flutter_webrtc MediaProjection 内建支持）
-/// - Web: 浏览器原生 getDisplayMedia
+/// - Android: getDisplayMedia → 内部调用 MediaProjectionManager，弹出系统授权弹窗，
+///   用户授权后由 OrientationAwareScreenCapturer 捕获整机屏幕（非摄像头）。
+/// - Web: 浏览器原生 getDisplayMedia（标签页/窗口/整个屏幕选择器）
+///
+/// 注意：flutter_webrtc 的 getUserMedia 在 Android 上始终返回摄像头。
+/// 屏幕捕获必须使用 getDisplayMedia。
 class ScreenCaptureService {
   bool _isCapturing = false;
   webrtc.MediaStream? _localStream;
-  String? _lastCaptureSource; // 'screen' | 'camera:front' | 'camera:back'
 
   bool get isCapturing => _isCapturing;
-  String? get lastCaptureSource => _lastCaptureSource;
 
   /// 开始屏幕捕获
   ///
-  /// 统一使用 getDisplayMedia：
-  /// - Android: flutter_webrtc 处理后启动 MediaProjection 系统弹窗
-  /// - Web: 浏览器弹出屏幕选择器（标签页/窗口/整个屏幕）
-  ///
-  /// 返回包含视频轨和可选音频轨的 MediaStream
+  /// Android: getDisplayMedia → MediaProjection 系统弹窗 → 整机屏幕视频轨
+  /// Web:      getDisplayMedia → 浏览器屏幕选择器
   Future<webrtc.MediaStream> startCapture() async {
     if (_isCapturing) {
-      throw StateError('屏幕捕获已在进行中');
+      // 已在捕获中，先停止再重启
+      await stopCapture();
     }
 
-    DebugService().log('[ScreenCapture] 使用 getDisplayMedia 进行屏幕捕获 (平台: ${kIsWeb ? "Web" : "Native"})');
+    final isNative = !kIsWeb;
+    DebugService().log(
+      '[ScreenCapture] 开始屏幕捕获 (平台: ${isNative ? "Android/iOS" : "Web"}, '
+      'API: getDisplayMedia)',
+      level: LogLevel.info,
+    );
+
     try {
       final stream = await webrtc.navigator.mediaDevices.getDisplayMedia(
         <String, dynamic>{
@@ -44,18 +50,28 @@ class ScreenCaptureService {
           'audio': false,
         },
       );
+
       _localStream = stream;
       _isCapturing = true;
-      _lastCaptureSource = 'screen';
 
       final tracks = stream.getTracks();
-      DebugService().log('[ScreenCapture] 屏幕捕获成功, tracks=${tracks.length}', level: LogLevel.info);
+      DebugService().log(
+        '[ScreenCapture] 屏幕捕获成功, tracks=${tracks.length}',
+        level: LogLevel.info,
+      );
 
-      // 详细打印每个track的信息
       for (final track in tracks) {
-        final trackInfo = 'track: kind=${track.kind}, enabled=${track.enabled}, muted=${track.muted}, id=${track.id}';
-        DebugService().debug('[ScreenCapture] $trackInfo');
+        final info = 'track: kind=${track.kind}, enabled=${track.enabled}, '
+            'muted=${track.muted}, id=${track.id}, label=${track.label}';
+        DebugService().debug('[ScreenCapture] $info');
       }
+
+      // 验证捕获到视频轨道
+      final videoTracks = tracks.where((t) => t.kind == 'video').toList();
+      if (videoTracks.isEmpty) {
+        throw Exception('屏幕捕获失败：未获取到视频轨道，请确认已授权屏幕录制权限');
+      }
+
       return stream;
     } catch (e) {
       DebugService().error('[ScreenCapture] 屏幕捕获失败: $e');
@@ -67,7 +83,6 @@ class ScreenCaptureService {
   Future<void> stopCapture() async {
     if (!_isCapturing) return;
 
-    // 停止本地流的所有轨道
     if (_localStream != null) {
       for (final track in _localStream!.getTracks()) {
         await track.stop();

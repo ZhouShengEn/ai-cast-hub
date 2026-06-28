@@ -4,7 +4,7 @@ import 'dart:typed_data';
 enum MessageType { text, file }
 
 /// 消息状态
-enum MessageStatus { sending, sent, receiving, received, failed, cancelled }
+enum MessageStatus { sending, sent, receiving, received, failed, cancelled, interrupted }
 
 /// 已读状态
 enum ReadStatus { unread, read }
@@ -43,7 +43,7 @@ class ChatMessage {
 
   bool get isText => type == MessageType.text;
   bool get isFile => type == MessageType.file;
-  bool get isTransferring => isFile && (status == MessageStatus.sending || status == MessageStatus.receiving);
+  bool get isTransferring => isFile && (status == MessageStatus.sending || status == MessageStatus.receiving || status == MessageStatus.interrupted);
   bool get isCompleted => status == MessageStatus.sent || status == MessageStatus.received;
   bool get isFailed => status == MessageStatus.failed;
   bool get isSending => status == MessageStatus.sending;
@@ -56,6 +56,7 @@ class ChatMessage {
       case MessageStatus.received: return '已接收';
       case MessageStatus.failed: return '发送失败';
       case MessageStatus.cancelled: return '已取消';
+      case MessageStatus.interrupted: return '连接中断';
     }
   }
 

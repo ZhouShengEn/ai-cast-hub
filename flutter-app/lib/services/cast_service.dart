@@ -98,8 +98,12 @@ class CastService {
       await _webrtc.setH264Preference();
       _castLog('步骤2: PeerConnection已创建 ✓');
 
-      // 3. 设置 ICE 候选回调
-      _castLog('步骤3: 设置ICE候选回调');
+      // 3. 设置 ICE 候选回调和断开回调
+      _castLog('步骤3: 设置ICE回调');
+      _webrtc.onIceDisconnected(() {
+        _castLog('ICE连接断开，重置投屏状态', level: LogLevel.warn);
+        _updateSessionStatus('disconnected');
+      });
       _webrtc.onIceCandidate((candidate) {
         if (_currentSession == null || _isDisposed) return;
         final candStr = candidate.candidate ?? '';

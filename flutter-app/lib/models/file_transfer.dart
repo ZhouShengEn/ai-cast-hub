@@ -5,7 +5,7 @@ class FileTransfer {
   final String id;
   final String fileName;
   final int fileSize;
-  final String status; // 'pending' | 'transferring' | 'completed' | 'failed'
+  final String status; // 'pending' | 'transferring' | 'completed' | 'failed' | 'interrupted' | 'expired'
   final double progress; // 0.0 ~ 1.0
   final String? checksum;
 
@@ -22,6 +22,9 @@ class FileTransfer {
   bool get isTransferring => status == 'transferring';
   bool get isCompleted => status == 'completed';
   bool get isFailed => status == 'failed';
+  bool get isInterrupted => status == 'interrupted';
+  bool get isExpired => status == 'expired';
+  bool get isActive => isPending || isTransferring || isInterrupted;
 
   /// 进度百分比（0-100）
   int get progressPercent => (progress * 100).round();

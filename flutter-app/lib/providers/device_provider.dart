@@ -105,9 +105,13 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
         isLoading: false,
       );
 
-      // 注册后同步拉取绑定列表
-      await fetchDeviceInfo();
-      await fetchDeviceList();
+      // 注册后同步拉取绑定列表（失败不重试注册，注册已成功）
+      try {
+        await fetchDeviceInfo();
+        await fetchDeviceList();
+      } catch (e) {
+        DebugService().warn('[注册] 注册成功但拉取信息失败: $e');
+      }
     } catch (e) {
       DebugService().warn('[注册] 注册失败(第${retryCount + 1}次): $e');
       // 最多重试3次，指数退避
@@ -133,6 +137,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
       state = state.copyWith(device: device);
     } catch (e) {
       state = state.copyWith(error: '获取设备信息失败: ${_friendlyError(e)}');
+      rethrow;
     }
   }
 
@@ -177,6 +182,7 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
       state = state.copyWith(pairedDevices: devices);
     } catch (e) {
       state = state.copyWith(error: '获取设备列表失败: ${_friendlyError(e)}');
+      rethrow;
     }
   }
 

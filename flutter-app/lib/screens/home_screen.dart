@@ -32,6 +32,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // 首次安装：没有 UUID 则直接注册，避免 fetchDeviceInfo 吞掉异常
       final uuid = storage.getDeviceUuid();
       if (uuid == null || uuid.isEmpty) {
+        // 等待 500ms 确保网络初始化完成
+        await Future.delayed(const Duration(milliseconds: 500));
         await notifier.registerDevice();
         return;
       }

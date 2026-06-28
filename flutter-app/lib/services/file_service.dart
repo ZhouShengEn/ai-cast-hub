@@ -60,25 +60,63 @@ class FileService {
     return tid?.toString() ?? '';
   }
 
-  /// 开始分片传输
+  /// 查询已接收的分片列表（用于断点续传）
+  Future<List<int>> getReceivedChunks(String transferId) async {
+    try {
+      final data = await _client.get('/file/transfer/$transferId/chunks');
+      final result = Map<String, dynamic>.from(data as Map);
+      final chunks = result['receivedChunks'] as List?;
+      return chunks?.map((e) => e as int).toList() ?? [];
+    } catch (e) {
+      print('[FileService] 查询已接收分片失败: $e');
+      return [];
+    }
+  }
+
+  /// 记录已接收的分片
+  Future<void> recordReceivedChunk(String transferId, int chunkIndex) async {
+    try {
+      await _client.post('/file/transfer/$transferId/chunk', data: {
+        'chunkIndex': chunkIndex,
+      });
+    } catch (e) {
+      print('[FileService] 记录分片失败: $e');
+    }
+  }
+
+  /// 开始分片传输（支持断点续传）
   /// [transferId] 传输任务 ID
   /// [bytes] 文件二进制数据
   /// [checksum] 文件 SHA-256 校验和
   /// [dataChannel] WebRTC DataChannel（可选，通过 P2P 发送）
+  /// [resumeFromChunks] 已接收的分片列表（用于断点续传）
   /// 返回进度流
   Stream<double> startTransfer({
     required String transferId,
     required Uint8List bytes,
     required String checksum,
     webrtc.RTCDataChannel? dataChannel,
+    List<int>? resumeFromChunks,
   }) async* {
     final totalChunks =
         ((bytes.length + AppConstants.chunkSize - 1) / AppConstants.chunkSize)
             .ceil();
 
-    int sentChunks = 0;
+    // 构建已接收分片的 Set 用于快速查询
+    final receivedSet = resumeFromChunks?.toSet() ?? <int>{};
+    int sentChunks = receivedSet.length;
+
+    // 如果有断点续传，先报告已有进度
+    if (sentChunks > 0) {
+      yield sentChunks / totalChunks;
+    }
 
     for (int seq = 0; seq < totalChunks; seq++) {
+      // 跳过已接收的分片
+      if (receivedSet.contains(seq)) {
+        continue;
+      }
+
       final start = seq * AppConstants.chunkSize;
       final end = (start + AppConstants.chunkSize).clamp(0, bytes.length);
       final chunk = bytes.sublist(start, end);

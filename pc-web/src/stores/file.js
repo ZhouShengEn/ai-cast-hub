@@ -14,9 +14,9 @@ export const useFileStore = defineStore('file', {
   }),
 
   getters: {
-    /** 活跃的传输任务（传输中） */
+    /** 活跃的传输任务（传输中 + 中断） */
     activeTransfers: (state) => {
-      return state.transfers.filter((t) => t.status === 'transferring' || t.status === 'pending')
+      return state.transfers.filter((t) => t.status === 'transferring' || t.status === 'pending' || t.status === 'interrupted')
     },
 
     /** 已完成的传输任务 */
@@ -89,6 +89,40 @@ export const useFileStore = defineStore('file', {
           transfer.blob = blob
           transfer.blobUrl = URL.createObjectURL(blob)
         }
+      }
+    },
+
+    /** 标记传输中断（保留进度以便续传） */
+    markTransferInterrupted(id, receivedChunks, totalChunks) {
+      const transfer = this.transfers.find((t) => t.id === id)
+      if (transfer) {
+        transfer.status = 'interrupted'
+        transfer.receivedChunks = receivedChunks
+        transfer.totalChunks = totalChunks || transfer.totalChunks
+        transfer.progress =
+          transfer.totalChunks > 0
+            ? Math.min(100, Math.round((receivedChunks / transfer.totalChunks) * 100))
+            : transfer.progress
+      }
+    },
+
+    /** 恢复传输 */
+    resumeTransfer(id) {
+      const transfer = this.transfers.find((t) => t.id === id)
+      if (transfer) {
+        transfer.status = 'transferring'
+      }
+    },
+
+    /** 传输过期 */
+    expireTransfer(id) {
+      const transfer = this.transfers.find((t) => t.id === id)
+      if (transfer) {
+        transfer.status = 'expired'
+        // 延迟清理
+        setTimeout(() => {
+          this.removeTransfer(id)
+        }, 5000)
       }
     },
 

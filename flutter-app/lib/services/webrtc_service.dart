@@ -26,6 +26,9 @@ class WebrtcService {
   /// ICE 候选回调
   void Function(webrtc.RTCIceCandidate)? _onIceCandidateCallback;
 
+  /// ICE 断开回调（PeerConnection 断开时触发）
+  void Function()? _onIceDisconnectedCallback;
+
   /// 远端媒体流通知
   final StreamController<webrtc.MediaStream> _remoteStreamController =
       StreamController<webrtc.MediaStream>.broadcast();
@@ -44,6 +47,11 @@ class WebrtcService {
   /// 设置 ICE 候选回调
   void onIceCandidate(void Function(webrtc.RTCIceCandidate) callback) {
     _onIceCandidateCallback = callback;
+  }
+
+  /// 设置 ICE 断开回调（PeerConnection 断开时通知调用方）
+  void onIceDisconnected(void Function() callback) {
+    _onIceDisconnectedCallback = callback;
   }
 
   /// 创建 RTCPeerConnection
@@ -87,6 +95,12 @@ class WebrtcService {
     // ICE 连接状态变化
     _peerConnection!.onIceConnectionState = (webrtc.RTCIceConnectionState state) {
       _rtcLog('🧊 ICE连接状态变化: $state');
+      if (state == webrtc.RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
+          state == webrtc.RTCIceConnectionState.RTCIceConnectionStateFailed ||
+          state == webrtc.RTCIceConnectionState.RTCIceConnectionStateClosed) {
+        _rtcLog('🧊 ICE连接断开/失败，通知上层', level: LogLevel.warn);
+        _onIceDisconnectedCallback?.call();
+      }
     };
 
     return _peerConnection!;

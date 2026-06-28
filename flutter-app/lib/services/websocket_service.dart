@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../utils/constants.dart';
 import 'local_storage.dart';
 import 'debug_service.dart';
+import 'background_service.dart';
 
 /// WebSocket 连接状态
 enum WsConnectionState {
@@ -200,6 +201,16 @@ class WebSocketService {
     await _channel?.sink.close();
     _channel = null;
     _setConnectionState(WsConnectionState.disconnected);
+    // 停止后台服务
+    if (!kIsWeb) {
+      try {
+        if (defaultTargetPlatform == TargetPlatform.android) {
+          BackgroundService.stopService();
+        }
+      } catch (_) {
+        // 忽略平台检测错误
+      }
+    }
   }
 
   /// 释放资源
@@ -242,6 +253,20 @@ class WebSocketService {
         _setConnectionState(WsConnectionState.connected);
         _reconnectAttempts = 0;
         _startHeartbeat();
+        // 启动后台服务保持连接（Android only）
+        if (!kIsWeb) {
+          try {
+            if (defaultTargetPlatform == TargetPlatform.android) {
+              BackgroundService.startService().then((success) {
+                if (success) {
+                  debugPrint('[WS] 后台服务已启动');
+                }
+              });
+            }
+          } catch (_) {
+            // 忽略平台检测错误
+          }
+        }
         if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
           _connectCompleter!.complete();
         }

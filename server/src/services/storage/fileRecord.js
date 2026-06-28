@@ -62,4 +62,49 @@ async function getDeviceTransfers(deviceId) {
   return FileTransferModel.findByDevice(deviceId);
 }
 
-module.exports = { initTransfer, completeTransfer, getTransferInfo, getDeviceTransfers };
+/**
+ * 记录已接收的分片
+ * @param {number} transferId - 传输记录 ID
+ * @param {number} chunkIndex - 分片索引
+ * @returns {Promise<boolean>} 是否记录成功
+ */
+async function recordReceivedChunk(transferId, chunkIndex) {
+  return FileTransferModel.addReceivedChunk(transferId, chunkIndex);
+}
+
+/**
+ * 获取已接收的分片列表
+ * @param {number} transferId - 传输记录 ID
+ * @returns {Promise<number[]>} 已接收分片索引数组
+ */
+async function getReceivedChunks(transferId) {
+  return FileTransferModel.getReceivedChunks(transferId);
+}
+
+/**
+ * 设置传输超时
+ * @param {number} transferId - 传输记录 ID
+ * @param {number} timeoutMs - 超时毫秒数
+ */
+async function setTransferTimeout(transferId, timeoutMs) {
+  FileTransferModel.setTransferTimeout(transferId, timeoutMs);
+}
+
+/**
+ * 清除传输超时
+ * @param {number} transferId - 传输记录 ID
+ */
+async function clearTransferTimeout(transferId) {
+  FileTransferModel.clearTransferTimeout(transferId);
+}
+
+module.exports = {
+  initTransfer,
+  completeTransfer,
+  getTransferInfo,
+  getDeviceTransfers,
+  recordReceivedChunk,
+  getReceivedChunks,
+  setTransferTimeout,
+  clearTransferTimeout,
+};

@@ -231,16 +231,21 @@ class _DebugBallState extends State<DebugBall> {
     for (final e in logs.reversed) {
       buffer.writeln('[${_fmtTime(e.time)}][${_lvlTag(e.level)}] ${e.message}');
     }
-    Clipboard.setData(ClipboardData(text: buffer.toString()));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('已复制 ${logs.length} 条日志', style: TextStyle(fontSize: 12)),
-          duration: const Duration(seconds: 1),
-          behavior: SnackBarBehavior.floating,
-          width: 200,
-        ),
-      );
+    final text = buffer.toString();
+    try {
+      Clipboard.setData(ClipboardData(text: text));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已复制 ${logs.length} 条日志', style: const TextStyle(fontSize: 12)),
+            duration: const Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+            width: 200,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[DebugBall] 复制失败: $e');
     }
   }
 
@@ -394,7 +399,7 @@ class _DebugBallState extends State<DebugBall> {
             const Spacer(),
             GestureDetector(
               onTap: () {
-                // 长按复制功能，用 SnackBar 提示
+                Clipboard.setData(ClipboardData(text: text));
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(content: Text('已复制 $title', style: const TextStyle(fontSize: 10)), duration: const Duration(seconds: 1)),
                 );

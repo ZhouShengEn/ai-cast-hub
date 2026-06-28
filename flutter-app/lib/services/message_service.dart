@@ -25,6 +25,25 @@ void _msgLog(String msg, {LogLevel level = LogLevel.debug}) {
   DebugService().log(text, level: level);
 }
 
+/// 待发送文件（中断后保留以便续传）
+class _PendingSend {
+  final String id;
+  final String fileName;
+  final int fileSize;
+  final String fileMimeType;
+  final int totalChunks;
+  final Uint8List bytes;
+  Timer? timeoutTimer;
+  _PendingSend({
+    required this.id,
+    required this.fileName,
+    required this.fileSize,
+    required this.fileMimeType,
+    required this.totalChunks,
+    required this.bytes,
+  });
+}
+
 class MessageService {
   final WebSocketService _ws = WebSocketService.instance;
   final WebrtcService _webrtc = WebrtcService();
@@ -38,6 +57,10 @@ class MessageService {
   bool _remoteDescSet = false;
 
   Completer<void>? _dcOpenCompleter;
+
+  /// 用于 connect() 流程中的异步等待（不再覆盖 _wsSub）
+  Completer<String>? _roomCreatedCompleter;
+  Completer<void>? _peerJoinedCompleter;
 
   final StreamController<ChatMessage> _incomingCtl = StreamController<ChatMessage>.broadcast();
   Stream<ChatMessage> get onIncoming => _incomingCtl.stream;
@@ -54,6 +77,18 @@ class MessageService {
   bool get isConnected => _connected;
 
   StreamSubscription? _wsStateSub;
+
+  // ---- 断点续传：待发送文件缓存（中断后保留） ----
+  final Map<String, _PendingSend> _pendingSends = {};
+
+  // ---- 传输超时计时器（30 分钟） ----
+  final Map<String, Timer> _fileTransferTimers = {};
+
+  /// 传输超时：30 分钟
+  static const Duration _transferTimeout = Duration(minutes: 30);
+
+  /// resume_state 响应超时：10 秒
+  static const Duration _resumeStateTimeout = Duration(seconds: 10);
 
   /// 启动监听（被动接收PC端连接邀请）
   Future<void> startListening() async {
@@ -80,6 +115,10 @@ class MessageService {
             _connected = false;
             onDisconnected?.call();
           }
+          // 检查是否有中断的文件传输需要恢复
+          if (_pendingSends.isNotEmpty || _fileMetas.isNotEmpty) {
+            _msgLog('检测到 ${_pendingSends.length + _fileMetas.length} 个中断的文件传输');
+          }
         }
       });
     }
@@ -101,6 +140,11 @@ class MessageService {
       await _ws.connect().timeout(const Duration(seconds: 10), onTimeout: () {
         throw Exception('WebSocket 连接超时');
       });
+    }
+
+    // 确保 _wsSub 已设置（全局监听，不覆盖）
+    if (_wsSub == null) {
+      _wsSub = _ws.messages.listen(_onMsg);
     }
 
     await _webrtc.createPeerConnection({
@@ -126,6 +170,10 @@ class MessageService {
         if (_dcOpenCompleter != null && !_dcOpenCompleter!.isCompleted) {
           _dcOpenCompleter!.complete();
         }
+        // 重连后恢复中断的传输
+        if (_pendingSends.isNotEmpty || _fileMetas.isNotEmpty) {
+          _onReconnected();
+        }
       } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
         _msgLog('DC 已关闭，断开连接');
         _connected = false;
@@ -134,39 +182,27 @@ class MessageService {
       }
     };
 
-    // 创建房间
-    final roomCompleter = Completer<String>();
-    _wsSub = _ws.messages.listen((msg) {
-      final t = msg['type'] as String?;
-      if (t == 'room_created' && !roomCompleter.isCompleted) {
-        roomCompleter.complete(msg['roomId'] as String);
-      }
-    });
-
+    // 创建房间（通过 _onMsg 收到 room_created 后完成 completer）
+    _roomCreatedCompleter = Completer<String>();
     _ws.send({
       'type': 'create_room',
       'payload': {'targetDeviceUuid': pcDeviceId, 'type': 'message'},
     });
 
-    _roomId = await roomCompleter.future.timeout(const Duration(seconds: 15), onTimeout: () {
+    _roomId = await _roomCreatedCompleter!.future.timeout(const Duration(seconds: 15), onTimeout: () {
+      _roomCreatedCompleter = null;
       throw Exception('房间创建超时，请确认 PC 端已打开消息页面');
     });
+    _roomCreatedCompleter = null;
 
-    // 等待 PC 加入房间 (peer_joined)
+    // 等待 PC 加入房间 (peer_joined)（通过 _onMsg 收到 peer_joined 后完成 completer）
     _msgLog('等待 PC 加入房间 (peer_joined)...', level: LogLevel.info);
-    await _wsSub?.cancel();
-    final peerJoinedCompleter = Completer<void>();
-    _wsSub = _ws.messages.listen((msg) {
-      final t = msg['type'] as String?;
-      if (t == 'peer_joined') {
-        _msgLog('peer_joined 收到 ✓');
-        if (!peerJoinedCompleter.isCompleted) peerJoinedCompleter.complete();
-      }
-    });
-
-    await peerJoinedCompleter.future.timeout(const Duration(seconds: 15), onTimeout: () {
+    _peerJoinedCompleter = Completer<void>();
+    await _peerJoinedCompleter!.future.timeout(const Duration(seconds: 15), onTimeout: () {
+      _peerJoinedCompleter = null;
       throw Exception('等待 PC 加入房间超时\n请确认 PC 端已打开消息页面');
     });
+    _peerJoinedCompleter = null;
 
     // 创建并发送 offer
     _msgLog('创建并发送 offer...');
@@ -175,10 +211,6 @@ class MessageService {
       'type': 'signal', 'roomId': _roomId!,
       'payload': {'signalType': 'offer', 'sdp': offer.sdp},
     });
-
-    // 切换到正式消息监听
-    await _wsSub?.cancel();
-    _wsSub = _ws.messages.listen(_onMsg);
 
     // 等待 DataChannel 真正打开
     try {
@@ -199,7 +231,24 @@ class MessageService {
   }
 
   void _onMsg(Map<String, dynamic> msg) {
-    switch (msg['type']) {
+    final t = msg['type'] as String?;
+
+    // 处理 connect() 流程中的异步等待（不覆盖 _wsSub）
+    if (t == 'room_created') {
+      if (_roomCreatedCompleter != null && !_roomCreatedCompleter!.isCompleted) {
+        _roomCreatedCompleter!.complete(msg['roomId'] as String);
+      }
+      return;
+    }
+    if (t == 'peer_joined') {
+      _msgLog('peer_joined 收到 ✓');
+      if (_peerJoinedCompleter != null && !_peerJoinedCompleter!.isCompleted) {
+        _peerJoinedCompleter!.complete();
+      }
+      return;
+    }
+
+    switch (t) {
       case 'signal':
         _onSignal(msg);
         break;
@@ -265,6 +314,10 @@ class MessageService {
           if (_dcOpenCompleter != null && !_dcOpenCompleter!.isCompleted) {
             _dcOpenCompleter!.complete();
           }
+          // 重连后恢复中断的传输
+          if (_pendingSends.isNotEmpty || _fileMetas.isNotEmpty) {
+            _onReconnected();
+          }
         } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
           _msgLog('DC 已关闭，断开连接');
           _connected = false;
@@ -278,8 +331,10 @@ class MessageService {
       _msgLog('发送 join_room 响应邀请');
       _ws.send({'type': 'join_room', 'roomId': roomId});
 
-      // 等待信号和DC打开
-      _wsSub = _ws.messages.listen(_onMsg);
+      // 确保 _wsSub 已设置（全局监听，不覆盖）
+      if (_wsSub == null) {
+        _wsSub = _ws.messages.listen(_onMsg);
+      }
 
       try {
         await _dcOpenCompleter!.future.timeout(const Duration(seconds: 15));
@@ -395,6 +450,9 @@ class MessageService {
         case 'cancel':
           _cancelReceive(data['id'] as String);
           break;
+        case 'resume_state':
+          _handleResumeState(data);
+          break;
         case 'read_all':
           _msgLog('PC 端已读所有消息');
           _incomingCtl.add(ChatMessage(
@@ -489,6 +547,7 @@ class MessageService {
   }
 
   /// 发送文件（流控：二进制 DataChannel + 动态流控）
+  /// 支持断点续传：中断后保留文件数据，重连后可恢复
   Future<ChatMessage?> sendFile() async {
     final pick = await FilePicker.platform.pickFiles(allowMultiple: false, withData: true);
     if (pick == null || pick.files.isEmpty) return null;
@@ -508,6 +567,16 @@ class MessageService {
       fileMimeType: _mime(f.name), timestamp: DateTime.now(),
     );
 
+    const cs = 16384; // 16KB per chunk
+    final total = (bytes.length + cs - 1) ~/ cs;
+
+    // 创建待发送记录（用于断点续传）
+    _pendingSends[msg.id] = _PendingSend(
+      id: msg.id, fileName: f.name, fileSize: f.size,
+      fileMimeType: _mime(f.name), totalChunks: total, bytes: bytes,
+    );
+    _startFileTimer(msg.id);
+
     // 立即通知 UI：文件消息已创建，开始发送
     _progressCtl.add({
       'id': msg.id, 'progress': 0.0, 'start': true,
@@ -515,14 +584,23 @@ class MessageService {
       'fileMimeType': _mime(f.name), 'isFromMe': true,
     });
 
-    const cs = 16384; // 16KB per chunk
-    final total = (bytes.length + cs - 1) ~/ cs; // 整数除法，避免浮点精度问题
+    return _startSendingFile(msg, bytes, total, dc);
+  }
+
+  /// 执行文件发送（chunk 循环）
+  Future<ChatMessage> _startSendingFile(
+    ChatMessage msg, Uint8List bytes, int total, webrtc.RTCDataChannel dc,
+  ) async {
+    const cs = 16384;
 
     // 发送 file_start（JSON 文本）
+    // 如果是续传，加 resume 标记
+    final alreadySent = _getReceivedCount(msg.id);
     dc.send(webrtc.RTCDataChannelMessage(jsonEncode({
-      'type': 'file_start', 'id': msg.id, 'fileName': f.name,
-      'fileSize': f.size, 'totalChunks': total,
-      'fileMimeType': _mime(f.name),
+      'type': 'file_start', 'id': msg.id, 'fileName': msg.fileName,
+      'fileSize': msg.fileSize, 'totalChunks': total,
+      'fileMimeType': msg.fileMimeType,
+      if (alreadySent > 0) 'resume': true,
     })));
 
     // 预编码 file_id 为 UTF-8 字节（头信息复用）
@@ -530,7 +608,7 @@ class MessageService {
     final idLen = idBytes.length;
 
     // 二进制流控发送每个 chunk
-    _msgLog('SEND 开始发送文件 $total 个chunk, 文件大小=${f.size}, DC状态=${dc.state}');
+    _msgLog('SEND 开始发送文件 $total 个chunk, 文件大小=${msg.fileSize}, DC状态=${dc.state}');
     for (int i = 0; i < total; i++) {
       // 动态等待 DataChannel 缓冲区释放（防止溢出断开）
       var retryCount = 0;
@@ -540,19 +618,19 @@ class MessageService {
         retryCount++;
         if (retryCount > 500) {
           _msgLog('SEND 文件传输超时：DC 缓冲区持续满载 ba=$ba');
-          _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'failed': true});
+          _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'interrupted': true});
           throw Exception('连接超时');
         }
         if (dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
           _msgLog('SEND 文件传输中断：DC 状态变为 ${dc.state}');
-          _progressCtl.add({'id': msg.id, 'progress': 0, 'failed': true});
+          _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'interrupted': true});
           throw Exception('连接中断');
         }
         ba = dc.bufferedAmount;
       }
 
       final s = i * cs;
-      if (s >= bytes.length) break; // 兜底：文件已发完
+      if (s >= bytes.length) break;
       final e = (s + cs).clamp(0, bytes.length);
       final chunkData = bytes.sublist(s, e);
 
@@ -569,25 +647,124 @@ class MessageService {
 
       try {
         dc.send(webrtc.RTCDataChannelMessage.fromBinary(packet));
-        // 每 10 个 chunk 或首尾打日志
         if (i == 0 || i == total - 1 || i % 10 == 0) {
           _msgLog('SEND chunk $i/$total ba=${dc.bufferedAmount} size=${packet.length}');
         }
       } catch (sendErr) {
         _msgLog('SEND 发送 chunk $i/$total 失败: $sendErr');
-        _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'failed': true});
+        _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total, 'interrupted': true});
         throw Exception('发送chunk失败: $sendErr');
       }
       _progressCtl.add({'id': msg.id, 'progress': (i + 1) / total});
 
-      // 每个 chunk 后短延迟，让缓冲区有时间排出
       await Future.delayed(const Duration(milliseconds: 5));
     }
 
     _msgLog('SEND 所有chunk发送完毕，发送 file_end, id=${_safeId(msg.id)}');
     dc.send(webrtc.RTCDataChannelMessage(jsonEncode({'type': 'file_end', 'id': msg.id})));
     _progressCtl.add({'id': msg.id, 'progress': 1.0, 'sent': true});
+
+    // 发送成功，清理待发送记录
+    _cancelFileTimer(msg.id);
+    _pendingSends.remove(msg.id);
+
     return msg.copyWith(status: MessageStatus.sent, progress: 1.0);
+  }
+
+  /// 获取接收端已确认的分片数（通过 _fileMetas 查询——仅限本地也缓存了的情况）
+  /// 实际由 resume_state 协议提供准确数据
+  int _getReceivedCount(String fileId) {
+    // 返回 0 表示全新发送；续传时由 resume_state 确定跳过哪些 chunk
+    return 0;
+  }
+
+  /// 按已接收列表续传文件
+  Future<void> _resumeSendFile(String fileId, List<int> receivedChunks) async {
+    final pending = _pendingSends[fileId];
+    if (pending == null) {
+      _msgLog('SEND ⚠ 续传请求但无待发送数据: id=${_safeId(fileId)}');
+      return;
+    }
+
+    final dc = _webrtc.dataChannel;
+    if (dc == null || dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+      _msgLog('SEND ⚠ 续传失败：DC 未就绪');
+      return;
+    }
+
+    final receivedSet = receivedChunks.toSet();
+    _msgLog('SEND 续传文件: ${pending.fileName}, 已收 ${receivedChunks.length}/${pending.totalChunks}, 需发 ${pending.totalChunks - receivedChunks.length} 个chunk');
+
+    _progressCtl.add({
+      'id': fileId, 'progress': receivedChunks.length / pending.totalChunks, 'resumed': true,
+      'fileName': pending.fileName, 'fileSize': pending.fileSize,
+    });
+
+    // 发送 file_start（带 resume 标记）
+    dc.send(webrtc.RTCDataChannelMessage(jsonEncode({
+      'type': 'file_start', 'id': fileId, 'fileName': pending.fileName,
+      'fileSize': pending.fileSize, 'totalChunks': pending.totalChunks,
+      'fileMimeType': pending.fileMimeType, 'resume': true,
+    })));
+
+    final idBytes = utf8.encode(fileId);
+    final idLen = idBytes.length;
+    const cs = 16384;
+
+    int sentCount = receivedChunks.length;
+    for (int i = 0; i < pending.totalChunks; i++) {
+      if (receivedSet.contains(i)) continue; // 跳过已收到的
+
+      // 流控等待
+      var retryCount = 0;
+      int? ba = dc.bufferedAmount;
+      while (ba != null && ba > cs * 8) {
+        await Future.delayed(const Duration(milliseconds: 10));
+        retryCount++;
+        if (retryCount > 500 || dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+          _msgLog('SEND 续传中断 at chunk $i');
+          _progressCtl.add({'id': fileId, 'progress': sentCount / pending.totalChunks, 'interrupted': true});
+          return;
+        }
+        ba = dc.bufferedAmount;
+      }
+
+      final s = i * cs;
+      final e = (s + cs).clamp(0, pending.bytes.length);
+      final chunkData = pending.bytes.sublist(s, e);
+
+      final header = ByteData(1 + idLen + 4 + 4);
+      header.setUint8(0, idLen);
+      for (int j = 0; j < idLen; j++) { header.setUint8(1 + j, idBytes[j]); }
+      header.setUint32(1 + idLen, i, Endian.big);
+      header.setUint32(1 + idLen + 4, pending.totalChunks, Endian.big);
+
+      final packet = Uint8List(header.lengthInBytes + chunkData.length);
+      packet.setRange(0, header.lengthInBytes, header.buffer.asUint8List(0, header.lengthInBytes));
+      packet.setRange(header.lengthInBytes, header.lengthInBytes + chunkData.length, chunkData);
+
+      try {
+        dc.send(webrtc.RTCDataChannelMessage.fromBinary(packet));
+        sentCount++;
+        if (i == 0 || i == pending.totalChunks - 1 || i % 10 == 0) {
+          _msgLog('SEND resume chunk $i/${pending.totalChunks} ba=${dc.bufferedAmount}');
+        }
+      } catch (sendErr) {
+        _msgLog('SEND 续传chunk $i 失败: $sendErr');
+        _progressCtl.add({'id': fileId, 'progress': sentCount / pending.totalChunks, 'interrupted': true});
+        return;
+      }
+      _progressCtl.add({'id': fileId, 'progress': sentCount / pending.totalChunks});
+
+      await Future.delayed(const Duration(milliseconds: 5));
+    }
+
+    _msgLog('SEND 续传完成，发送 file_end, id=${_safeId(fileId)}');
+    dc.send(webrtc.RTCDataChannelMessage(jsonEncode({'type': 'file_end', 'id': fileId})));
+    _progressCtl.add({'id': fileId, 'progress': 1.0, 'sent': true});
+
+    _cancelFileTimer(fileId);
+    _pendingSends.remove(fileId);
   }
 
   void cancelSend(String id) {
@@ -612,6 +789,28 @@ class MessageService {
   void _handleFileStart(Map<String, dynamic> d) {
     final id = d['id'] as String;
     final totalChunks = d['totalChunks'] as int;
+    final isResume = d['resume'] == true;
+
+    // 如果是续传且已有缓冲，复用现有缓冲
+    if (isResume && _fileMetas.containsKey(id)) {
+      final existing = _fileMetas[id]!;
+      final existingBuf = existing['buffer'] as List<Uint8List?>;
+      if (existingBuf.length < totalChunks) {
+        final newBuf = List<Uint8List?>.filled(totalChunks, null);
+        for (int i = 0; i < existingBuf.length; i++) {
+          newBuf[i] = existingBuf[i];
+        }
+        existing['buffer'] = newBuf;
+      }
+      existing['totalChunks'] = totalChunks;
+      _msgLog('RECV 续传: id=${_safeId(id)} 保留 ${existing['chunksReceived']} 个已有分片');
+      _progressCtl.add({
+        'id': id, 'progress': (existing['chunksReceived'] as int) / totalChunks, 'resumed': true,
+      });
+      _startFileTimer(id);
+      return;
+    }
+
     _fileMetas[id] = {
       'buffer': List<Uint8List?>.filled(totalChunks, null),
       'fileName': d['fileName'] as String? ?? 'file',
@@ -620,6 +819,7 @@ class MessageService {
       'mimeType': d['fileMimeType'] as String? ?? 'application/octet-stream',
       'chunksReceived': 0,
     };
+    _startFileTimer(id);
     _incomingCtl.add(ChatMessage(
       id: id, roomId: _roomId ?? '',
       type: MessageType.file, status: MessageStatus.receiving,
@@ -646,8 +846,15 @@ class MessageService {
     final buf = meta['buffer'] as List<Uint8List?>;
     final seq = d['seq'] as int;
     final total = d['total'] as int;
+    // 跳过已接收的分片（用于断点续传去重）
+    if (buf[seq] != null) {
+      return;
+    }
     buf[seq] = base64Decode(d['data'] as String);
     meta['chunksReceived'] = (meta['chunksReceived'] as int) + 1;
+
+    // 活动重置超时
+    _startFileTimer(id);
 
     final rcvd = meta['chunksReceived'] as int;
     if (seq % 10 == 0 || rcvd >= total) {
@@ -673,6 +880,7 @@ class MessageService {
 
   /// 组装文件并触发下载
   void _assembleFile(String id) {
+    _cancelFileTimer(id);
     final meta = _fileMetas.remove(id);
     if (meta == null) return;
     final buf = meta['buffer'] as List<Uint8List?>;
@@ -704,7 +912,97 @@ class MessageService {
     });
   }
 
+  // ---- 断点续传：resume_state 协议 ----
+
+  /// 发送 resume_state：告知发送方我已收到哪些分片
+  void _sendResumeState(String fileId) {
+    final meta = _fileMetas[fileId];
+    if (meta == null) return;
+    final buf = meta['buffer'] as List<Uint8List?>;
+    final receivedChunks = <int>[];
+    for (int i = 0; i < buf.length; i++) {
+      if (buf[i] != null) receivedChunks.add(i);
+    }
+    final dc = _webrtc.dataChannel;
+    if (dc == null || dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) return;
+
+    _msgLog('RECV 发送 resume_state: id=${_safeId(fileId)} received=${receivedChunks.length}/${buf.length}');
+    dc.send(webrtc.RTCDataChannelMessage(jsonEncode({
+      'type': 'resume_state', 'id': fileId, 'receivedChunks': receivedChunks,
+    })));
+  }
+
+  /// 处理 resume_state：接收方告知我已收到哪些分片
+  void _handleResumeState(Map<String, dynamic> data) {
+    final id = data['id'] as String;
+    final receivedChunks = (data['receivedChunks'] as List).map((e) => e as int).toList();
+    _msgLog('SEND 收到 resume_state: id=${_safeId(id)} received=${receivedChunks.length}');
+    _cancelFileTimer(id); // 收到响应，停止等待超时
+    _resumeSendFile(id, receivedChunks);
+  }
+
+  /// 重连后恢复所有中断的传输
+  void _onReconnected() {
+    _msgLog('重连后检查中断的传输...');
+    int resumed = 0;
+
+    // 对于接收中的文件：发送 resume_state 请求续传
+    for (final entry in _fileMetas.entries) {
+      final id = entry.key;
+      _sendResumeState(id);
+      _startFileTimer(id);
+      resumed++;
+    }
+
+    // 对于发送中的文件：等待接收方发来 resume_state
+    for (final entry in _pendingSends.entries) {
+      final id = entry.key;
+      _startFileTimer(id);
+      // 设置 10 秒超时：如果收不到 resume_state，从头发送
+      Future.delayed(_resumeStateTimeout, () {
+        if (_pendingSends.containsKey(id) && _webrtc.dataChannel?.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+          _msgLog('SEND resume_state 响应超时，从头发送: id=${_safeId(id)}');
+          final pending = _pendingSends[id]!;
+          final dc = _webrtc.dataChannel!;
+          _startSendingFile(
+            ChatMessage(
+              id: id, roomId: _roomId ?? '', type: MessageType.file,
+              status: MessageStatus.sending, fileName: pending.fileName,
+              fileSize: pending.fileSize, fileMimeType: pending.fileMimeType,
+              timestamp: DateTime.now(),
+            ),
+            pending.bytes, pending.totalChunks, dc,
+          );
+        }
+      });
+      resumed++;
+    }
+
+    _msgLog('重连检查完成: $resumed 个传输待恢复');
+  }
+
+  // ---- 超时管理 ----
+
+  /// 启动传输超时计时器
+  void _startFileTimer(String fileId) {
+    _cancelFileTimer(fileId);
+    _fileTransferTimers[fileId] = Timer(_transferTimeout, () {
+      _msgLog('传输超时: ${_safeId(fileId)}');
+      _pendingSends.remove(fileId);
+      _fileMetas.remove(fileId);
+      _fileTransferTimers.remove(fileId);
+    });
+  }
+
+  /// 取消传输超时计时器
+  void _cancelFileTimer(String fileId) {
+    _fileTransferTimers[fileId]?.cancel();
+    _fileTransferTimers.remove(fileId);
+  }
+
   void _cancelReceive(String id) {
+    _cancelFileTimer(id);
+    _pendingSends.remove(id);
     _fileMetas.remove(id);
     _incomingCtl.add(ChatMessage(
       id: id, roomId: _roomId ?? '', type: MessageType.file,
@@ -724,6 +1022,15 @@ class MessageService {
 
   void disconnect() {
     if (_roomId != null) _ws.send({'type': 'close_room', 'roomId': _roomId!});
+    // 取消未完成的 completer
+    if (_roomCreatedCompleter != null && !_roomCreatedCompleter!.isCompleted) {
+      _roomCreatedCompleter!.completeError('连接已断开');
+    }
+    _roomCreatedCompleter = null;
+    if (_peerJoinedCompleter != null && !_peerJoinedCompleter!.isCompleted) {
+      _peerJoinedCompleter!.completeError('连接已断开');
+    }
+    _peerJoinedCompleter = null;
     _wsSub?.cancel();
     _wsSub = null;
     _wsStateSub?.cancel();
@@ -734,9 +1041,22 @@ class MessageService {
     _dcOpenCompleter = null;
     _pendingIceCandidates.clear();
     _remoteDescSet = false;
+    // 注意：不清理 _fileMetas、_pendingSends、_fileTransferTimers
+    // 这些数据保留以便重连后断点续传
     onDisconnected?.call();
-    _msgLog('已断开');
+    _msgLog('已断开（保留文件传输状态以便续传）');
   }
 
-  void dispose() { disconnect(); _incomingCtl.close(); _progressCtl.close(); }
+  void dispose() {
+    disconnect();
+    // 清理所有文件传输状态
+    for (final timer in _fileTransferTimers.values) {
+      timer.cancel();
+    }
+    _fileTransferTimers.clear();
+    _pendingSends.clear();
+    _fileMetas.clear();
+    _incomingCtl.close();
+    _progressCtl.close();
+  }
 }

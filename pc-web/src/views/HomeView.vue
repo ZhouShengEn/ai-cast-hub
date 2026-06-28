@@ -60,11 +60,24 @@
               <span class="text-2xl">{{ device.platform === 'ios' ? '🍎' : '📱' }}</span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium text-gray-800 truncate">{{ device.name || '未知设备' }}</p>
-                <p class="text-xs text-gray-400">
-                  {{ device.platform || 'android' }} · 最后在线: {{ formatTime(device.lastSeen) }}
+                <p class="text-xs" :class="device.isOnline ? 'text-green-500' : 'text-gray-400'">
+                  {{ device.platform || 'android' }} · {{ device.isOnline ? '在线' : '离线 — ' + formatTime(device.lastSeen) }}
                 </p>
               </div>
-              <span class="w-2 h-2 rounded-full bg-green-400" title="在线"></span>
+              <span
+                class="w-2 h-2 rounded-full shrink-0"
+                :class="device.isOnline ? 'bg-green-400' : 'bg-gray-300'"
+                :title="device.isOnline ? '在线' : '离线'"
+              ></span>
+              <!-- 离线时：尝试连接按钮 -->
+              <button
+                v-if="!device.isOnline"
+                @click.stop="tryConnect(device)"
+                class="ml-2 px-2 py-1 text-xs text-blue-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                title="尝试连接 App"
+              >
+                尝试连接
+              </button>
               <!-- 断开连接按钮 -->
               <button
                 @click.stop="confirmUnbind(device)"
@@ -87,13 +100,16 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, inject } from 'vue'
+import { onMounted, onUnmounted, inject, ref } from 'vue'
 import { useDeviceStore } from '../stores/device'
+import { useMessageTransfer } from '../composables/useMessageTransfer'
 import DevicePairCode from '../components/cast/DevicePairCode.vue'
 import Spinner from '../components/common/Spinner.vue'
 
 const deviceStore = useDeviceStore()
+const { createRoom } = useMessageTransfer()
 const showToast = inject('showToast', () => {})
+let refreshTimer = null
 
 /** 刷新连接码 */
 async function refreshPairCode() {
@@ -105,6 +121,17 @@ async function refreshPairCode() {
 onMounted(async () => {
   if (!deviceStore.pairCode || (deviceStore.pairCodeExpiresAt && Date.now() > deviceStore.pairCodeExpiresAt)) {
     await deviceStore.generatePairCode()
+  }
+  // 每 60 秒刷新一次设备在线状态
+  refreshTimer = setInterval(() => {
+    deviceStore.fetchDeviceList()
+  }, 60000)
+})
+
+onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
   }
 })
 
@@ -130,6 +157,28 @@ async function confirmUnbind(device) {
     showToast('已解除绑定', 'success')
   } catch (err) {
     showToast('解除绑定失败: ' + err.message, 'error')
+  }
+}
+
+/** 尝试连接离线设备 */
+async function tryConnect(device) {
+  const targetUuid = device.uuid || device.id || device.deviceUuid
+  if (!targetUuid) return
+
+  showToast('正在尝试连接...', 'info')
+
+  try {
+    // 尝试通过 WebSocket 创建房间唤醒对方
+    const roomId = await createRoom(targetUuid, 'ping')
+    if (roomId) {
+      showToast('连接请求已发送，请等待 App 响应', 'success')
+      // 2秒后刷新设备列表查看是否在线
+      setTimeout(() => {
+        deviceStore.fetchDeviceList()
+      }, 2000)
+    }
+  } catch (err) {
+    showToast('连接失败: ' + (err.message || '网络错误'), 'error')
   }
 }
 </script>

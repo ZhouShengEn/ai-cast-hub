@@ -21,9 +21,14 @@ class _CastScreenState extends ConsumerState<CastScreen> {
   @override
   void initState() {
     super.initState();
-    // 进入页面时刷新设备列表
+    // 进入页面时刷新设备列表，并重置投屏状态为非投屏中
     Future.microtask(() {
       ref.read(deviceProvider.notifier).fetchDeviceList();
+      final castState = ref.read(castProvider);
+      // 如果投屏连接已断开但状态未重置，强制重置
+      if (castState.connectionState == 'disconnected' && castState.isCasting) {
+        ref.read(castProvider.notifier).stopCasting();
+      }
     });
   }
 
@@ -35,10 +40,12 @@ class _CastScreenState extends ConsumerState<CastScreen> {
 
     final theme = Theme.of(context);
 
-    // 获取第一个已绑定 PC 名称
-    final pcName = deviceState.pairedDevices.isNotEmpty
-        ? deviceState.pairedDevices.first.deviceName
+    // 获取第一个已绑定 PC 名称和在线状态
+    final firstDevice = deviceState.pairedDevices.isNotEmpty
+        ? deviceState.pairedDevices.first
         : null;
+    final pcName = firstDevice?.deviceName;
+    final pcOnline = firstDevice?.isOnline() ?? false;
 
     // 错误提示（使用 addPostFrameCallback 避免 build 期间调用 SnackBar，且防止重复弹出）
     ref.listen(castProvider, (prev, next) {
@@ -62,7 +69,7 @@ class _CastScreenState extends ConsumerState<CastScreen> {
       ),
       body: deviceState.pairedDevices.isEmpty
           ? _buildNoDeviceView(theme)
-          : _buildControlView(castState, castNotifier, pcName, theme),
+          : _buildControlView(castState, castNotifier, pcName, pcOnline, theme),
     );
   }
 
@@ -114,20 +121,25 @@ class _CastScreenState extends ConsumerState<CastScreen> {
     dynamic castState,
     dynamic castNotifier,
     String? pcName,
+    bool pcOnline,
     ThemeData theme,
   ) {
     return Column(
       children: [
         const SizedBox(height: 16),
-        // 已绑定的 PC 信息
+        // 已绑定的 PC 信息（显示实际在线状态）
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Card(
             child: ListTile(
-              leading: const Icon(Icons.computer, color: Colors.green),
+              leading: Icon(Icons.computer,
+                color: pcOnline ? Colors.green : Colors.grey,
+              ),
               title: Text(pcName ?? 'PC 设备'),
-              subtitle: const Text('已绑定 · 可投屏'),
-              trailing: const Icon(Icons.cast_connected, color: Colors.green),
+              subtitle: Text(pcOnline ? '已绑定 · 可投屏' : '已离线'),
+              trailing: Icon(Icons.cast_connected,
+                color: pcOnline ? Colors.green : Colors.grey,
+              ),
             ),
           ),
         ),
@@ -153,15 +165,18 @@ class _CastScreenState extends ConsumerState<CastScreen> {
               onSwitchToCamera: () => castNotifier.setCameraMode(),
               onToggleCamera: () => castNotifier.toggleCamera(),
               onStartCast: () {
-                // 直接开始投屏（已绑定设备）
-                if (pcName != null) {
-                  // 使用已绑定设备的 UUID
-                  final deviceState = ref.read(deviceProvider);
-                  if (deviceState.pairedDevices.isNotEmpty) {
-                    castNotifier.startCasting(
-                      deviceState.pairedDevices.first.deviceUuid,
-                    );
-                  }
+                if (pcName == null) return;
+                if (!pcOnline) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('PC 设备已离线，无法开始投屏')),
+                  );
+                  return;
+                }
+                final deviceState = ref.read(deviceProvider);
+                if (deviceState.pairedDevices.isNotEmpty) {
+                  castNotifier.startCasting(
+                    deviceState.pairedDevices.first.deviceUuid,
+                  );
                 }
               },
               onStopCast: () => castNotifier.stopCasting(),

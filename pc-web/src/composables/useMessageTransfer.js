@@ -32,6 +32,14 @@ export function useMessageTransfer() {
   let _fileMetas = {}
   let _connectionTimeout = null
 
+  // 断点续传：待发送文件缓存（中断后保留）
+  const _pendingSends = {}  // { [fileId]: { id, fileName, fileSize, fileMimeType, totalChunks, fullData: Uint8Array } }
+  const _fileTransferTimers = {}  // { [fileId]: setTimeout }
+  const TRANSFER_TIMEOUT_MS = 30 * 60 * 1000  // 30 分钟
+  const RESUME_STATE_TIMEOUT_MS = 10000  // 10 秒等待 resume_state
+  /** 暂存早到的 chunk（file_start 尚未到达时） */
+  let _pendingChunks = {}
+
   // 回调引用
   let _invitationHandler = null
   let _signalHandler = null
@@ -308,6 +316,10 @@ export function useMessageTransfer() {
       _clearConnectionTimeout()
       store.setConnected(true)
       store.error = null
+      // 重连后恢复中断的传输
+      if (Object.keys(_pendingSends).length > 0 || Object.keys(_fileMetas).length > 0) {
+        _onReconnected()
+      }
     }
     channel.onmessage = (event) => {
       if (typeof event.data === 'string') {
@@ -370,10 +382,13 @@ export function useMessageTransfer() {
       case 'cancel':
         _handleCancel(data)
         break
+      case 'resume_state':
+        _handleResumeState(data)
+        break
       case 'read_all':
-        // App 端进入消息页面，已读 PC 发过去的所有消息
+        // App 端已读 PC 发出的所有消息，标记 PC 的 outgoing 消息为已读
         console.log('[Message] App 端全部已读')
-        store.markAllAsRead()
+        store.markAllAsRead('outgoing')
         break
     }
   }
@@ -388,9 +403,31 @@ export function useMessageTransfer() {
   }
 
   function _handleFileStart(data) {
+    const isResume = data.resume === true
+
+    // 如果是续传且已有缓冲，复用现有缓冲
+    if (isResume && _fileBuffers[data.id]) {
+      const existingBuf = _fileBuffers[data.id]
+      if (existingBuf.length < data.totalChunks) {
+        const newBuf = new Array(data.totalChunks)
+        for (let i = 0; i < existingBuf.length; i++) newBuf[i] = existingBuf[i]
+        _fileBuffers[data.id] = newBuf
+      }
+      _fileMetas[data.id] = data
+      _resetFileTransferTimer(data.id)
+      console.log('[Message] 续传 file_start: id=', data.id, '已有', existingBuf.filter(Boolean).length, '个分片')
+      store.updateMessage(data.id, {
+        status: 'receiving',
+        receivedChunks: existingBuf.filter(Boolean).length,
+        progress: existingBuf.filter(Boolean).length / data.totalChunks,
+      })
+      return
+    }
+
     // 缓冲区总是创建（chunk 会通过 DC 持续到达）
     _fileMetas[data.id] = data
     _fileBuffers[data.id] = new Array(data.totalChunks)
+    _resetFileTransferTimer(data.id)
 
     console.log('[Message] file_start: id=', data.id, 'fileName=', data.fileName, 'totalChunks=', data.totalChunks)
 
@@ -418,9 +455,6 @@ export function useMessageTransfer() {
       pending.forEach(c => _handleFileChunkData(c))
     }
   }
-
-  /** 暂存早到的 chunk（file_start 尚未到达时） */
-  let _pendingChunks = {}
 
   /** 解析二进制 chunk: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data] */
   function _handleBinaryChunk(arrayBuffer) {
@@ -474,6 +508,8 @@ export function useMessageTransfer() {
       console.warn('[Message] ⚠ 收到未知文件 chunk: id=', data.id, 'seq=', data.seq, '/', data.total)
       return
     }
+    // 跳过已接收的分片（断点续传去重）
+    if (buf[data.seq]) return
     try {
       const binary = atob(data.data)
       const bytes = new Uint8Array(binary.length)
@@ -483,6 +519,9 @@ export function useMessageTransfer() {
       console.error('[Message] base64 解码失败, seq:', data.seq, e)
       return
     }
+
+    // 活动重置超时
+    _resetFileTransferTimer(data.id)
 
     const total = data.total
     const received = buf.filter(Boolean).length
@@ -513,6 +552,148 @@ export function useMessageTransfer() {
     const received = buf.filter(Boolean).length
     console.log('[Message] file_end: 已收到', received, '个chunk')
     _assembleAndStore(data.id)
+  }
+
+  // ---- 断点续传：resume_state 协议 ----
+
+  /** 发送 resume_state：告知发送方我已收到哪些分片 */
+  function _sendResumeState(fileId) {
+    const buf = _fileBuffers[fileId]
+    if (!buf || !_dataChannel || _dataChannel.readyState !== 'open') return
+    const receivedChunks = []
+    buf.forEach((chunk, idx) => { if (chunk) receivedChunks.push(idx) })
+    console.log('[Message] 发送 resume_state: id=', fileId, 'received=', receivedChunks.length, '/', buf.length)
+    _dataChannel.send(JSON.stringify({ type: 'resume_state', id: fileId, receivedChunks }))
+  }
+
+  /** 处理 resume_state：接收方告知我已收到哪些分片 */
+  function _handleResumeState(data) {
+    const id = data.id
+    const receivedChunks = data.receivedChunks || []
+    console.log('[Message] 收到 resume_state: id=', id, 'received=', receivedChunks.length)
+    _clearFileTransferTimer(id)
+    _resumeSendFile(id, receivedChunks)
+  }
+
+  /** 按已接收列表续传文件 */
+  async function _resumeSendFile(fileId, receivedChunks) {
+    const pending = _pendingSends[fileId]
+    if (!pending) {
+      console.warn('[Message] 续传请求但无待发送数据: id=', fileId)
+      return
+    }
+    if (!_dataChannel || _dataChannel.readyState !== 'open') {
+      console.warn('[Message] 续传失败：DC 未就绪')
+      return
+    }
+
+    const receivedSet = new Set(receivedChunks)
+    console.log('[Message] 续传文件:', pending.fileName, '已收', receivedChunks.length, '/', pending.totalChunks)
+
+    store.updateMessage(fileId, { status: 'sending', progress: receivedChunks.length / pending.totalChunks })
+
+    // 发送 file_start（带 resume 标记）
+    _dataChannel.send(JSON.stringify({
+      type: 'file_start', id: fileId, fileName: pending.fileName,
+      fileSize: pending.fileSize, fileMimeType: pending.fileMimeType,
+      totalChunks: pending.totalChunks, resume: true,
+    }))
+
+    const idEncoded = new TextEncoder().encode(fileId)
+    const chunkSize = 16384
+    let sentCount = receivedChunks.length
+
+    for (let i = 0; i < pending.totalChunks; i++) {
+      if (receivedSet.has(i)) continue
+
+      let retryCount = 0
+      while (_dataChannel && _dataChannel.bufferedAmount > chunkSize * 8) {
+        await new Promise(r => setTimeout(r, 10))
+        retryCount++
+        if (retryCount > 500 || !_dataChannel || _dataChannel.readyState !== 'open') {
+          console.warn('[Message] 续传中断 at chunk', i)
+          store.updateMessage(fileId, { status: 'interrupted', progress: sentCount / pending.totalChunks })
+          return
+        }
+      }
+
+      const s = i * chunkSize
+      const e = Math.min(s + chunkSize, pending.fullData.length)
+      const chunk = pending.fullData.slice(s, e)
+
+      const headerSize = 1 + idEncoded.length + 4 + 4
+      const packet = new Uint8Array(headerSize + chunk.length)
+      const view = new DataView(packet.buffer)
+      packet[0] = idEncoded.length
+      packet.set(idEncoded, 1)
+      view.setUint32(1 + idEncoded.length, i, false)
+      view.setUint32(1 + idEncoded.length + 4, pending.totalChunks, false)
+      packet.set(chunk, headerSize)
+
+      _dataChannel.send(packet.buffer)
+      sentCount++
+      store.updateMessage(fileId, { progress: Math.min(1, sentCount / pending.totalChunks) })
+
+      await new Promise(r => setTimeout(r, 5))
+    }
+
+    if (_dataChannel && _dataChannel.readyState === 'open') {
+      _dataChannel.send(JSON.stringify({ type: 'file_end', id: fileId }))
+      store.updateMessage(fileId, { status: 'sent', progress: 1 })
+    }
+    delete _pendingSends[fileId]
+    _clearFileTransferTimer(fileId)
+  }
+
+  /** 重连后恢复所有中断的传输 */
+  function _onReconnected() {
+    console.log('[Message] 重连后检查中断的传输...')
+    let resumed = 0
+
+    // 对于接收中的文件：发送 resume_state 请求续传
+    for (const id of Object.keys(_fileMetas)) {
+      _sendResumeState(id)
+      _resetFileTransferTimer(id)
+      resumed++
+    }
+
+    // 对于发送中的文件：等待接收方发来 resume_state
+    for (const id of Object.keys(_pendingSends)) {
+      _resetFileTransferTimer(id)
+      // 设置 10 秒超时：如果收不到 resume_state，从头发送
+      setTimeout(() => {
+        if (_pendingSends[id] && _dataChannel && _dataChannel.readyState === 'open') {
+          console.log('[Message] resume_state 响应超时，从头发送: id=', id)
+          const pending = _pendingSends[id]
+          const idEncoded = new TextEncoder().encode(id)
+          _sendFileChunks(id, pending.fullData, pending.totalChunks, 16384, idEncoded)
+        }
+      }, RESUME_STATE_TIMEOUT_MS)
+      resumed++
+    }
+
+    console.log('[Message] 重连检查完成:', resumed, '个传输待恢复')
+  }
+
+  // ---- 超时管理 ----
+
+  function _resetFileTransferTimer(fileId) {
+    _clearFileTransferTimer(fileId)
+    _fileTransferTimers[fileId] = setTimeout(() => {
+      console.warn('[Message] 传输超时:', fileId)
+      delete _pendingSends[fileId]
+      delete _fileBuffers[fileId]
+      delete _fileMetas[fileId]
+      delete _fileTransferTimers[fileId]
+      store.updateMessage(fileId, { status: 'failed' })
+    }, TRANSFER_TIMEOUT_MS)
+  }
+
+  function _clearFileTransferTimer(fileId) {
+    if (_fileTransferTimers[fileId]) {
+      clearTimeout(_fileTransferTimers[fileId])
+      delete _fileTransferTimers[fileId]
+    }
   }
 
   /** 组装 chunks 并将 blob 存入消息，自动触发浏览器下载 */
@@ -554,7 +735,8 @@ export function useMessageTransfer() {
 
     console.log('[Message] 消息已更新为 received, blobUrl=', url ? '已创建' : '无')
 
-    // 清理缓冲区
+    // 清理缓冲区和计时器
+    _clearFileTransferTimer(fileId)
     delete _fileBuffers[fileId]
     delete _fileMetas[fileId]
 
@@ -563,6 +745,8 @@ export function useMessageTransfer() {
   }
 
   function _handleCancel(data) {
+    _clearFileTransferTimer(data.id)
+    delete _pendingSends[data.id]
     delete _fileBuffers[data.id]
     delete _fileMetas[data.id]
     store.updateMessage(data.id, { status: 'cancelled' })
@@ -629,55 +813,70 @@ export function useMessageTransfer() {
       const arrayBuffer = await file.arrayBuffer()
       const fullData = new Uint8Array(arrayBuffer)
 
+      // 保存待发送数据（用于断点续传）
+      _pendingSends[msgId] = {
+        id: msgId, fileName: file.name, fileSize: file.size,
+        fileMimeType: file.type, totalChunks, fullData,
+      }
+      _resetFileTransferTimer(msgId)
+
       // 预先编码 file_id
       const idEncoded = new TextEncoder().encode(msgId)
 
-      for (let i = 0; i < totalChunks; i++) {
-        // 动态等待缓冲区释放（防止溢出断开）
-        let retryCount = 0
-        while (_dataChannel && _dataChannel.bufferedAmount > chunkSize * 8) {
-          await new Promise(r => setTimeout(r, 10))
-          retryCount++
-          if (retryCount > 500) {
-            console.error('[Message] 文件传输超时：DC 缓冲区持续满载')
-            store.updateMessage(msgId, { status: 'failed' })
-            return
-          }
-          if (!_dataChannel || _dataChannel.readyState !== 'open') {
-            console.error('[Message] 文件传输中断：DC 已关闭')
-            store.updateMessage(msgId, { status: 'failed' })
-            return
-          }
-        }
-
-        const s = i * chunkSize
-        if (s >= file.size) break // 兜底：文件已发完
-        const e = Math.min(s + chunkSize, file.size)
-        const chunk = fullData.slice(s, e)
-
-        // 构造二进制头: [1b idLen][idLen b fileId][4b seq BE][4b total BE][data]
-        const headerSize = 1 + idEncoded.length + 4 + 4
-        const packet = new Uint8Array(headerSize + chunk.length)
-        const view = new DataView(packet.buffer)
-        packet[0] = idEncoded.length
-        packet.set(idEncoded, 1)
-        view.setUint32(1 + idEncoded.length, i, false)
-        view.setUint32(1 + idEncoded.length + 4, totalChunks, false)
-        packet.set(chunk, headerSize)
-
-        _dataChannel.send(packet.buffer)
-        store.updateMessage(msgId, { progress: Math.min(1, (i + 1) / totalChunks) })
-
-        // 每个 chunk 后短延迟，让缓冲区有时间排出
-        await new Promise(r => setTimeout(r, 5))
-      }
-
-      if (_dataChannel && _dataChannel.readyState === 'open') {
-        _dataChannel.send(JSON.stringify({ type: 'file_end', id: msgId }))
-        store.updateMessage(msgId, { status: 'sent', progress: 1 })
-      }
+      await _sendFileChunks(msgId, fullData, totalChunks, chunkSize, idEncoded)
     }
     input.click()
+  }
+
+  /** 发送文件分片（支持全新发送和续传） */
+  async function _sendFileChunks(msgId, fullData, totalChunks, chunkSize, idEncoded, receivedSet = new Set()) {
+    for (let i = 0; i < totalChunks; i++) {
+      if (receivedSet.has(i)) continue // 跳过已收到的
+
+      // 动态等待缓冲区释放（防止溢出断开）
+      let retryCount = 0
+      while (_dataChannel && _dataChannel.bufferedAmount > chunkSize * 8) {
+        await new Promise(r => setTimeout(r, 10))
+        retryCount++
+        if (retryCount > 500) {
+          console.error('[Message] 文件传输超时：DC 缓冲区持续满载')
+          store.updateMessage(msgId, { status: 'interrupted' })
+          return
+        }
+        if (!_dataChannel || _dataChannel.readyState !== 'open') {
+          console.error('[Message] 文件传输中断：DC 已关闭')
+          store.updateMessage(msgId, { status: 'interrupted' })
+          return
+        }
+      }
+
+      const s = i * chunkSize
+      if (s >= fullData.length) break
+      const e = Math.min(s + chunkSize, fullData.length)
+      const chunk = fullData.slice(s, e)
+
+      const headerSize = 1 + idEncoded.length + 4 + 4
+      const packet = new Uint8Array(headerSize + chunk.length)
+      const view = new DataView(packet.buffer)
+      packet[0] = idEncoded.length
+      packet.set(idEncoded, 1)
+      view.setUint32(1 + idEncoded.length, i, false)
+      view.setUint32(1 + idEncoded.length + 4, totalChunks, false)
+      packet.set(chunk, headerSize)
+
+      _dataChannel.send(packet.buffer)
+      store.updateMessage(msgId, { progress: Math.min(1, (i + 1) / totalChunks) })
+
+      await new Promise(r => setTimeout(r, 5))
+    }
+
+    if (_dataChannel && _dataChannel.readyState === 'open') {
+      _dataChannel.send(JSON.stringify({ type: 'file_end', id: msgId }))
+      store.updateMessage(msgId, { status: 'sent', progress: 1 })
+      // 发送成功，清理待发送记录
+      delete _pendingSends[msgId]
+      _clearFileTransferTimer(msgId)
+    }
   }
 
   /** 取消传输 */
@@ -685,6 +884,8 @@ export function useMessageTransfer() {
     if (_dataChannel) {
       _dataChannel.send(JSON.stringify({ type: 'cancel', id }))
     }
+    _clearFileTransferTimer(id)
+    delete _pendingSends[id]
     delete _fileBuffers[id]
     delete _fileMetas[id]
     store.updateMessage(id, { status: 'cancelled' })
@@ -692,7 +893,7 @@ export function useMessageTransfer() {
 
   /** 断开当前会话（保持 invitation 监听，可接受新连接） */
   function disconnect() {
-    console.log('[Message] 断开消息通道（保持 invitation 监听）')
+    console.log('[Message] 断开消息通道（保持文件状态以便续传）')
     _clearConnectionTimeout()
     if (_currentRoomId) send({ type: 'close_room', roomId: _currentRoomId })
     // 只清理当前会话的 handlers，不清理 invitation/room_closed（保持可重连）
@@ -715,8 +916,14 @@ export function useMessageTransfer() {
     _currentRoomId = null
     _currentRoomType = null
     _dataChannel = null
-    _fileBuffers = {}
-    _fileMetas = {}
+    // 注意：不清理 _fileBuffers、_fileMetas、_pendingSends、_fileTransferTimers
+    // 这些数据保留以便重连后断点续传
+    // 标记进行中的消息为 interrupted
+    store.messages.forEach(m => {
+      if (m.status === 'sending' || m.status === 'receiving') {
+        store.updateMessage(m.id, { status: 'interrupted' })
+      }
+    })
   }
 
   function _clearConnectionTimeout() {

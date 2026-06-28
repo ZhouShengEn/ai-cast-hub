@@ -46,6 +46,10 @@ class MessageNotifier extends StateNotifier<MessageState> {
     _svc!.onConnected = () {
       if (_disposed) return;
       state = state.copyWith(isConnected: true, isConnecting: false);
+      // DC 刚建立时，如果用户已在查看消息页，立即同步已读状态给 PC
+      if (state.isViewing) {
+        _sendReadAll();
+      }
     };
 
     _svc!.onIncoming.listen((msg) {
@@ -116,6 +120,15 @@ class MessageNotifier extends StateNotifier<MessageState> {
           newStatus = MessageStatus.sent;
         } else if (d['failed'] == true) {
           newStatus = MessageStatus.failed;
+        } else if (d['interrupted'] == true) {
+          newStatus = MessageStatus.interrupted;
+        } else if (d['resumed'] == true) {
+          // 恢复传输：保持 sending/receiving 状态
+          if (list[idx].isFromMe) {
+            newStatus = MessageStatus.sending;
+          } else {
+            newStatus = MessageStatus.receiving;
+          }
         }
         list[idx] = list[idx].copyWith(progress: p, status: newStatus, filePath: savedPath ?? list[idx].filePath);
         state = state.copyWith(messages: list);

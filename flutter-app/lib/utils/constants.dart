@@ -34,6 +34,9 @@ class AppConstants {
   /// 文件分片 ACK 等待超时
   static const Duration chunkAckTimeout = Duration(seconds: 5);
 
+  /// 传输超时（30 分钟无活动自动过期）
+  static const Duration transferTimeout = Duration(minutes: 30);
+
   /// 设备在线判定阈值（5分钟）
   static const Duration deviceOnlineThreshold = Duration(minutes: 5);
 
