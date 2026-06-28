@@ -305,26 +305,29 @@ class MessageService {
         });
       });
 
+      // 监听远端创建的DataChannel（PC端会创建message通道）
       _dcOpenCompleter = Completer<void>();
-      final dc = await _webrtc.createDataChannel('message');
-      dc.onMessage = (webrtc.RTCDataChannelMessage msg) => _onDC(msg);
-      dc.onDataChannelState = (webrtc.RTCDataChannelState state) {
-        _msgLog('DC 状态: $state');
-        if (state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
-          if (_dcOpenCompleter != null && !_dcOpenCompleter!.isCompleted) {
-            _dcOpenCompleter!.complete();
+      _webrtc.onRemoteDataChannel.listen((channel) {
+        _msgLog('收到远端DataChannel: ${channel.label}，设置监听');
+        channel.onMessage = (webrtc.RTCDataChannelMessage msg) => _onDC(msg);
+        channel.onDataChannelState = (webrtc.RTCDataChannelState state) {
+          _msgLog('远端DC状态: $state');
+          if (state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+            if (_dcOpenCompleter != null && !_dcOpenCompleter!.isCompleted) {
+              _dcOpenCompleter!.complete();
+            }
+            // 重连后恢复中断的传输
+            if (_pendingSends.isNotEmpty || _fileMetas.isNotEmpty) {
+              _onReconnected();
+            }
+          } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
+            _msgLog('远端DC已关闭，断开连接');
+            _connected = false;
+            _dcOpenCompleter = null;
+            onDisconnected?.call();
           }
-          // 重连后恢复中断的传输
-          if (_pendingSends.isNotEmpty || _fileMetas.isNotEmpty) {
-            _onReconnected();
-          }
-        } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
-          _msgLog('DC 已关闭，断开连接');
-          _connected = false;
-          _dcOpenCompleter = null;
-          onDisconnected?.call();
-        }
-      };
+        };
+      });
 
       _roomId = roomId;
 
@@ -343,16 +346,10 @@ class MessageService {
         onConnected?.call();
       } catch (e) {
         _msgLog('DC open 超时: $e');
-        final dc2 = _webrtc.dataChannel;
-        if (dc2 != null && dc2.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
-          _connected = true;
-          _msgLog('DC 已打开，标记已连接');
-          onConnected?.call();
-        } else {
-          _connected = true;
-          _msgLog('标记已连接（DC 可能未完全打开）');
-          onConnected?.call();
-        }
+        // 超时后也尝试标记连接，可能DC已打开但事件未触发
+        _connected = true;
+        _msgLog('标记已连接（DC open超时）');
+        onConnected?.call();
       }
     } catch (e) {
       _msgLog('接受房间邀请失败: $e');

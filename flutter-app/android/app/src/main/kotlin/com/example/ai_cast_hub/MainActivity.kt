@@ -16,6 +16,7 @@ import io.flutter.plugin.common.MethodChannel
  */
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "ai_cast_hub/background"
+    private val RC_CHANNEL = "ai_cast_hub/remote_control"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -43,6 +44,57 @@ class MainActivity : FlutterActivity() {
                 "stopMediaProjectionService" -> {
                     val stopped = stopMediaProjectionService()
                     result.success(stopped)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, RC_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "checkAccessibilityEnabled" -> {
+                    val enabled = RemoteControlService.isServiceEnabled(this)
+                    result.success(enabled)
+                }
+                "openAccessibilitySettings" -> {
+                    RemoteControlService.openAccessibilitySettings(this)
+                    result.success(null)
+                }
+                "dispatchTap" -> {
+                    val x = call.argument<Double>("x") ?: 0.0
+                    val y = call.argument<Double>("y") ?: 0.0
+                    val success = RemoteControlService.instance?.dispatchTap(x, y) ?: false
+                    result.success(success)
+                }
+                "dispatchTouchStart" -> {
+                    val x = call.argument<Double>("x") ?: 0.0
+                    val y = call.argument<Double>("y") ?: 0.0
+                    val success = RemoteControlService.instance?.dispatchTouchStart(x, y) ?: false
+                    result.success(success)
+                }
+                "dispatchTouchMove" -> {
+                    val x = call.argument<Double>("x") ?: 0.0
+                    val y = call.argument<Double>("y") ?: 0.0
+                    val success = RemoteControlService.instance?.dispatchTouchMove(x, y) ?: false
+                    result.success(success)
+                }
+                "dispatchTouchEnd" -> {
+                    val x = call.argument<Double>("x") ?: 0.0
+                    val y = call.argument<Double>("y") ?: 0.0
+                    val success = RemoteControlService.instance?.dispatchTouchEnd(x, y) ?: false
+                    result.success(success)
+                }
+                "dispatchScroll" -> {
+                    val x = call.argument<Double>("x") ?: 0.0
+                    val y = call.argument<Double>("y") ?: 0.0
+                    val deltaX = call.argument<Double>("deltaX") ?: 0.0
+                    val deltaY = call.argument<Double>("deltaY") ?: 0.0
+                    val success = RemoteControlService.instance?.dispatchScroll(x, y, deltaX, deltaY) ?: false
+                    result.success(success)
+                }
+                "performGlobalAction" -> {
+                    val action = call.argument<String>("action") ?: ""
+                    val success = RemoteControlService.instance?.performGlobalAction(action) ?: false
+                    result.success(success)
                 }
                 else -> result.notImplemented()
             }

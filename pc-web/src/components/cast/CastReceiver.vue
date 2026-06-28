@@ -1,5 +1,5 @@
 <template>
-  <div class="relative w-full aspect-video bg-black rounded-lg overflow-hidden">
+  <div ref="containerRef" class="relative w-full aspect-video bg-black rounded-lg overflow-hidden">
     <!-- 视频区域（始终渲染，确保 videoEl 始终可用） -->
     <video
       ref="videoEl"
@@ -20,16 +20,28 @@
       </p>
     </div>
 
+    <!-- 远程控制交互层（连接成功后显示） -->
+    <div
+      v-if="connectionState === 'connected'"
+      class="absolute inset-0 cursor-pointer z-10"
+      @mousedown="onMouseDown"
+      @mousemove="onMouseMove"
+      @mouseup="onMouseUp"
+      @mouseleave="onMouseUp"
+      @click="onClick"
+      @wheel.prevent="onWheel"
+    ></div>
+
     <!-- 顶部连接状态 -->
-    <div class="absolute top-3 left-3">
+    <div class="absolute top-3 left-3 z-20">
       <ConnectionBadge :state="connectionState" />
     </div>
 
     <!-- 全屏按钮 -->
     <button
       v-if="connectionState === 'connected'"
-      class="absolute bottom-3 right-3 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors"
-      @click="toggleFullscreen"
+      class="absolute bottom-3 right-3 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors z-20"
+      @click.stop="toggleFullscreen"
       title="全屏"
     >
       ⛶
@@ -38,20 +50,29 @@
     <!-- 取消静音按钮（浏览器自动播放策略需要用户交互才能播放声音） -->
     <button
       v-if="connectionState === 'connected' && isMuted"
-      class="absolute bottom-3 left-3 px-3 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white text-sm flex items-center gap-1 transition-colors"
-      @click="unmute"
+      class="absolute bottom-3 left-3 px-3 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white text-sm flex items-center gap-1 transition-colors z-20"
+      @click.stop="unmute"
       title="开启声音"
     >
       🔇 点击开启声音
     </button>
     <button
       v-else-if="connectionState === 'connected' && !isMuted"
-      class="absolute bottom-3 left-3 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors"
-      @click="mute"
+      class="absolute bottom-3 left-3 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors z-20"
+      @click.stop="mute"
       title="静音"
     >
       🔊
     </button>
+
+    <!-- 操作提示 -->
+    <div
+      v-if="connectionState === 'connected'"
+      class="absolute top-3 right-3 text-xs text-white/50 z-20 text-right"
+    >
+      🖱️ 远程控制已开启<br/>
+      ⌨️ Home/Bksp/Tab 快捷操作
+    </div>
   </div>
 </template>
 
@@ -67,12 +88,143 @@ const props = defineProps({
   stream: { type: Object, default: null },
 })
 
+const emit = defineEmits(['control'])
+
 /** 暴露 video ref 供 composable 绑定 */
 const videoEl = ref(null)
+const containerRef = ref(null)
 defineExpose({ videoEl })
 
 /** 静音状态（默认静音以满足浏览器自动播放策略，用户可手动取消） */
 const isMuted = ref(true)
+
+/** 远程控制状态 */
+const isDragging = ref(false)
+const dragStart = ref({ x: 0, y: 0 })
+
+/** 获取视频显示区域的实际尺寸（去除黑边） */
+function _getVideoRect() {
+  if (!videoEl.value || !containerRef.value) return null
+  const containerRect = containerRef.value.getBoundingClientRect()
+  const video = videoEl.value
+  const videoWidth = video.videoWidth || 1920
+  const videoHeight = video.videoHeight || 1080
+  const aspectRatio = videoWidth / videoHeight
+  const containerAspectRatio = containerRect.width / containerRect.height
+
+  let renderWidth, renderHeight, offsetX, offsetY
+
+  if (aspectRatio > containerAspectRatio) {
+    renderWidth = containerRect.width
+    renderHeight = containerRect.width / aspectRatio
+    offsetX = 0
+    offsetY = (containerRect.height - renderHeight) / 2
+  } else {
+    renderHeight = containerRect.height
+    renderWidth = containerRect.height * aspectRatio
+    offsetX = (containerRect.width - renderWidth) / 2
+    offsetY = 0
+  }
+
+  return {
+    width: renderWidth,
+    height: renderHeight,
+    offsetX,
+    offsetY,
+    videoWidth,
+    videoHeight,
+  }
+}
+
+/** 将鼠标坐标转换为手机屏幕百分比 */
+function _mapToPhonePercent(clientX, clientY) {
+  const videoRect = _getVideoRect()
+  if (!videoRect) return null
+
+  const containerRect = containerRef.value.getBoundingClientRect()
+  const x = clientX - containerRect.left - videoRect.offsetX
+  const y = clientY - containerRect.top - videoRect.offsetY
+
+  if (x < 0 || x > videoRect.width || y < 0 || y > videoRect.height) {
+    return null
+  }
+
+  return {
+    x: Math.round((x / videoRect.width) * 100) / 100,
+    y: Math.round((y / videoRect.height) * 100) / 100,
+  }
+}
+
+/** 鼠标按下 */
+function onMouseDown(e) {
+  if (e.button !== 0) return
+  isDragging.value = true
+  const percent = _mapToPhonePercent(e.clientX, e.clientY)
+  if (percent) {
+    dragStart.value = percent
+    emit('control', {
+      type: 'touch_start',
+      x: percent.x,
+      y: percent.y,
+    })
+  }
+}
+
+/** 鼠标移动 */
+function onMouseMove(e) {
+  if (!isDragging.value) return
+  const percent = _mapToPhonePercent(e.clientX, e.clientY)
+  if (percent) {
+    emit('control', {
+      type: 'touch_move',
+      x: percent.x,
+      y: percent.y,
+      startX: dragStart.value.x,
+      startY: dragStart.value.y,
+    })
+  }
+}
+
+/** 鼠标松开 */
+function onMouseUp(e) {
+  if (!isDragging.value) return
+  isDragging.value = false
+  const percent = _mapToPhonePercent(e.clientX, e.clientY)
+  if (percent) {
+    emit('control', {
+      type: 'touch_end',
+      x: percent.x,
+      y: percent.y,
+    })
+  }
+}
+
+/** 鼠标点击 */
+function onClick(e) {
+  if (isDragging.value) return
+  const percent = _mapToPhonePercent(e.clientX, e.clientY)
+  if (percent) {
+    emit('control', {
+      type: 'tap',
+      x: percent.x,
+      y: percent.y,
+    })
+  }
+}
+
+/** 鼠标滚轮 */
+function onWheel(e) {
+  const percent = _mapToPhonePercent(e.clientX, e.clientY)
+  if (percent) {
+    emit('control', {
+      type: 'scroll',
+      x: percent.x,
+      y: percent.y,
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+    })
+  }
+}
 
 const stateMessage = computed(() => {
   const map = {
@@ -101,6 +253,7 @@ onMounted(() => {
     console.log('[CastReceiver] 挂载时绑定已有流:', props.stream.id)
     _bindStream(props.stream)
   }
+  window.addEventListener('keydown', _handleKeyDown)
 })
 
 /** 监听 stream prop 变化 */
@@ -140,9 +293,29 @@ function toggleFullscreen() {
   }
 }
 
+/** 键盘快捷键处理 */
+function _handleKeyDown(e) {
+  if (props.connectionState !== 'connected') return
+
+  const keyMap = {
+    'h': 'home',
+    'H': 'home',
+    'Backspace': 'back',
+    'Tab': 'recent',
+  }
+
+  const action = keyMap[e.key]
+  if (action) {
+    e.preventDefault()
+    emit('control', { type: action })
+    console.log('[CastReceiver] 快捷键触发:', action)
+  }
+}
+
 onUnmounted(() => {
   if (videoEl.value) {
     videoEl.value.srcObject = null
   }
+  window.removeEventListener('keydown', _handleKeyDown)
 })
 </script>

@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/cast_service.dart';
 import '../services/debug_service.dart';
+import '../services/remote_control_service.dart';
 
 /// 投屏状态
 class CastState {
@@ -76,6 +77,9 @@ class CastNotifier extends StateNotifier<CastState> {
           isCasting: status != 'disconnected',
         );
       }
+    };
+    _service!.onControlCommand = (command) async {
+      await RemoteControlService().executeCommand(command);
     };
 
     try {

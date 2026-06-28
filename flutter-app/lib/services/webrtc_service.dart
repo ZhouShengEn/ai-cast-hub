@@ -37,12 +37,20 @@ class WebrtcService {
   final StreamController<webrtc.RTCDataChannelMessage> _dataChannelMessageController =
       StreamController<webrtc.RTCDataChannelMessage>.broadcast();
 
+  /// 远端DataChannel创建通知
+  final StreamController<webrtc.RTCDataChannel> _remoteDataChannelController =
+      StreamController<webrtc.RTCDataChannel>.broadcast();
+
   /// 远端媒体流
   Stream<webrtc.MediaStream> get onRemoteStream => _remoteStreamController.stream;
 
   /// 数据通道消息
   Stream<webrtc.RTCDataChannelMessage> get onDataChannelMessage =>
       _dataChannelMessageController.stream;
+
+  /// 远端DataChannel创建事件
+  Stream<webrtc.RTCDataChannel> get onRemoteDataChannel =>
+      _remoteDataChannelController.stream;
 
   /// 设置 ICE 候选回调
   void onIceCandidate(void Function(webrtc.RTCIceCandidate) callback) {
@@ -83,6 +91,10 @@ class WebrtcService {
       _rtcLog('收到远端DataChannel: ${channel.label}');
       _dataChannel = channel;
       _setupDataChannelListeners(channel);
+      // 通知外部远端DataChannel已创建
+      if (!_remoteDataChannelController.isClosed) {
+        _remoteDataChannelController.add(channel);
+      }
     };
 
     // ICE 候选事件 → 通过回调传出
@@ -260,6 +272,7 @@ class WebrtcService {
     close();
     _remoteStreamController.close();
     _dataChannelMessageController.close();
+    _remoteDataChannelController.close();
     _onIceCandidateCallback = null;
   }
 

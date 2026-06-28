@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
@@ -56,9 +57,13 @@ class CastService {
   void Function(String status)? onStatusChanged;
   /// 错误回调
   void Function(String error)? onError;
+  /// 远程控制指令回调
+  void Function(Map<String, dynamic> command)? onControlCommand;
 
   /// 当前投屏会话
   CastSession? get currentSession => _currentSession;
+
+  StreamSubscription? _dcSubscription;
 
   // ---- 投屏会话管理 ----
 
@@ -126,6 +131,15 @@ class CastService {
       // 4. 开始监听 WS 消息（在发送 create_room 之前）
       _castLog('步骤4: 开始监听WS消息');
       _wsSubscription = _ws.messages.listen(_handleMessage);
+
+      // 4.5. 监听远端DataChannel创建（PC端会创建control通道）
+      _webrtc.onRemoteDataChannel.listen((channel) {
+        _castLog('收到远端DataChannel: ${channel.label}，设置消息监听');
+        // 远端DataChannel的消息会通过onDataChannelMessage传递
+      });
+
+      // 4.6. 监听 DataChannel 消息（远程控制指令）
+      _dcSubscription = _webrtc.onDataChannelMessage.listen(_handleDataChannelMessage);
 
       // 5. 发送 create_room，等待 room_created 响应
       _castLog('步骤5: 发送create_room...');
@@ -219,6 +233,8 @@ class CastService {
       _castLog('创建会话失败，清理资源: $e', level: LogLevel.error);
       await _wsSubscription?.cancel();
       _wsSubscription = null;
+      await _dcSubscription?.cancel();
+      _dcSubscription = null;
       // 清理屏幕/摄像头捕获资源（会停止 MediaProjection 前台服务）
       if (_captureMode == 'camera') {
         await _cameraCapture.stopCapture();
@@ -247,6 +263,8 @@ class CastService {
 
     await _wsSubscription?.cancel();
     _wsSubscription = null;
+    await _dcSubscription?.cancel();
+    _dcSubscription = null;
     if (_captureMode == 'camera') {
       await _cameraCapture.stopCapture();
     } else {
@@ -369,6 +387,18 @@ class CastService {
   void _onRoomClosed(Map<String, dynamic> message) {
     _castLog('收到room_closed, 投屏结束', level: LogLevel.warn);
     _updateSessionStatus('disconnected');
+  }
+
+  void _handleDataChannelMessage(webrtc.RTCDataChannelMessage message) {
+    if (_isDisposed) return;
+    try {
+      final data = jsonDecode(message.text) as Map<String, dynamic>;
+      final type = data['type'] as String?;
+      _castLog('收到控制指令: $type', level: LogLevel.debug);
+      onControlCommand?.call(data);
+    } catch (e) {
+      _castLog('DataChannel消息解析失败: $e', level: LogLevel.warn);
+    }
   }
 
   void _updateSessionStatus(String status) {

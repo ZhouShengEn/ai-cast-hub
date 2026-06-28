@@ -8,9 +8,10 @@ import { useCastStore } from '../stores/cast'
  *
  * 监听 room_invitation → 发送 join_room → 接收 offer/answer/ICE
  * 最终绑定 remoteStream 到 video 元素。
+ * 同时创建 DataChannel 用于远程控制指令传输。
  *
  * @param {import('vue').Ref<HTMLVideoElement|null>} [externalVideoRef] - 外部传入的 video 元素引用
- * @returns {{ startListening, stopReceiving, connectionState, setVideoRef }}
+ * @returns {{ startListening, stopReceiving, connectionState, setVideoRef, sendControl }}
  */
 export function useCastReceiver(externalVideoRef) {
   const castStore = useCastStore()
@@ -30,8 +31,11 @@ export function useCastReceiver(externalVideoRef) {
     offTrack,
     onConnectionStateChange,
     offConnectionStateChange,
+    createDataChannel,
     close: rtcClose,
   } = useWebRTC('cast')
+
+  let _controlChannel = null
 
   let _currentRoomId = null
 
@@ -186,6 +190,19 @@ export function useCastReceiver(externalVideoRef) {
     }
     onIceCandidate(_iceCandidateCb)
 
+    // 创建远程控制 DataChannel
+    _controlChannel = createDataChannel('control')
+    _controlChannel.onopen = () => {
+      console.log('[CastReceiver] ✅ 远程控制 DataChannel 已打开')
+    }
+    _controlChannel.onclose = () => {
+      console.log('[CastReceiver] 🔌 远程控制 DataChannel 已关闭')
+      _controlChannel = null
+    }
+    _controlChannel.onerror = (err) => {
+      console.error('[CastReceiver] ❌ 远程控制 DataChannel 错误:', err)
+    }
+
     // 监听远程媒体流
     _trackCb = () => {
       console.log('[CastReceiver] 🔔 track回调触发')
@@ -269,10 +286,32 @@ export function useCastReceiver(externalVideoRef) {
     }
   }
 
+  /** 发送远程控制指令 */
+  function sendControl(command) {
+    if (!_controlChannel || _controlChannel.readyState !== 'open') {
+      console.warn('[CastReceiver] ⚠️ DataChannel 未就绪，无法发送控制指令')
+      return false
+    }
+    try {
+      const cmd = {
+        id: 'ctrl_' + Date.now(),
+        timestamp: Date.now(),
+        ...command,
+      }
+      _controlChannel.send(JSON.stringify(cmd))
+      console.log('[CastReceiver] 📡 发送控制指令:', command.type)
+      return true
+    } catch (err) {
+      console.error('[CastReceiver] ❌ 发送控制指令失败:', err)
+      return false
+    }
+  }
+
   return {
     startListening,
     stopReceiving,
     setVideoRef,
     connectionState,
+    sendControl,
   }
 }

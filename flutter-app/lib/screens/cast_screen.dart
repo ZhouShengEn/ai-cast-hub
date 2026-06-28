@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/cast_provider.dart';
 import '../providers/device_provider.dart';
+import '../services/remote_control_service.dart';
 import '../widgets/cast/cast_control_panel.dart';
 import '../widgets/cast/status_indicator.dart';
 
@@ -164,7 +165,7 @@ class _CastScreenState extends ConsumerState<CastScreen> {
               onSwitchToScreen: () => castNotifier.setScreenMode(),
               onSwitchToCamera: () => castNotifier.setCameraMode(),
               onToggleCamera: () => castNotifier.toggleCamera(),
-              onStartCast: () {
+              onStartCast: () async {
                 if (pcName == null) return;
                 if (!pcOnline) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -172,6 +173,33 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                   );
                   return;
                 }
+
+                final rcEnabled = await RemoteControlService().checkServiceEnabled();
+                if (!rcEnabled) {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('需要开启无障碍服务'),
+                      content: const Text('为了实现PC端远程控制手机功能，需要开启无障碍服务。请在设置中允许"AI Cast Hub"的无障碍权限。'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('取消'),
+                        ),
+                        FilledButton(
+                          onPressed: () {
+                            RemoteControlService().openAccessibilitySettings();
+                            Navigator.pop(context, true);
+                          },
+                          child: const Text('去开启'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirmed != true) return;
+                  await Future.delayed(const Duration(seconds: 3));
+                }
+
                 final deviceState = ref.read(deviceProvider);
                 if (deviceState.pairedDevices.isNotEmpty) {
                   castNotifier.startCasting(

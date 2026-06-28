@@ -3,7 +3,10 @@
     <!-- 页面标题 -->
     <div class="px-6 py-3 bg-white border-b border-gray-100 flex items-center justify-between">
       <h2 class="text-lg font-semibold text-gray-800">📺 投屏</h2>
-      <ConnectionBadge :state="castStore.connectionState" />
+      <div class="flex items-center gap-3">
+        <ConnectionBadge :state="castStore.connectionState" />
+        <span v-if="castStore.connectionState === 'connected'" class="text-xs text-green-600">🖱️ 远程控制</span>
+      </div>
     </div>
 
     <!-- 内容区 -->
@@ -14,10 +17,29 @@
           ref="castReceiverRef"
           :connection-state="castStore.connectionState"
           :stream="castStore.remoteStream"
+          @control="onControl"
         />
 
         <!-- 停止投屏按钮（仅连接后显示） -->
-        <div v-if="castStore.connectionState === 'connected'" class="flex justify-center mt-4">
+        <div v-if="castStore.connectionState === 'connected'" class="flex justify-center mt-4 gap-4">
+          <button
+            class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+            @click="sendControl({ type: 'home' })"
+          >
+            🏠 Home
+          </button>
+          <button
+            class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+            @click="sendControl({ type: 'back' })"
+          >
+            ← Back
+          </button>
+          <button
+            class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+            @click="sendControl({ type: 'recent' })"
+          >
+            ○ 多任务
+          </button>
           <button
             class="px-4 py-2 text-sm rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition-colors"
             @click="stopCasting"
@@ -42,7 +64,7 @@ const showToast = inject('showToast', () => {})
 const castReceiverRef = ref(null)
 
 // 将 CastReceiver 的 videoEl 传入 useCastReceiver，使视频流能正确绑定
-const { startListening, stopReceiving, setVideoRef } = useCastReceiver()
+const { startListening, stopReceiving, setVideoRef, sendControl } = useCastReceiver()
 
 // 当 CastReceiver 组件渲染后，绑定 video 元素
 watch(castReceiverRef, (ref) => {
@@ -59,6 +81,10 @@ onMounted(() => {
 onUnmounted(() => {
   stopReceiving()
 })
+
+function onControl(event) {
+  sendControl(event)
+}
 
 function stopCasting() {
   stopReceiving()
