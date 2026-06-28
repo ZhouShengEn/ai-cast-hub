@@ -7,23 +7,35 @@ import android.content.Intent
 import android.graphics.Path
 import android.graphics.Point
 import android.os.Build
-import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
-import android.view.ViewConfiguration
+import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
-import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
-import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.embedding.engine.dart.DartExecutor
-import io.flutter.plugin.common.MethodChannel
 
 class RemoteControlService : AccessibilityService() {
+
     companion object {
+        private const val TAG = "RemoteControlService"
         var instance: RemoteControlService? = null
+
+        fun isServiceEnabled(context: Context): Boolean {
+            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+            val enabledServices = am.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_GENERIC
+            )
+            return enabledServices.any {
+                it.resolveInfo.serviceInfo.name == RemoteControlService::class.java.name
+            }
+        }
+
+        fun openAccessibilitySettings(context: Context) {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            context.startActivity(intent)
+        }
     }
 
-    private lateinit var channel: MethodChannel
     private var lastTouchPoint: Point? = null
 
     override fun onCreate() {
@@ -52,16 +64,11 @@ class RemoteControlService : AccessibilityService() {
         serviceInfo = info
     }
 
-    override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     }
 
     override fun onInterrupt() {
         Log.d(TAG, "RemoteControlService interrupted")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        Log.d(TAG, "RemoteControlService destroyed")
     }
 
     fun dispatchTap(xPercent: Double, yPercent: Double): Boolean {
@@ -76,15 +83,11 @@ class RemoteControlService : AccessibilityService() {
                 val path = Path().apply {
                     moveTo(x.toFloat(), y.toFloat())
                 }
-                val gestureBuilder = android.accessibilityservice.GestureDescription.Builder()
+                val gestureBuilder = GestureDescription.Builder()
                 gestureBuilder.addStroke(
-                    android.accessibilityservice.GestureDescription.StrokeDescription(
-                        path, 0, 50
-                    )
+                    GestureDescription.StrokeDescription(path, 0, 50)
                 )
                 dispatchGesture(gestureBuilder.build(), null, null)
-            } else {
-                performGlobalAction(GLOBAL_ACTION_BACK)
             }
             return true
         } catch (e: Exception) {
@@ -123,11 +126,9 @@ class RemoteControlService : AccessibilityService() {
                     moveTo(startPoint.x.toFloat(), startPoint.y.toFloat())
                     lineTo(x.toFloat(), y.toFloat())
                 }
-                val gestureBuilder = android.accessibilityservice.GestureDescription.Builder()
+                val gestureBuilder = GestureDescription.Builder()
                 gestureBuilder.addStroke(
-                    android.accessibilityservice.GestureDescription.StrokeDescription(
-                        path, 0, 100
-                    )
+                    GestureDescription.StrokeDescription(path, 0, 100)
                 )
                 dispatchGesture(gestureBuilder.build(), null, null)
             }
@@ -181,11 +182,9 @@ class RemoteControlService : AccessibilityService() {
                         moveTo(x.toFloat(), startY)
                         lineTo(x.toFloat(), endY)
                     }
-                    val gestureBuilder = android.accessibilityservice.GestureDescription.Builder()
+                    val gestureBuilder = GestureDescription.Builder()
                     gestureBuilder.addStroke(
-                        android.accessibilityservice.GestureDescription.StrokeDescription(
-                            path, 0, 200
-                        )
+                        GestureDescription.StrokeDescription(path, 0, 200)
                     )
                     dispatchGesture(gestureBuilder.build(), null, null)
                 }
@@ -201,9 +200,9 @@ class RemoteControlService : AccessibilityService() {
     fun performGlobalAction(action: String): Boolean {
         try {
             val actionId = when (action) {
-                "home" -> AccessibilityService.GLOBAL_ACTION_HOME
-                "back" -> AccessibilityService.GLOBAL_ACTION_BACK
-                "recent" -> AccessibilityService.GLOBAL_ACTION_RECENTS
+                "home" -> GLOBAL_ACTION_HOME
+                "back" -> GLOBAL_ACTION_BACK
+                "recent" -> GLOBAL_ACTION_RECENTS
                 else -> return false
             }
             Log.d(TAG, "performGlobalAction: $action")
@@ -243,25 +242,5 @@ class RemoteControlService : AccessibilityService() {
         val size = Point()
         display?.getRealSize(size)
         return size
-    }
-
-    companion object {
-        private const val TAG = "RemoteControlService"
-
-        fun isServiceEnabled(context: Context): Boolean {
-            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-            val enabledServices = am.getEnabledAccessibilityServiceList(
-                AccessibilityServiceInfo.FEEDBACK_GENERIC
-            )
-            return enabledServices.any {
-                it.resolveInfo.serviceInfo.name == RemoteControlService::class.java.name
-            }
-        }
-
-        fun openAccessibilitySettings(context: Context) {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            context.startActivity(intent)
-        }
     }
 }
