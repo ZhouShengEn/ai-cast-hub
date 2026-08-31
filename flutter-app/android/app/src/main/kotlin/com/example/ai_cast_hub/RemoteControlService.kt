@@ -129,10 +129,11 @@ class RemoteControlService : AccessibilityService() {
             info.flags = info.flags or
                     AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE
-            // 必须开启窗口内容检索，否则服务容易被系统判定为「无有效能力」而解绑
-            info.canRetrieveWindowContent = true
+            // canRetrieveWindowContent 已在 res/xml/accessibility_service_config.xml 中
+            // 通过 android:canRetrieveWindowContent="true" 声明；该字段在 API 36 上是只读
+            // val，无法在代码中赋值，故此处不再赋值（避免编译报错，且 XML 已保证该能力开启）。
             serviceInfo = info
-            Log.d(TAG, "serviceInfo 已增量更新 (flags=${info.flags}, canRetrieveWindowContent=true)")
+            Log.d(TAG, "serviceInfo 已增量更新 (flags=${info.flags}, canRetrieveWindowContent=true[from XML])")
         } else {
             Log.w(TAG, "serviceInfo 为空，跳过配置更新")
         }
