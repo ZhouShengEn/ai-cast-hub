@@ -3,6 +3,7 @@ package com.example.ai_cast_hub
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
@@ -22,46 +23,71 @@ class RemoteControlService : AccessibilityService() {
         private const val TAG = "RemoteControlService"
         var instance: RemoteControlService? = null
 
+        /**
+         * 判断无障碍服务是否已开启
+         *
+         * 三种检测方式按「可靠性由高到低」依次尝试，任一种命中即返回 true：
+         *   1. 服务实例存活 —— 系统已绑定并拉起本服务，最直接可靠的证据
+         *   2. Settings.Secure 精确匹配 —— 按 ComponentName 对比，避免子串误判
+         *   3. AccessibilityManager 列表查询 —— 兜底
+         *
+         * 注意：三种方式必须都能被走到，不能在中间提前 return，
+         * 否则一旦前序方式误判，后续更可靠的兜底就失效了。
+         */
         fun isServiceEnabled(context: Context): Boolean {
-            // 方法1：通过 AccessibilityManager 检查
-            try {
-                val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-                // 使用 FEEDBACK_GENERIC 过滤我们自己的服务类型
-                val enabledServices = am.getEnabledAccessibilityServiceList(
-                    AccessibilityServiceInfo.FEEDBACK_GENERIC
-                )
-                val targetServiceName = RemoteControlService::class.java.name
-                val found = enabledServices.any { serviceInfo ->
-                    val enabledName = serviceInfo.resolveInfo.serviceInfo.name
-                    Log.d(TAG, "Checking service: $enabledName")
-                    enabledName == targetServiceName
-                }
-                Log.d(TAG, "isServiceEnabled via AccessibilityManager: $found (count: ${enabledServices.size})")
-                if (found) return true
-            } catch (e: Exception) {
-                Log.e(TAG, "AccessibilityManager check failed: ${e.message}")
-            }
+            // 方法1：服务实例存在（最可靠）
+            val instanceExists = instance != null
+            Log.d(TAG, "isServiceEnabled [1/3] service instance exists: $instanceExists")
+            if (instanceExists) return true
 
-            // 方法2：通过 Settings.Secure 检查（备用方案）
+            // 方法2：Settings.Secure 精确匹配 "包名/完整类名"
             try {
                 val enabledServicesString = Settings.Secure.getString(
                     context.contentResolver,
                     Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
                 ) ?: ""
-                Log.d(TAG, "Enabled services string: $enabledServicesString")
-                // 格式通常是 "package1/service1:package2/service2"
-                val ourServicePattern = "${context.packageName}/"
-                val found = enabledServicesString.contains(ourServicePattern)
-                Log.d(TAG, "isServiceEnabled via Settings: $found")
-                return found
+                Log.d(TAG, "isServiceEnabled [2/3] enabled services string: $enabledServicesString")
+
+                if (enabledServicesString.isNotEmpty()) {
+                    val target = ComponentName(context, RemoteControlService::class.java)
+                    val found = enabledServicesString
+                        .split(':')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .any { entry -> ComponentName.unflattenFromString(entry) == target }
+                    Log.d(TAG, "isServiceEnabled [2/3] exact match: $found")
+                    if (found) return true
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Settings.Secure check failed: ${e.message}")
+                Log.e(TAG, "isServiceEnabled Settings.Secure check failed: ${e.message}")
             }
 
-            // 方法3：检查服务实例是否存在
-            val instanceExists = instance != null
-            Log.d(TAG, "Service instance exists: $instanceExists")
-            return instanceExists
+            // 方法3：AccessibilityManager 列表查询（用 FEEDBACK_ALL_MASK，避免按
+            // feedbackType 过滤时把本服务漏掉）
+            try {
+                val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+                val enabledServices = am.getEnabledAccessibilityServiceList(
+                    AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+                )
+                val targetServiceName = RemoteControlService::class.java.name
+                val targetPackage = context.packageName
+                var found = false
+                for (serviceInfo in enabledServices) {
+                    val ri = serviceInfo.resolveInfo?.serviceInfo ?: continue
+                    Log.d(TAG, "isServiceEnabled [3/3] checking: ${ri.packageName}/${ri.name}")
+                    if (ri.name == targetServiceName && ri.packageName == targetPackage) {
+                        found = true
+                        break
+                    }
+                }
+                Log.d(TAG, "isServiceEnabled [3/3] AccessibilityManager: $found (count: ${enabledServices.size})")
+                if (found) return true
+            } catch (e: Exception) {
+                Log.e(TAG, "isServiceEnabled AccessibilityManager check failed: ${e.message}")
+            }
+
+            Log.d(TAG, "isServiceEnabled => false (所有检测方式均未命中)")
+            return false
         }
 
         fun openAccessibilitySettings(context: Context) {
@@ -88,14 +114,28 @@ class RemoteControlService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.d(TAG, "RemoteControlService connected")
+        instance = this
 
-        val info = AccessibilityServiceInfo().apply {
-            eventTypes = AccessibilityEvent.TYPES_ALL_MASK
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+        // 关键：必须基于系统解析出的 serviceInfo 做「增量修改」，不能用一个全新的
+        // AccessibilityServiceInfo 对象整体覆盖。
+        // 整体覆盖会丢掉 XML 中声明的 packageNames、以及系统填充的 mId /
+        // resolveInfo 等字段，系统会认为该服务配置无效并将其解绑，
+        // 导致 getEnabledAccessibilityServiceList() 查不到本服务，
+        // 表现为「用户已开启无障碍服务，但 App 仍提示需要开启」。
+        val info = serviceInfo
+        if (info != null) {
+            info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+            info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            info.flags = info.flags or
+                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE
+            // 必须开启窗口内容检索，否则服务容易被系统判定为「无有效能力」而解绑
+            info.canRetrieveWindowContent = true
+            serviceInfo = info
+            Log.d(TAG, "serviceInfo 已增量更新 (flags=${info.flags}, canRetrieveWindowContent=true)")
+        } else {
+            Log.w(TAG, "serviceInfo 为空，跳过配置更新")
         }
-        serviceInfo = info
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {

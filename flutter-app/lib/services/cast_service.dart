@@ -47,6 +47,8 @@ class CastService {
   bool _isDisposed = false;
   String _captureMode = 'screen'; // 'screen' | 'camera'
   bool _cameraFacing = true; // true=前置, false=后置
+  /// 摄像头模式下是否同步采集麦克风音频
+  bool _cameraWithAudio = true;
 
   /// 用于等待 room_created 消息
   Completer<String>? _roomCreatedCompleter;
@@ -71,14 +73,19 @@ class CastService {
   /// [pcDeviceId] 目标 PC 设备的 UUID
   /// [captureMode] 'screen'（投屏）或 'camera'（手机摄像）
   /// [frontCamera] 摄像头模式下 true=前置, false=后置
+  /// [withAudio] 摄像头模式下是否同步采集麦克风音频（默认开启）
   Future<CastSession> createCastSession(String pcDeviceId, {
     String captureMode = 'screen',
     bool frontCamera = true,
+    bool withAudio = true,
   }) async {
     _captureMode = captureMode;
     _cameraFacing = frontCamera;
+    _cameraWithAudio = withAudio;
     _castLog('═══════════════════════════════════════════');
-    _castLog('开始创建投屏会话, 目标PC: ${_safeId(pcDeviceId)}, 模式: $_captureMode', level: LogLevel.info);
+    _castLog('开始创建投屏会话, 目标PC: ${_safeId(pcDeviceId)}, 模式: $_captureMode'
+        '${captureMode == 'camera' ? ', 音频: ${withAudio ? "开" : "关"}' : ''}',
+        level: LogLevel.info);
     _isDisposed = false;
 
     try {
@@ -193,7 +200,10 @@ class CastService {
       webrtc.MediaStream stream;
       try {
         stream = _captureMode == 'camera'
-            ? await _cameraCapture.startCapture(frontCamera: _cameraFacing)
+            ? await _cameraCapture.startCapture(
+                frontCamera: _cameraFacing,
+                withAudio: _cameraWithAudio,
+              )
             : await _screenCapture.startCapture();
       } catch (captureError) {
         _castLog('步骤7: 捕获失败: $captureError', level: LogLevel.error);
@@ -217,6 +227,13 @@ class CastService {
         throw Exception('屏幕捕获失败：未获取到视频轨道\n'
             '请确认已授权屏幕录制权限\n'
             '（Android: 需要开启「显示在其他应用上层」权限）');
+      }
+      // 音频轨统计（摄像头模式下用于确认声音是否会被同步到 Web 端）
+      final audioTracks = tracks.where((t) => t.kind == 'audio').toList();
+      if (_captureMode == 'camera') {
+        _castLog('音频轨: ${audioTracks.length}'
+            '${audioTracks.isEmpty ? " ⚠ 对端将听不到声音" : " ✓"}',
+            level: audioTracks.isEmpty ? LogLevel.warn : LogLevel.info);
       }
 
       // 8. 将屏幕轨道添加到 PeerConnection

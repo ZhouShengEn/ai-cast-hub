@@ -49,15 +49,15 @@
 
     <!-- 取消静音按钮（浏览器自动播放策略需要用户交互才能播放声音） -->
     <button
-      v-if="connectionState === 'connected' && isMuted"
-      class="absolute bottom-3 left-3 px-3 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white text-sm flex items-center gap-1 transition-colors z-20"
+      v-if="connectionState === 'connected' && isMuted && hasAudioTrack"
+      class="absolute bottom-3 left-3 px-3 h-9 rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-sm flex items-center gap-1 transition-colors z-20 animate-pulse"
       @click.stop="unmute"
       title="开启声音"
     >
       🔇 点击开启声音
     </button>
     <button
-      v-else-if="connectionState === 'connected' && !isMuted"
+      v-else-if="connectionState === 'connected' && !isMuted && hasAudioTrack"
       class="absolute bottom-3 left-3 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors z-20"
       @click.stop="mute"
       title="静音"
@@ -236,13 +236,40 @@ const stateMessage = computed(() => {
   return map[props.connectionState] || '等待手机投屏…'
 })
 
+/** 远端流是否包含音频轨 —— 无音频时不显示「开启声音」按钮，避免误导 */
+const hasAudioTrack = ref(false)
+
 /** 绑定远程流到 video 元素 */
 function _bindStream(stream) {
   if (!videoEl.value) return
   videoEl.value.srcObject = stream || null
   if (stream) {
-    console.log('[CastReceiver] video.srcObject 已绑定, tracks:', stream.getTracks().map(t => `${t.kind}(id=${t.id.substring(0, 8)})`).join(', '))
+    const tracks = stream.getTracks()
+    hasAudioTrack.value = tracks.some((t) => t.kind === 'audio')
+    console.log(
+      '[CastReceiver] video.srcObject 已绑定, tracks:',
+      tracks.map((t) => `${t.kind}(id=${t.id.substring(0, 8)})`).join(', '),
+    )
+
+    // 音频轨可能晚于视频轨到达（SDP 协商或 addTrack 时序差异），
+    // 监听轨道变化，确保「开启声音」按钮能及时出现
+    stream.onaddtrack = (e) => {
+      if (e.track?.kind === 'audio') {
+        hasAudioTrack.value = true
+        console.log('[CastReceiver] 检测到新增音频轨')
+      }
+    }
+    stream.onremovetrack = () => {
+      const stillHasAudio = stream.getAudioTracks().length > 0
+      hasAudioTrack.value = stillHasAudio
+      if (!stillHasAudio) {
+        console.log('[CastReceiver] 音频轨已移除，恢复静音')
+        isMuted.value = true
+        if (videoEl.value) videoEl.value.muted = true
+      }
+    }
   } else {
+    hasAudioTrack.value = false
     console.log('[CastReceiver] video.srcObject 已解绑')
   }
 }

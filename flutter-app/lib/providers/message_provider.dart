@@ -46,9 +46,16 @@ class MessageNotifier extends StateNotifier<MessageState> {
     _svc!.onConnected = () {
       if (_disposed) return;
       state = state.copyWith(isConnected: true, isConnecting: false);
-      // DC 刚建立时，如果用户已在查看消息页，立即同步已读状态给 PC
-      if (state.isViewing) {
-        _sendReadAll();
+      DebugService().log(
+        '[MsgProvider] DataChannel 已连接, isViewing=${state.isViewing}, '
+        'unreadCount=${state.unreadCount}',
+        level: LogLevel.info,
+      );
+      // DC 刚建立或重连时，仅当用户确实停留在消息页且存在未读才回执。
+      // 注意：不能无条件回执，否则 isViewing 一旦残留 true，
+      // 每次重连都会把 PC 端消息提前标成已读。
+      if (state.isViewing && state.unreadCount > 0) {
+        markAllAsRead();
       }
     };
 
@@ -60,6 +67,7 @@ class MessageNotifier extends StateNotifier<MessageState> {
       }
       if (msg.id.startsWith('disconnect_')) return;
 
+      // 只有「不在消息页」且「是对方发来的」才计未读
       final isUnread = !state.isViewing && !msg.isFromMe;
       final newMsg = msg.copyWith(readStatus: isUnread ? ReadStatus.unread : ReadStatus.read);
 
@@ -68,6 +76,13 @@ class MessageNotifier extends StateNotifier<MessageState> {
         unreadCount: isUnread ? state.unreadCount + 1 : state.unreadCount,
       );
 
+      DebugService().log(
+        '[MsgProvider] 收到消息 id=${msg.id}, isViewing=${state.isViewing}, '
+        'isUnread=$isUnread, unreadCount=${state.unreadCount}',
+        level: LogLevel.info,
+      );
+
+      // 用户正停留在消息页：立即回执，让 PC 端显示已读
       if (state.isViewing && !msg.isFromMe) {
         _sendReadAll();
       }
@@ -229,15 +244,43 @@ class MessageNotifier extends StateNotifier<MessageState> {
     state = state.copyWith(isConnected: false, isConnecting: false);
   }
 
+  /// 设置用户是否停留在消息页
+  ///
+  /// 幂等：状态未变化时不重复触发回执，避免 PC 端消息被提前标记已读。
   void setViewing(bool viewing) {
+    if (state.isViewing == viewing) return;
+    DebugService().log(
+      '[MsgProvider] setViewing($viewing), unreadCount=${state.unreadCount}',
+      level: LogLevel.info,
+    );
     state = state.copyWith(isViewing: viewing);
     if (viewing) {
       markAllAsRead();
     }
   }
 
+  /// 强制退出「消息页浏览态」
+  ///
+  /// 供非消息页（如首页）在显示时调用，作为 dispose 之外的兜底，
+  /// 防止 isViewing 残留 true 导致未读红点不显示、回执提前发出。
+  void forceExitViewing() {
+    if (!state.isViewing) return;
+    DebugService().log('[MsgProvider] forceExitViewing()', level: LogLevel.info);
+    state = state.copyWith(isViewing: false);
+  }
+
   void markAllAsRead() {
-    if (state.unreadCount == 0) return;
+    if (state.unreadCount == 0) {
+      DebugService().log(
+        '[MsgProvider] markAllAsRead 跳过：无未读消息',
+        level: LogLevel.info,
+      );
+      return;
+    }
+    DebugService().log(
+      '[MsgProvider] markAllAsRead, 清除未读 ${state.unreadCount} 条',
+      level: LogLevel.info,
+    );
     final list = state.messages.map((m) {
       if (!m.isFromMe && m.readStatus == ReadStatus.unread) {
         return m.copyWith(readStatus: ReadStatus.read);

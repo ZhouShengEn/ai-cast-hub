@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../app.dart';
 import '../models/chat_message.dart';
 import '../providers/message_provider.dart';
 import '../providers/device_provider.dart';
+import '../services/debug_service.dart';
 import '../utils/open_file.dart';
 
 class MessageScreen extends ConsumerStatefulWidget {
@@ -12,7 +14,14 @@ class MessageScreen extends ConsumerStatefulWidget {
   ConsumerState<MessageScreen> createState() => _MessageScreenState();
 }
 
-class _MessageScreenState extends ConsumerState<MessageScreen> {
+/// 消息页 — 通过 RouteAware 精确维护「用户是否正在查看本页」
+///
+/// 之前仅依赖 dispose() 重置 isViewing，一旦 dispose 未被调用（热重载、
+/// 页面被系统回收、路由异常等），isViewing 会残留 true，导致：
+///   1. 首页未读红点不显示（新消息被判定为「正在查看」而不计未读）
+///   2. PC 端消息被提前标记已读（一收到消息就回执）
+/// RouteAware 在消息页被覆盖/返回时都会收到回调，比 dispose 更可靠。
+class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
   final _ctrl = TextEditingController();
   final _scroll = ScrollController();
   bool _autoConnectTried = false;
@@ -37,7 +46,29 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 订阅路由变化：本页被覆盖 / 返回本页时都会收到回调
+    routeObserver.subscribe(this, ModalRoute.of(context)!);
+  }
+
+  /// 从本页跳转到其它页面（被覆盖）— 退出浏览态
+  @override
+  void didPushNext() {
+    DebugService().log('[MessageScreen] didPushNext → 退出浏览态', level: LogLevel.info);
+    ref.read(messageProvider.notifier).setViewing(false);
+  }
+
+  /// 从其它页面返回本页 — 重新进入浏览态
+  @override
+  void didPopNext() {
+    DebugService().log('[MessageScreen] didPopNext → 重新进入浏览态', level: LogLevel.info);
+    ref.read(messageProvider.notifier).setViewing(true);
+  }
+
+  @override
   void dispose() {
+    routeObserver.unsubscribe(this);
     ref.read(messageProvider.notifier).setViewing(false);
     _ctrl.dispose();
     _scroll.dispose();

@@ -12,6 +12,12 @@ import 'services/local_storage.dart';
 import 'services/debug_service.dart';
 import 'widgets/common/debug_ball.dart';
 
+/// 全局路由观察者
+///
+/// 供需要感知「页面是否被覆盖 / 是否返回」的页面（如消息页）订阅，
+/// 用于精确维护 isViewing 状态，避免依赖 dispose 带来的状态残留。
+final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();
+
 /// 背景风格枚举
 enum BackgroundStyle { day, night, eyeCare }
 
@@ -71,6 +77,7 @@ class _MyAppState extends State<MyApp> {
                   ? ThemeMode.dark
                   : ThemeMode.light, // 护眼基于浅色
           initialRoute: '/',
+          navigatorObservers: [routeObserver],
           routes: {
             '/': (context) => const HomeScreen(),
             '/scan': (context) => const ScanScreen(),

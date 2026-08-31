@@ -3,9 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app.dart';
 import '../providers/device_provider.dart';
 import '../providers/message_provider.dart';
-import '../services/local_storage.dart';
+import '../services/debug_service.dart';
 import '../services/local_storage.dart';
 import '../models/device.dart';
 import '../utils/extensions.dart';
@@ -18,7 +19,11 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+/// 首页通过 RouteAware 在「从子页面返回」时强制退出消息浏览态
+///
+/// 作为消息页 dispose() 之外的兜底：只要首页重新可见，isViewing 必定为 false，
+/// 从而保证首页未读红点正常显示、且不会提前向 PC 发送已读回执。
+class _HomeScreenState extends ConsumerState<HomeScreen> with RouteAware {
   Timer? _deviceRefreshTimer;
 
   @override
@@ -54,10 +59,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _deviceRefreshTimer = Timer.periodic(const Duration(seconds: 60), (_) {
       ref.read(deviceProvider.notifier).fetchDeviceList();
     });
+    // 兜底：首页显示时确保在非浏览态，未读红点才会正常计数
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(messageProvider.notifier).forceExitViewing();
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    routeObserver.subscribe(this, ModalRoute.of(context)!);
+  }
+
+  /// 从任意子页面返回首页 — 强制退出消息浏览态
+  @override
+  void didPopNext() {
+    DebugService().log('[HomeScreen] didPopNext → 退出消息浏览态', level: LogLevel.info);
+    ref.read(messageProvider.notifier).forceExitViewing();
   }
 
   @override
   void dispose() {
+    routeObserver.unsubscribe(this);
     _deviceRefreshTimer?.cancel();
     super.dispose();
   }

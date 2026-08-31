@@ -2,6 +2,7 @@ package com.example.ai_cast_hub
 
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -155,7 +156,18 @@ class MainActivity : FlutterActivity() {
             } else {
                 startService(serviceIntent)
             }
-            true
+
+            // startForegroundService() 是异步的：它只是把启动请求交给系统，
+            // onStartCommand() 尚未执行。若此时立刻调用
+            // MediaProjection.createVirtualDisplay()，Android 14+ 会因为
+            // mediaProjection 前台服务还没就绪而抛 SecurityException。
+            // 这里同步等待服务真正进入前台（通常几十毫秒内完成）。
+            val deadline = System.currentTimeMillis() + 1000
+            while (!MediaProjectionService.isRunning && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25)
+            }
+            Log.d("MainActivity", "startMediaProjectionService -> isRunning=${MediaProjectionService.isRunning}")
+            MediaProjectionService.isRunning
         } catch (e: Exception) {
             e.printStackTrace()
             false

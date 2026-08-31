@@ -11,12 +11,15 @@ class CastControlPanel extends StatelessWidget {
   final String? castQuality; // 'high' | 'medium' | 'low'
   final String captureMode; // 'screen' | 'camera'
   final bool frontCamera; // true=前置, false=后置
+  /// 摄像头模式下是否同步手机声音到 Web 端
+  final bool withAudio;
   final VoidCallback onStartCast;
   final VoidCallback onStopCast;
   final ValueChanged<String>? onQualityChanged;
   final VoidCallback? onSwitchToScreen;
   final VoidCallback? onSwitchToCamera;
   final VoidCallback? onToggleCamera;
+  final VoidCallback? onToggleAudio;
 
   const CastControlPanel({
     super.key,
@@ -26,12 +29,14 @@ class CastControlPanel extends StatelessWidget {
     this.castQuality = 'high',
     this.captureMode = 'screen',
     this.frontCamera = true,
+    this.withAudio = true,
     required this.onStartCast,
     required this.onStopCast,
     this.onQualityChanged,
     this.onSwitchToScreen,
     this.onSwitchToCamera,
     this.onToggleCamera,
+    this.onToggleAudio,
   });
 
   @override
@@ -90,9 +95,11 @@ class CastControlPanel extends StatelessWidget {
               _buildCaptureModeSelector(theme),
               const SizedBox(height: 12),
 
-              // 摄像头模式下显示前后切换
+              // 摄像头模式下显示前后切换与声音同步开关
               if (captureMode == 'camera') ...[
                 _buildCameraToggle(theme),
+                const SizedBox(height: 12),
+                _buildAudioToggle(theme),
                 const SizedBox(height: 12),
               ],
             ],
@@ -235,6 +242,27 @@ class CastControlPanel extends StatelessWidget {
           Icons.camera_rear,
           size: 20,
           color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ],
+    );
+  }
+
+  /// 声音同步开关 — 控制手机麦克风音频是否随画面一起传到 Web 端
+  Widget _buildAudioToggle(ThemeData theme) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          withAudio ? Icons.mic : Icons.mic_off,
+          size: 20,
+          color: withAudio ? theme.colorScheme.primary : theme.colorScheme.outline,
+        ),
+        const SizedBox(width: 8),
+        Text('同步手机声音', style: theme.textTheme.bodySmall),
+        const SizedBox(width: 8),
+        Switch(
+          value: withAudio,
+          onChanged: (_) => onToggleAudio?.call(),
         ),
       ],
     );

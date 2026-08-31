@@ -61,19 +61,21 @@ class ScreenCaptureService {
       }
 
       // Android 14+ 需要在调用 getDisplayMedia() 之前启动 mediaProjection 前台服务，
-      // 否则 createVirtualDisplay() 会因缺少前台服务而抛出 SecurityException 崩溃。
+      // 否则 createVirtualDisplay() 可能因缺少前台服务而失败。
       // 必须在 App 处于前台时启动（此时用户刚点击"开始投屏"按钮）。
+      //
+      // 注意：前台服务启动失败不再直接中断投屏流程。
+      // 原生侧已做多级降级且不会崩溃，部分设备/ROM 上即使没有 mediaProjection
+      // 类型的前台服务，getDisplayMedia 依然可以正常工作。
       final started = await BackgroundService.startMediaProjectionService();
       DebugService().log(
         '[ScreenCapture] MediaProjection 前台服务启动: $started',
-        level: LogLevel.info,
+        level: started ? LogLevel.info : LogLevel.warn,
       );
       if (!started) {
-        throw Exception('MediaProjection 前台服务启动失败，无法进行屏幕捕获\n'
-            '请检查：\n'
-            '1. 是否授予了通知权限（Android 13+ 需要）\n'
-            '2. 应用是否在前台运行\n'
-            '3. 设备系统版本是否支持此功能');
+        DebugService().warn(
+          '[ScreenCapture] 前台服务启动失败，仍继续尝试屏幕捕获（部分设备可正常投屏）',
+        );
       }
     }
 

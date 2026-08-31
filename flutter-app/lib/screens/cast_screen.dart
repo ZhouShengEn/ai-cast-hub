@@ -162,9 +162,11 @@ class _CastScreenState extends ConsumerState<CastScreen> {
               pcDeviceName: pcName,
               captureMode: castState.captureMode,
               frontCamera: castState.frontCamera,
+              withAudio: castState.withAudio,
               onSwitchToScreen: () => castNotifier.setScreenMode(),
               onSwitchToCamera: () => castNotifier.setCameraMode(),
               onToggleCamera: () => castNotifier.toggleCamera(),
+              onToggleAudio: () => castNotifier.toggleAudio(),
               onStartCast: () async {
                 if (pcName == null) return;
                 if (!pcOnline) {

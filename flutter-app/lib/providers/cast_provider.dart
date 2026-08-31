@@ -12,6 +12,8 @@ class CastState {
   final String? error;
   final String captureMode; // 'screen' | 'camera'
   final bool frontCamera; // true=前置, false=后置
+  /// 摄像头模式下是否同步采集麦克风音频
+  final bool withAudio;
 
   const CastState({
     this.isCasting = false,
@@ -20,6 +22,7 @@ class CastState {
     this.error,
     this.captureMode = 'screen',
     this.frontCamera = true,
+    this.withAudio = true,
   });
 
   CastState copyWith({
@@ -29,6 +32,7 @@ class CastState {
     String? error,
     String? captureMode,
     bool? frontCamera,
+    bool? withAudio,
   }) {
     return CastState(
       isCasting: isCasting ?? this.isCasting,
@@ -37,6 +41,7 @@ class CastState {
       error: error,
       captureMode: captureMode ?? this.captureMode,
       frontCamera: frontCamera ?? this.frontCamera,
+      withAudio: withAudio ?? this.withAudio,
     );
   }
 
@@ -55,6 +60,7 @@ class CastNotifier extends StateNotifier<CastState> {
 
     final mode = state.captureMode;
     final frontCamera = state.frontCamera;
+    final withAudio = state.withAudio;
 
     state = state.copyWith(
       isCasting: true,
@@ -87,6 +93,7 @@ class CastNotifier extends StateNotifier<CastState> {
         pcDeviceId,
         captureMode: mode,
         frontCamera: frontCamera,
+        withAudio: withAudio,
       );
       state = state.copyWith(
         roomId: session.roomId,
@@ -118,6 +125,15 @@ class CastNotifier extends StateNotifier<CastState> {
   /// 切换摄像头朝向（仅摄像头模式有效，即使在非投屏中也可预设）
   void toggleCamera() {
     state = state.copyWith(frontCamera: !state.frontCamera);
+  }
+
+  /// 开关麦克风音频同步（摄像头模式下生效，下次开始传输时应用）
+  void toggleAudio() {
+    state = state.copyWith(withAudio: !state.withAudio);
+    DebugService().log(
+      '[CastProvider] 音频同步: ${state.withAudio ? "开" : "关"}',
+      level: LogLevel.info,
+    );
   }
 
   /// 停止投屏

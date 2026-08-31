@@ -206,9 +206,16 @@ class RemoteControlService {
     try {
       final result = await _channel.invokeMethod<bool>('checkAccessibilityEnabled');
       _isEnabled = result ?? false;
+      _rcLog(
+        '无障碍服务检测结果: ${_isEnabled ? "已开启" : "未开启"}',
+        level: _isEnabled ? LogLevel.info : LogLevel.warn,
+      );
       return _isEnabled;
     } on PlatformException catch (e) {
       _rcLog('检查服务状态失败: ${e.message}', level: LogLevel.error);
+      return false;
+    } on MissingPluginException catch (e) {
+      _rcLog('原生通道不可用: ${e.message}', level: LogLevel.error);
       return false;
     }
   }
