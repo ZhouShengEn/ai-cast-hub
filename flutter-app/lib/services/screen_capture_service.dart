@@ -22,7 +22,7 @@ import 'debug_service.dart';
 /// MediaProjection.createVirtualDisplay()，但不会启动前台服务。
 /// Android 14+ 要求此时必须有一个 foregroundServiceType="mediaProjection"
 /// 的前台服务正在运行，否则会抛出 SecurityException 导致应用崩溃。
-/// 因此在调用 getDisplayMedia() 之前需要先启动 MediaProjectionService。
+/// 正确时序是先取得用户授权，再启动前台服务，最后创建 VirtualDisplay。
 class ScreenCaptureService {
   bool _isCapturing = false;
   webrtc.MediaStream? _localStream;
@@ -39,48 +39,57 @@ class ScreenCaptureService {
       await stopCapture();
     }
 
-    final isNative = !kIsWeb;
+    final isAndroid = !kIsWeb && webrtc.WebRTC.platformIsAndroid;
     DebugService().log(
-      '[ScreenCapture] 开始屏幕捕获 (平台: ${isNative ? "Android/iOS" : "Web"}, '
+      '[ScreenCapture] 开始屏幕捕获 (平台: ${isAndroid ? "Android" : "非 Android"}, '
       'API: getDisplayMedia)',
       level: LogLevel.info,
     );
 
-    if (isNative) {
-      // Android 13+ (API 33+) 需要通知权限才能显示前台服务通知，
-      // 如果没有通知权限，前台服务会启动失败导致屏幕捕获崩溃
-      if (await Permission.notification.isDenied) {
+    webrtc.MediaStream? stream;
+    try {
+      if (isAndroid) {
+        // Android 13+ 即使拒绝通知权限仍可启动前台服务，但通知不会显示在
+        // 通知抽屉中。主动申请可让用户明确看到正在投屏的持续通知。
+        if (await Permission.notification.isDenied) {
+          DebugService().log(
+            '[ScreenCapture] 请求通知权限...',
+            level: LogLevel.info,
+          );
+          final notificationStatus = await Permission.notification.request();
+          if (notificationStatus != PermissionStatus.granted) {
+            DebugService().warn(
+              '[ScreenCapture] 通知权限被拒绝，继续申请屏幕录制授权',
+            );
+          }
+        }
+
+        // flutter_webrtc 会缓存这次授权返回的 Intent。Android 14+ 要求每次
+        // 投屏会话都重新授权，且必须在授权后才能启动 mediaProjection FGS。
+        final granted = await webrtc.Helper.requestCapturePermission(
+          fullScreenOnly: true,
+        );
+        if (!granted) {
+          throw Exception('用户取消了屏幕录制授权');
+        }
         DebugService().log(
-          '[ScreenCapture] 请求通知权限...',
+          '[ScreenCapture] MediaProjection 用户授权成功',
           level: LogLevel.info,
         );
-        final result = await Permission.notification.request();
-        if (result != PermissionStatus.granted) {
-          DebugService().warn('[ScreenCapture] 通知权限被拒绝');
+
+        final started = await BackgroundService.startMediaProjectionService();
+        DebugService().log(
+          '[ScreenCapture] MediaProjection 前台服务启动: $started',
+          level: started ? LogLevel.info : LogLevel.error,
+        );
+        if (!started) {
+          throw Exception(
+            'MediaProjection 前台服务启动失败，请确认应用处于前台后重试',
+          );
         }
       }
 
-      // Android 14+ 需要在调用 getDisplayMedia() 之前启动 mediaProjection 前台服务，
-      // 否则 createVirtualDisplay() 可能因缺少前台服务而失败。
-      // 必须在 App 处于前台时启动（此时用户刚点击"开始投屏"按钮）。
-      //
-      // 注意：前台服务启动失败不再直接中断投屏流程。
-      // 原生侧已做多级降级且不会崩溃，部分设备/ROM 上即使没有 mediaProjection
-      // 类型的前台服务，getDisplayMedia 依然可以正常工作。
-      final started = await BackgroundService.startMediaProjectionService();
-      DebugService().log(
-        '[ScreenCapture] MediaProjection 前台服务启动: $started',
-        level: started ? LogLevel.info : LogLevel.warn,
-      );
-      if (!started) {
-        DebugService().warn(
-          '[ScreenCapture] 前台服务启动失败，仍继续尝试屏幕捕获（部分设备可正常投屏）',
-        );
-      }
-    }
-
-    try {
-      final stream = await webrtc.navigator.mediaDevices.getDisplayMedia(
+      stream = await webrtc.navigator.mediaDevices.getDisplayMedia(
         <String, dynamic>{
           'video': <String, dynamic>{
             'mandatory': <String, dynamic>{
@@ -92,9 +101,6 @@ class ScreenCaptureService {
           'audio': false,
         },
       );
-
-      _localStream = stream;
-      _isCapturing = true;
 
       final tracks = stream.getTracks();
       DebugService().log(
@@ -114,36 +120,57 @@ class ScreenCaptureService {
         throw Exception('屏幕捕获失败：未获取到视频轨道，请确认已授权屏幕录制权限');
       }
 
+      _localStream = stream;
+      _isCapturing = true;
       return stream;
-    } catch (e) {
-      // 捕获失败时停止前台服务，避免遗留
-      if (isNative) {
+    } catch (e, stackTrace) {
+      if (stream != null) {
+        await _disposeStream(stream);
+      }
+      _localStream = null;
+      _isCapturing = false;
+      if (isAndroid) {
         await BackgroundService.stopMediaProjectionService();
       }
-      DebugService().error('[ScreenCapture] 屏幕捕获失败: $e');
+      DebugService().error(
+        '[ScreenCapture] 屏幕捕获失败: $e\n$stackTrace',
+      );
       rethrow;
     }
   }
 
   /// 停止屏幕捕获
   Future<void> stopCapture() async {
-    if (!_isCapturing) return;
-
-    if (_localStream != null) {
-      for (final track in _localStream!.getTracks()) {
-        await track.stop();
-      }
-      await _localStream!.dispose();
-      _localStream = null;
-    }
-
+    final stream = _localStream;
+    _localStream = null;
     _isCapturing = false;
 
-    // 停止 MediaProjection 前台服务
-    if (!kIsWeb) {
-      await BackgroundService.stopMediaProjectionService();
+    try {
+      if (stream != null) {
+        await _disposeStream(stream);
+      }
+    } finally {
+      // 即使捕获在初始化中失败，也强制停止前台服务，防止通知和服务驻留。
+      if (!kIsWeb && webrtc.WebRTC.platformIsAndroid) {
+        await BackgroundService.stopMediaProjectionService();
+      }
     }
 
     DebugService().log('[ScreenCapture] 停止');
+  }
+
+  Future<void> _disposeStream(webrtc.MediaStream stream) async {
+    for (final track in stream.getTracks()) {
+      try {
+        await track.stop();
+      } catch (e) {
+        DebugService().warn('[ScreenCapture] 停止轨道失败: $e');
+      }
+    }
+    try {
+      await stream.dispose();
+    } catch (e) {
+      DebugService().warn('[ScreenCapture] 释放媒体流失败: $e');
+    }
   }
 }

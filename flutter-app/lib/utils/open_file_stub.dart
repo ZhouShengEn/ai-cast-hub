@@ -1,2 +1,2 @@
 /// 非原生平台的文件打开存根（无操作）
-Future<void> openLocalFile(String filePath) async {}
+Future<bool> openLocalFile(String filePath, {String? mimeType}) async => false;

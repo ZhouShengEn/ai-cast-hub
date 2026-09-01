@@ -34,7 +34,8 @@ class WebrtcService {
       StreamController<webrtc.MediaStream>.broadcast();
 
   /// 数据通道消息通知
-  final StreamController<webrtc.RTCDataChannelMessage> _dataChannelMessageController =
+  final StreamController<webrtc.RTCDataChannelMessage>
+      _dataChannelMessageController =
       StreamController<webrtc.RTCDataChannelMessage>.broadcast();
 
   /// 远端DataChannel创建通知
@@ -42,7 +43,8 @@ class WebrtcService {
       StreamController<webrtc.RTCDataChannel>.broadcast();
 
   /// 远端媒体流
-  Stream<webrtc.MediaStream> get onRemoteStream => _remoteStreamController.stream;
+  Stream<webrtc.MediaStream> get onRemoteStream =>
+      _remoteStreamController.stream;
 
   /// 数据通道消息
   Stream<webrtc.RTCDataChannelMessage> get onDataChannelMessage =>
@@ -74,7 +76,8 @@ class WebrtcService {
 
     // 远端媒体流监听
     _peerConnection!.onTrack = (webrtc.RTCTrackEvent event) {
-      _rtcLog('🔔 收到远端track: kind=${event.track?.kind}, id=${event.track?.id}, streams数量=${event.streams.length}');
+      _rtcLog(
+          '🔔 收到远端track: kind=${event.track?.kind}, id=${event.track?.id}, streams数量=${event.streams.length}');
       if (event.streams.isNotEmpty) {
         _rtcLog('  stream id: ${event.streams.first.id}');
         if (!_remoteStreamController.isClosed) {
@@ -100,14 +103,17 @@ class WebrtcService {
     // ICE 候选事件 → 通过回调传出
     _peerConnection!.onIceCandidate = (webrtc.RTCIceCandidate candidate) {
       final cand = candidate.candidate ?? '';
-      _rtcLog('🧊 ICE候选: ${cand.length > 50 ? cand.substring(0, 50) : cand}...');
+      _rtcLog(
+          '🧊 ICE候选: ${cand.length > 50 ? cand.substring(0, 50) : cand}...');
       _onIceCandidateCallback?.call(candidate);
     };
 
     // ICE 连接状态变化
-    _peerConnection!.onIceConnectionState = (webrtc.RTCIceConnectionState state) {
+    _peerConnection!.onIceConnectionState =
+        (webrtc.RTCIceConnectionState state) {
       _rtcLog('🧊 ICE连接状态变化: $state');
-      if (state == webrtc.RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
+      if (state ==
+              webrtc.RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
           state == webrtc.RTCIceConnectionState.RTCIceConnectionStateFailed ||
           state == webrtc.RTCIceConnectionState.RTCIceConnectionStateClosed) {
         _rtcLog('🧊 ICE连接断开/失败，通知上层', level: LogLevel.warn);
@@ -166,7 +172,8 @@ class WebrtcService {
   Future<void> handleIceCandidate(Map<String, dynamic> candidate) async {
     _ensureConnection();
     final candStr = candidate['candidate'] as String? ?? '';
-    _rtcLog('handleIceCandidate: 添加ICE候选, candidate=${candStr.length > 50 ? candStr.substring(0, 50) : candStr}...');
+    _rtcLog(
+        'handleIceCandidate: 添加ICE候选, candidate=${candStr.length > 50 ? candStr.substring(0, 50) : candStr}...');
     await _peerConnection!.addCandidate(
       webrtc.RTCIceCandidate(
         candidate['candidate'] as String? ?? '',
@@ -248,23 +255,43 @@ class WebrtcService {
 
   /// 停止屏幕捕获
   Future<void> stopScreenCapture() async {
-    if (_localStream != null) {
-      for (final track in _localStream!.getTracks()) {
-        await track.stop();
+    final stream = _localStream;
+    _localStream = null;
+    if (stream != null) {
+      for (final track in stream.getTracks()) {
+        try {
+          await track.stop();
+        } catch (e) {
+          _rtcLog('停止本地轨道失败: $e', level: LogLevel.warn);
+        }
       }
-      await _localStream!.dispose();
-      _localStream = null;
+      try {
+        await stream.dispose();
+      } catch (e) {
+        _rtcLog('释放本地媒体流失败: $e', level: LogLevel.warn);
+      }
     }
   }
 
   /// 关闭连接并清理资源
   Future<void> close() async {
-    _dataChannel?.close();
+    try {
+      await _dataChannel?.close();
+    } catch (e) {
+      _rtcLog('关闭 DataChannel 失败: $e', level: LogLevel.warn);
+    }
     _dataChannel = null;
     await stopScreenCapture();
-    await _peerConnection?.close();
+
+    final peerConnection = _peerConnection;
     _peerConnection = null;
+    try {
+      await peerConnection?.close();
+    } catch (e) {
+      _rtcLog('关闭 PeerConnection 失败: $e', level: LogLevel.warn);
+    }
     _onIceCandidateCallback = null;
+    _onIceDisconnectedCallback = null;
   }
 
   /// 释放所有资源
@@ -308,4 +335,3 @@ class WebrtcService {
     };
   }
 }
-

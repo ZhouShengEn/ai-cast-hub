@@ -52,13 +52,16 @@ class CastService {
 
   /// 用于等待 room_created 消息
   Completer<String>? _roomCreatedCompleter;
+
   /// 用于等待 peer_joined 消息
   Completer<void>? _peerJoinedCompleter;
 
   /// 状态变化回调
   void Function(String status)? onStatusChanged;
+
   /// 错误回调
   void Function(String error)? onError;
+
   /// 远程控制指令回调
   void Function(Map<String, dynamic> command)? onControlCommand;
 
@@ -66,6 +69,7 @@ class CastService {
   CastSession? get currentSession => _currentSession;
 
   StreamSubscription? _dcSubscription;
+  Future<void>? _cleanupFuture;
 
   // ---- 投屏会话管理 ----
 
@@ -74,7 +78,8 @@ class CastService {
   /// [captureMode] 'screen'（投屏）或 'camera'（手机摄像）
   /// [frontCamera] 摄像头模式下 true=前置, false=后置
   /// [withAudio] 摄像头模式下是否同步采集麦克风音频（默认开启）
-  Future<CastSession> createCastSession(String pcDeviceId, {
+  Future<CastSession> createCastSession(
+    String pcDeviceId, {
     String captureMode = 'screen',
     bool frontCamera = true,
     bool withAudio = true,
@@ -83,7 +88,8 @@ class CastService {
     _cameraFacing = frontCamera;
     _cameraWithAudio = withAudio;
     _castLog('═══════════════════════════════════════════');
-    _castLog('开始创建投屏会话, 目标PC: ${_safeId(pcDeviceId)}, 模式: $_captureMode'
+    _castLog(
+        '开始创建投屏会话, 目标PC: ${_safeId(pcDeviceId)}, 模式: $_captureMode'
         '${captureMode == 'camera' ? ', 音频: ${withAudio ? "开" : "关"}' : ''}',
         level: LogLevel.info);
     _isDisposed = false;
@@ -115,11 +121,14 @@ class CastService {
       _webrtc.onIceDisconnected(() {
         _castLog('ICE连接断开，重置投屏状态', level: LogLevel.warn);
         _updateSessionStatus('disconnected');
+        _isDisposed = true;
+        unawaited(_cleanupResources());
       });
       _webrtc.onIceCandidate((candidate) {
         if (_currentSession == null || _isDisposed) return;
         final candStr = candidate.candidate ?? '';
-        final candShort = candStr.length > 40 ? '${candStr.substring(0, 40)}...' : candStr;
+        final candShort =
+            candStr.length > 40 ? '${candStr.substring(0, 40)}...' : candStr;
         _castLog('ICE候选: $candShort', level: LogLevel.debug);
         _ws.send({
           'type': 'signal',
@@ -146,7 +155,8 @@ class CastService {
       });
 
       // 4.6. 监听 DataChannel 消息（远程控制指令）
-      _dcSubscription = _webrtc.onDataChannelMessage.listen(_handleDataChannelMessage);
+      _dcSubscription =
+          _webrtc.onDataChannelMessage.listen(_handleDataChannelMessage);
 
       // 5. 发送 create_room，等待 room_created 响应
       _castLog('步骤5: 发送create_room...');
@@ -215,9 +225,11 @@ class CastService {
             '请返回重试或检查系统设置');
       }
       final tracks = stream.getTracks();
-      _castLog('步骤7: $_captureMode捕获完成, tracks=${tracks.length}', level: LogLevel.info);
+      _castLog('步骤7: $_captureMode捕获完成, tracks=${tracks.length}',
+          level: LogLevel.info);
       for (final t in tracks) {
-        _castLog('  track: kind=${t.kind}, enabled=${t.enabled}, muted=${t.muted}, id=${_safeId(t.id)}');
+        _castLog(
+            '  track: kind=${t.kind}, enabled=${t.enabled}, muted=${t.muted}, id=${_safeId(t.id)}');
       }
 
       // 验证至少有一个视频轨道
@@ -226,12 +238,13 @@ class CastService {
         _castLog('⚠ 未捕获到视频轨道，投屏将显示黑屏', level: LogLevel.error);
         throw Exception('屏幕捕获失败：未获取到视频轨道\n'
             '请确认已授权屏幕录制权限\n'
-            '（Android: 需要开启「显示在其他应用上层」权限）');
+            '（Android: 请在系统录屏弹窗中选择“立即开始”）');
       }
       // 音频轨统计（摄像头模式下用于确认声音是否会被同步到 Web 端）
       final audioTracks = tracks.where((t) => t.kind == 'audio').toList();
       if (_captureMode == 'camera') {
-        _castLog('音频轨: ${audioTracks.length}'
+        _castLog(
+            '音频轨: ${audioTracks.length}'
             '${audioTracks.isEmpty ? " ⚠ 对端将听不到声音" : " ✓"}',
             level: audioTracks.isEmpty ? LogLevel.warn : LogLevel.info);
       }
@@ -252,24 +265,17 @@ class CastService {
           'sdp': offer.sdp,
         },
       });
-      _castLog('步骤9: offer已发送 ✓ SDP长度=${offer.sdp?.length ?? 0}', level: LogLevel.info);
-      _castLog('═══════════════════════════════════════════', level: LogLevel.info);
+      _castLog('步骤9: offer已发送 ✓ SDP长度=${offer.sdp?.length ?? 0}',
+          level: LogLevel.info);
+      _castLog('═══════════════════════════════════════════',
+          level: LogLevel.info);
 
       return _currentSession!;
     } catch (e) {
       // 失败时清理 WS 订阅、WebRTC 资源和捕获资源（含 MediaProjection 前台服务），避免泄漏
       _castLog('创建会话失败，清理资源: $e', level: LogLevel.error);
-      await _wsSubscription?.cancel();
-      _wsSubscription = null;
-      await _dcSubscription?.cancel();
-      _dcSubscription = null;
-      // 清理屏幕/摄像头捕获资源（会停止 MediaProjection 前台服务）
-      if (_captureMode == 'camera') {
-        await _cameraCapture.stopCapture();
-      } else {
-        await _screenCapture.stopCapture();
-      }
-      await _webrtc.close();
+      _isDisposed = true;
+      await _cleanupResources();
       _roomCreatedCompleter = null;
       _peerJoinedCompleter = null;
       _currentSession = null;
@@ -289,16 +295,7 @@ class CastService {
       });
     }
 
-    await _wsSubscription?.cancel();
-    _wsSubscription = null;
-    await _dcSubscription?.cancel();
-    _dcSubscription = null;
-    if (_captureMode == 'camera') {
-      await _cameraCapture.stopCapture();
-    } else {
-      await _screenCapture.stopCapture();
-    }
-    await _webrtc.close();
+    await _cleanupResources();
 
     if (_currentSession != null) {
       _currentSession = CastSession(
@@ -350,7 +347,12 @@ class CastService {
     }
     // 降级到 Google 公共 STUN
     return [
-      {'urls': ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']},
+      {
+        'urls': [
+          'stun:stun.l.google.com:19302',
+          'stun:stun1.l.google.com:19302'
+        ]
+      },
     ];
   }
 
@@ -359,11 +361,11 @@ class CastService {
     if (_ws.connectionState != WsConnectionState.connected) {
       _castLog('WebSocket未连接，开始连接...');
       await _ws.connect().timeout(
-        const Duration(seconds: 10),
-        onTimeout: () => throw TimeoutException(
-          'WebSocket 连接超时，请检查服务器是否在 http://localhost:3000 运行',
-        ),
-      );
+            const Duration(seconds: 10),
+            onTimeout: () => throw TimeoutException(
+              'WebSocket 连接超时，请检查服务器是否在 http://localhost:3000 运行',
+            ),
+          );
       _castLog('WebSocket连接成功');
     }
   }
@@ -371,7 +373,9 @@ class CastService {
   void _onRoomCreated(Map<String, dynamic> message) {
     final roomId = message['roomId'] as String?;
     _castLog('收到room_created: roomId=$roomId', level: LogLevel.info);
-    if (roomId != null && _roomCreatedCompleter != null && !_roomCreatedCompleter!.isCompleted) {
+    if (roomId != null &&
+        _roomCreatedCompleter != null &&
+        !_roomCreatedCompleter!.isCompleted) {
       _roomCreatedCompleter!.complete(roomId);
     }
   }
@@ -386,14 +390,16 @@ class CastService {
   void _onSignal(Map<String, dynamic> message) {
     final roomId = message['roomId'] as String?;
     if (roomId != _currentSession?.roomId) {
-      _castLog('signal roomId不匹配: $roomId != ${_currentSession?.roomId}', level: LogLevel.warn);
+      _castLog('signal roomId不匹配: $roomId != ${_currentSession?.roomId}',
+          level: LogLevel.warn);
       return;
     }
 
     final payload = message['payload'] as Map<String, dynamic>?;
     if (payload == null) return;
 
-    final signalType = payload['signalType'] as String? ?? payload['type'] as String?;
+    final signalType =
+        payload['signalType'] as String? ?? payload['type'] as String?;
     _castLog('收到signal: $signalType', level: LogLevel.debug);
 
     switch (signalType) {
@@ -405,7 +411,8 @@ class CastService {
         break;
       case 'ice_candidate':
         _castLog('收到PC的ice_candidate', level: LogLevel.debug);
-        _webrtc.handleIceCandidate(payload['candidate'] as Map<String, dynamic>);
+        _webrtc
+            .handleIceCandidate(payload['candidate'] as Map<String, dynamic>);
         break;
       default:
         _castLog('未知signalType: $signalType', level: LogLevel.warn);
@@ -415,6 +422,8 @@ class CastService {
   void _onRoomClosed(Map<String, dynamic> message) {
     _castLog('收到room_closed, 投屏结束', level: LogLevel.warn);
     _updateSessionStatus('disconnected');
+    _isDisposed = true;
+    unawaited(_cleanupResources());
   }
 
   void _handleDataChannelMessage(webrtc.RTCDataChannelMessage message) {
@@ -435,11 +444,62 @@ class CastService {
     onStatusChanged?.call(status);
   }
 
+  Future<void> _cleanupResources() {
+    final pendingCleanup = _cleanupFuture;
+    if (pendingCleanup != null) {
+      return pendingCleanup;
+    }
+
+    final cleanup = _performCleanup();
+    _cleanupFuture = cleanup;
+    cleanup.whenComplete(() {
+      if (identical(_cleanupFuture, cleanup)) {
+        _cleanupFuture = null;
+      }
+    });
+    return cleanup;
+  }
+
+  Future<void> _performCleanup() async {
+    try {
+      await _wsSubscription?.cancel();
+    } catch (e) {
+      _castLog('取消 WebSocket 监听失败: $e', level: LogLevel.warn);
+    } finally {
+      _wsSubscription = null;
+    }
+
+    try {
+      await _dcSubscription?.cancel();
+    } catch (e) {
+      _castLog('取消 DataChannel 监听失败: $e', level: LogLevel.warn);
+    } finally {
+      _dcSubscription = null;
+    }
+
+    try {
+      if (_captureMode == 'camera') {
+        await _cameraCapture.stopCapture();
+      } else {
+        await _screenCapture.stopCapture();
+      }
+    } catch (e) {
+      _castLog('停止媒体捕获失败: $e', level: LogLevel.warn);
+    }
+
+    try {
+      await _webrtc.close();
+    } catch (e) {
+      _castLog('关闭 WebRTC 连接失败: $e', level: LogLevel.warn);
+    }
+  }
+
   /// 释放资源
   void dispose() {
     _isDisposed = true;
-    _wsSubscription?.cancel();
-    _cameraCapture.dispose();
-    _webrtc.dispose();
+    unawaited(_cleanupResources().whenComplete(() {
+      _cameraCapture.dispose();
+      _webrtc.dispose();
+    }));
   }
 }

@@ -5,9 +5,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- Android 14+ (SDK 34): 屏幕捕获需要此权限以创建 MediaProjection foreground service -->
-    <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -42,6 +39,16 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- 仅向外部查看器临时共享应用接收的文件，URI 始终为 content://。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <!-- 后台连接保持前台服务 -->
         <service
             android:name=".BackgroundConnectionService"
@@ -53,6 +60,7 @@
             android:name=".MediaProjectionService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="true"
             android:foregroundServiceType="mediaProjection" />
         <!-- 远程控制无障碍服务 -->
         <service
@@ -77,6 +85,12 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data
+                android:mimeType="*/*"
+                android:scheme="content" />
         </intent>
     </queries>
 </manifest>

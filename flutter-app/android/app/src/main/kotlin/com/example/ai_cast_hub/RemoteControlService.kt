@@ -21,6 +21,7 @@ class RemoteControlService : AccessibilityService() {
 
     companion object {
         private const val TAG = "RemoteControlService"
+        @Volatile
         var instance: RemoteControlService? = null
 
         /**
@@ -106,9 +107,12 @@ class RemoteControlService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        instance = null
+        clearRuntimeState()
+        if (instance === this) {
+            instance = null
+        }
         Log.d(TAG, "RemoteControlService destroyed")
+        super.onDestroy()
     }
 
     override fun onServiceConnected() {
@@ -126,14 +130,19 @@ class RemoteControlService : AccessibilityService() {
         if (info != null) {
             info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
             info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            info.flags = info.flags or
+            info.flags = (info.flags or
                     AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
-                    AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS) and
+                    AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE.inv()
             // canRetrieveWindowContent 已在 res/xml/accessibility_service_config.xml 中
             // 通过 android:canRetrieveWindowContent="true" 声明；该字段在 API 36 上是只读
             // val，无法在代码中赋值，故此处不再赋值（避免编译报错，且 XML 已保证该能力开启）。
             serviceInfo = info
-            Log.d(TAG, "serviceInfo 已增量更新 (flags=${info.flags}, canRetrieveWindowContent=true[from XML])")
+            Log.d(
+                TAG,
+                "serviceInfo 已更新，未请求触摸探索模式 " +
+                        "(flags=${info.flags}, canRetrieveWindowContent=true[from XML])"
+            )
         } else {
             Log.w(TAG, "serviceInfo 为空，跳过配置更新")
         }
@@ -143,7 +152,17 @@ class RemoteControlService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
+        clearRuntimeState()
         Log.d(TAG, "RemoteControlService interrupted")
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        clearRuntimeState()
+        if (instance === this) {
+            instance = null
+        }
+        Log.d(TAG, "RemoteControlService unbound")
+        return super.onUnbind(intent)
     }
 
     fun dispatchTap(xPercent: Double, yPercent: Double): Boolean {
@@ -321,5 +340,9 @@ class RemoteControlService : AccessibilityService() {
         val size = Point()
         display?.getRealSize(size)
         return size
+    }
+
+    private fun clearRuntimeState() {
+        lastTouchPoint = null
     }
 }

@@ -47,11 +47,13 @@ class BackgroundService {
   /// 必须有一个 foregroundServiceType="mediaProjection" 的前台服务正在运行，
   /// 否则会抛出 SecurityException 导致应用崩溃。
   ///
-  /// 必须在 App 处于前台时调用，且要在 getDisplayMedia() 之前启动。
+  /// 必须在 App 处于前台且用户已授予 MediaProjection 权限后调用，
+  /// 并等待原生服务确认进入前台后才能调用 getDisplayMedia()。
   static Future<bool> startMediaProjectionService() async {
     if (kIsWeb) return true;
     try {
-      final result = await _channel.invokeMethod<bool>('startMediaProjectionService');
+      final result =
+          await _channel.invokeMethod<bool>('startMediaProjectionService');
       return result ?? false;
     } catch (e) {
       print('[BackgroundService] 启动 MediaProjection 服务失败: $e');
@@ -63,7 +65,8 @@ class BackgroundService {
   static Future<bool> stopMediaProjectionService() async {
     if (kIsWeb) return true;
     try {
-      final result = await _channel.invokeMethod<bool>('stopMediaProjectionService');
+      final result =
+          await _channel.invokeMethod<bool>('stopMediaProjectionService');
       return result ?? false;
     } catch (e) {
       print('[BackgroundService] 停止 MediaProjection 服务失败: $e');

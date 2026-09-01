@@ -7,7 +7,8 @@ import '../services/remote_control_service.dart';
 /// 投屏状态
 class CastState {
   final bool isCasting;
-  final String connectionState; // 'disconnected' | 'connecting' | 'connected' | 'error'
+  final String
+      connectionState; // 'disconnected' | 'connecting' | 'connected' | 'error'
   final String? roomId;
   final String? error;
   final String captureMode; // 'screen' | 'camera'
@@ -101,6 +102,8 @@ class CastNotifier extends StateNotifier<CastState> {
       );
     } catch (e) {
       DebugService().error('[CastProvider] 投屏失败: $e');
+      _service?.dispose();
+      _service = null;
       state = state.copyWith(
         isCasting: false,
         connectionState: 'error',
@@ -138,10 +141,14 @@ class CastNotifier extends StateNotifier<CastState> {
 
   /// 停止投屏
   Future<void> stopCasting() async {
+    final service = _service;
+    _service = null;
     try {
-      await _service?.endCastSession();
+      await service?.endCastSession();
     } catch (_) {
       // 忽略停止时的错误
+    } finally {
+      service?.dispose();
     }
     state = state.copyWith(
       isCasting: false,
@@ -153,6 +160,7 @@ class CastNotifier extends StateNotifier<CastState> {
   @override
   void dispose() {
     _service?.dispose();
+    _service = null;
     super.dispose();
   }
 }
