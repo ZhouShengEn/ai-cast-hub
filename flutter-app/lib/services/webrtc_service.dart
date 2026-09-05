@@ -26,8 +26,8 @@ class WebrtcService {
   /// ICE 候选回调
   void Function(webrtc.RTCIceCandidate)? _onIceCandidateCallback;
 
-  /// ICE 断开回调（PeerConnection 断开时触发）
-  void Function()? _onIceDisconnectedCallback;
+  /// ICE 断开回调（PeerConnection 断开时触发，参数为 disconnected/failed/closed）
+  void Function(String state)? _onIceDisconnectedCallback;
 
   /// 远端媒体流通知
   final StreamController<webrtc.MediaStream> _remoteStreamController =
@@ -78,7 +78,7 @@ class WebrtcService {
     // 远端媒体流监听
     _peerConnection!.onTrack = (webrtc.RTCTrackEvent event) {
       _rtcLog(
-          '🔔 收到远端track: kind=${event.track?.kind}, id=${event.track?.id}, streams数量=${event.streams.length}');
+          '🔔 收到远端track: kind=${event.track.kind}, id=${event.track.id}, streams数量=${event.streams.length}');
       if (event.streams.isNotEmpty) {
         _rtcLog('  stream id: ${event.streams.first.id}');
         if (!_remoteStreamController.isClosed) {
@@ -245,7 +245,7 @@ class WebrtcService {
   /// 找不到视频发送器或无 encodings 时静默跳过（例如尚未 addTrack）。
   Future<void> setVideoEncoding({
     double? scaleResolutionDownBy,
-    double? maxFramerate,
+    int? maxFramerate,
     int? maxBitrate,
   }) async {
     _ensureConnection();
@@ -263,11 +263,12 @@ class WebrtcService {
       return;
     }
     final params = videoSender.parameters;
-    if (params.encodings.isEmpty) {
+    final encodings = params.encodings;
+    if (encodings == null || encodings.isEmpty) {
       _rtcLog('视频编码参数无 encodings，跳过画质调整', level: LogLevel.warn);
       return;
     }
-    final enc = params.encodings[0];
+    final enc = encodings[0];
     if (scaleResolutionDownBy != null) {
       enc.scaleResolutionDownBy = scaleResolutionDownBy;
     }
@@ -290,7 +291,7 @@ class WebrtcService {
       final track = s.track;
       if (track != null && track.kind == 'video') {
         try {
-          final settings = await track.getSettings();
+          final settings = track.getSettings();
           final h = settings['height'];
           if (h is int && h > 0) return h;
         } catch (e) {

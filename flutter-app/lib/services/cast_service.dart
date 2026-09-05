@@ -595,7 +595,7 @@ class CastService {
     }
     await _webrtc.setVideoEncoding(
       scaleResolutionDownBy: scale,
-      maxFramerate: fps?.toDouble(),
+      maxFramerate: fps,
       maxBitrate: bitrate,
     );
     _reportQualityState(
