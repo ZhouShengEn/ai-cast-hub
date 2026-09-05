@@ -403,7 +403,7 @@ class RemoteControlService : AccessibilityService() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         GLOBAL_ACTION_TAKE_SCREENSHOT
                     } else {
-                        _rcLog("截图需要 Android 12(S) 及以上", level = LogLevel.warn)
+                        Log.w(TAG, "截图需要 Android 12(S) 及以上")
                         return false
                     }
                 }
