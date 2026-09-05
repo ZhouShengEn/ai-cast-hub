@@ -3,6 +3,7 @@ import { useWebSocket } from './useWebSocket'
 import { useWebRTC } from './useWebRTC'
 import { useCastStore } from '../stores/cast'
 import { usePcmPlayer } from './usePcmPlayer'
+import { QUALITY_PROFILES, QUALITY_ORDER, DEFAULT_QUALITY } from './castQuality'
 
 /**
  * 投屏接收 Composable
@@ -12,9 +13,10 @@ import { usePcmPlayer } from './usePcmPlayer'
  * 同时创建 DataChannel 用于远程控制指令传输。
  *
  * @param {import('vue').Ref<HTMLVideoElement|null>} [externalVideoRef] - 外部传入的 video 元素引用
+ * @param {object} [options] - { showToast } 用于弱网自动降级的提示
  * @returns {{ startListening, stopReceiving, connectionState, setVideoRef, sendControl }}
  */
-export function useCastReceiver(externalVideoRef) {
+export function useCastReceiver(externalVideoRef, options = {}) {
   const castStore = useCastStore()
   const videoRef = externalVideoRef || ref(null)
 
@@ -65,6 +67,20 @@ export function useCastReceiver(externalVideoRef) {
   const audioChannelReady = ref(false)
 
   let _audioChannel = null
+
+  // ---- 投屏画质 ----
+  /** 当前生效画质档位（持久化到 localStorage，新会话自动恢复） */
+  const currentQuality = ref(
+    (() => {
+      try {
+        return localStorage.getItem('castQuality') || DEFAULT_QUALITY
+      } catch (_) {
+        return DEFAULT_QUALITY
+      }
+    })(),
+  )
+  /** 弱网自动降级计数器：短时间内多次 disconnected 触发降一档 */
+  let _disconnectCount = 0
 
   let _currentRoomId = null
 
@@ -261,7 +277,26 @@ export function useCastReceiver(externalVideoRef) {
     _connectionStateCb = (state) => {
       console.log('[CastReceiver] WebRTC连接状态变化:', state)
       castStore.setPeerState(state)
-      if (state === 'failed' || state === 'closed') {
+      if (state === 'connected') {
+        // 重连恢复：重新查询手机端状态，避免音频开关 / 无障碍提示卡在旧态
+        sendControl({ type: 'query_status' })
+        _disconnectCount = 0
+      } else if (state === 'disconnected') {
+        // 弱网自动降级：短时间内多次抖动 → 自动降一档画质以保流畅
+        _disconnectCount++
+        if (_disconnectCount >= 2) {
+          const idx = QUALITY_ORDER.indexOf(currentQuality.value)
+          if (idx >= 0 && idx < QUALITY_ORDER.length - 1) {
+            const lower = QUALITY_ORDER[idx + 1]
+            setQuality(lower)
+            options.showToast?.(
+              '检测到网络抖动，已自动降低画质以保流畅',
+              'warn',
+            )
+          }
+          _disconnectCount = 0
+        }
+      } else if (state === 'failed' || state === 'closed') {
         console.log('[CastReceiver] WebRTC 连接不可恢复 (state=%s)，清理投屏状态', state)
         stopReceiving()
       }
@@ -303,6 +338,11 @@ export function useCastReceiver(externalVideoRef) {
       castStore.setControlChannelOpen(true)
       // 通道就绪后立即查询一次无障碍服务状态，用于 Web 端提示用户
       sendControl({ type: 'query_status' })
+      // 用户已选定非默认画质时，连接建立即下发（重连/新会话都会走到这里，
+      // 保证上次的选择在新会话生效，无需手动再切一次）
+      if (currentQuality.value !== DEFAULT_QUALITY) {
+        setQuality(currentQuality.value)
+      }
     }
     channel.onclose = () => {
       console.log('[CastReceiver] 🔌 远程控制 DataChannel 已关闭')
@@ -332,6 +372,11 @@ export function useCastReceiver(externalVideoRef) {
             console.warn('[CastReceiver] 系统内录异常:', msg.payload.error)
           }
           console.log('[CastReceiver] 系统内录状态:', msg.payload)
+        } else if (msg.type === 'quality_state') {
+          if (msg.payload?.profile) {
+            currentQuality.value = msg.payload.profile
+          }
+          console.log('[CastReceiver] 画质已生效:', msg.payload)
         }
       } catch (err) {
         console.warn('[CastReceiver] 控制通道收到无法解析的消息:', err)
@@ -381,6 +426,36 @@ export function useCastReceiver(externalVideoRef) {
       stopAudio()
     }
     return sendControl({ type: 'toggle_system_audio', enabled: !!enabled })
+  }
+
+  /**
+   * 应用画质档位：更新本地状态 + 持久化 + 下发到手机端。
+   * 手机端经 RTCRtpSender.setParameters 实时生效，不打断投屏。
+   * @returns {boolean} 控制通道是否成功发出
+   */
+  function setQuality(profile) {
+    const p = QUALITY_PROFILES[profile]
+    if (!p) return false
+    currentQuality.value = profile
+    try {
+      localStorage.setItem('castQuality', profile)
+    } catch (_) {
+      // localStorage 不可用时忽略，仅内存态生效
+    }
+    const ok = sendControl({
+      type: 'set_quality',
+      payload: {
+        profile,
+        width: p.width,
+        height: p.height,
+        fps: p.fps,
+        bitrate: p.bitrate,
+      },
+    })
+    if (!ok) {
+      console.warn('[CastReceiver] 控制通道未就绪，画质将在连接恢复后下发')
+    }
+    return ok
   }
 
   /** 停止接收当前会话（保持 invitation 监听，可接受下次投屏） */
@@ -453,5 +528,10 @@ export function useCastReceiver(externalVideoRef) {
     audioChannelReady,
     isAudioPlaying,
     toggleSystemAudio,
+    // 投屏画质
+    currentQuality,
+    qualityProfiles: QUALITY_PROFILES,
+    qualityOrder: QUALITY_ORDER,
+    setQuality,
   }
 }

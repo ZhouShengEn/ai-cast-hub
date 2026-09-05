@@ -46,11 +46,26 @@
       ⛶
     </button>
 
-    <!-- 底部左侧：手机系统声音开关 + 视频流音轨静音 -->
+    <!-- 底部左侧：画质选择 + 手机系统声音开关 + 视频流音轨静音 -->
     <div
       v-if="connectionState === 'connected'"
       class="absolute bottom-3 left-3 z-20 flex items-center gap-2"
     >
+      <!-- 投屏画质档位：高清 / 流畅 / 省流，切换经 RTCRtpSender 实时生效不打断投屏 -->
+      <select
+        class="h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white text-sm px-2 outline-none cursor-pointer"
+        :value="currentQuality"
+        @change="emit('set-quality', $event.target.value)"
+        title="投屏画质"
+      >
+        <option
+          v-for="(p, key) in qualityProfiles"
+          :key="key"
+          :value="key"
+          class="text-black"
+        >{{ p.label }}</option>
+      </select>
+
       <!--
         手机系统内录音频（AudioPlaybackCapture）。
         点击必须在用户手势中触发，否则浏览器的 AudioContext 无法启动、会没声音。
@@ -127,9 +142,13 @@ const props = defineProps({
   systemAudioSupported: { type: Boolean, default: false },
   /** 系统内录是否已开启 */
   systemAudioActive: { type: Boolean, default: false },
+  /** 当前画质档位 key（high/medium/low） */
+  currentQuality: { type: String, default: 'high' },
+  /** 画质档位表 { key: { label, width, height, fps, bitrate } } */
+  qualityProfiles: { type: Object, default: () => ({}) },
 })
 
-const emit = defineEmits(['control', 'refresh-status', 'toggle-system-audio'])
+const emit = defineEmits(['control', 'refresh-status', 'toggle-system-audio', 'set-quality'])
 
 /** 暴露 video ref 供 composable 绑定 */
 const videoEl = ref(null)

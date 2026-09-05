@@ -60,7 +60,8 @@ class WebrtcService {
   }
 
   /// 设置 ICE 断开回调（PeerConnection 断开时通知调用方）
-  void onIceDisconnected(void Function() callback) {
+  /// [state] 为 'disconnected' | 'failed' | 'closed'，便于上层区分「可恢复」与「不可恢复」
+  void onIceDisconnected(void Function(String state) callback) {
     _onIceDisconnectedCallback = callback;
   }
 
@@ -112,13 +113,21 @@ class WebrtcService {
     _peerConnection!.onIceConnectionState =
         (webrtc.RTCIceConnectionState state) {
       _rtcLog('🧊 ICE连接状态变化: $state');
+      String name;
       if (state ==
-              webrtc.RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
-          state == webrtc.RTCIceConnectionState.RTCIceConnectionStateFailed ||
-          state == webrtc.RTCIceConnectionState.RTCIceConnectionStateClosed) {
-        _rtcLog('🧊 ICE连接断开/失败，通知上层', level: LogLevel.warn);
-        _onIceDisconnectedCallback?.call();
+          webrtc.RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+        name = 'disconnected';
+      } else if (state ==
+          webrtc.RTCIceConnectionState.RTCIceConnectionStateFailed) {
+        name = 'failed';
+      } else if (state ==
+          webrtc.RTCIceConnectionState.RTCIceConnectionStateClosed) {
+        name = 'closed';
+      } else {
+        return;
       }
+      _rtcLog('🧊 ICE连接 $name，通知上层', level: LogLevel.warn);
+      _onIceDisconnectedCallback?.call(name);
     };
 
     return _peerConnection!;
@@ -224,6 +233,73 @@ class WebrtcService {
   /// 通过 DataChannel 发送消息
   void sendViaDataChannel(webrtc.RTCDataChannelMessage message) {
     _dataChannel?.send(message);
+  }
+
+  /// 动态调整视频编码参数（分辨率缩放 / 帧率 / 码率）
+  ///
+  /// 通过 RTCRtpSender.setParameters 实时生效，**无需重新协商、也无需重新采集屏幕**，
+  /// 因此「切换画质」不会打断投屏。
+  ///   - [scaleResolutionDownBy] 编码端按比例缩小分辨率（>1 即降分辨率，1 为原始）
+  ///   - [maxFramerate] 限制输出帧率
+  ///   - [maxBitrate] 限制输出码率（bps）
+  /// 找不到视频发送器或无 encodings 时静默跳过（例如尚未 addTrack）。
+  Future<void> setVideoEncoding({
+    double? scaleResolutionDownBy,
+    double? maxFramerate,
+    int? maxBitrate,
+  }) async {
+    _ensureConnection();
+    final senders = await _peerConnection!.getSenders();
+    webrtc.RTCRtpSender? videoSender;
+    for (final s in senders) {
+      final track = s.track;
+      if (track != null && track.kind == 'video') {
+        videoSender = s;
+        break;
+      }
+    }
+    if (videoSender == null) {
+      _rtcLog('未找到视频发送器，跳过画质调整', level: LogLevel.warn);
+      return;
+    }
+    final params = videoSender.parameters;
+    if (params.encodings.isEmpty) {
+      _rtcLog('视频编码参数无 encodings，跳过画质调整', level: LogLevel.warn);
+      return;
+    }
+    final enc = params.encodings[0];
+    if (scaleResolutionDownBy != null) {
+      enc.scaleResolutionDownBy = scaleResolutionDownBy;
+    }
+    if (maxFramerate != null) enc.maxFramerate = maxFramerate;
+    if (maxBitrate != null) enc.maxBitrate = maxBitrate;
+    await videoSender.setParameters(params);
+    _rtcLog(
+      '画质参数已应用: scale=${enc.scaleResolutionDownBy}, '
+      'fps=${enc.maxFramerate}, bitrate=${enc.maxBitrate}',
+      level: LogLevel.info,
+    );
+  }
+
+  /// 读取当前视频轨实际分辨率高度（用于计算 scaleResolutionDownBy 的目标比例）
+  /// 读不到时回退 1080，避免除零。
+  Future<int> getVideoTrackHeight() async {
+    _ensureConnection();
+    final senders = await _peerConnection!.getSenders();
+    for (final s in senders) {
+      final track = s.track;
+      if (track != null && track.kind == 'video') {
+        try {
+          final settings = await track.getSettings();
+          final h = settings['height'];
+          if (h is int && h > 0) return h;
+        } catch (e) {
+          _rtcLog('读取视频轨分辨率失败: $e', level: LogLevel.warn);
+        }
+        return 1080;
+      }
+    }
+    return 1080;
   }
 
   /// 通过 DataChannel 发送二进制数据

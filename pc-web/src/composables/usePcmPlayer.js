@@ -26,12 +26,12 @@ export function usePcmPlayer() {
   let channels = 2
   let schedulerTimer = null
 
-  /** 预缓冲帧数：20ms/帧 × 4 = 80ms，足以吸收常见抖动 */
-  const PREBUFFER_FRAMES = 4
+  /** 预缓冲帧数：20ms/帧 × 6 = 120ms，吸收更长时间的网络抖动 */
+  const PREBUFFER_FRAMES = 6
   /** 队列上限：超过则丢最旧的帧，防止延迟不断累积 */
   const MAX_QUEUE_FRAMES = 50
-  /** 前瞻窗口：始终排好未来 200ms 的音频 */
-  const LOOKAHEAD_SEC = 0.2
+  /** 前瞻窗口：始终排好未来 300ms 的音频，缓冲见底也不易断音 */
+  const LOOKAHEAD_SEC = 0.3
 
   /** 按手机端上报的格式初始化（sampleRate / channels 必须与采集端一致） */
   function configure(format) {
@@ -81,6 +81,13 @@ export function usePcmPlayer() {
       isPlaying.value = false
       nextStartTime = 0
       return
+    }
+
+    // 时钟回锚：若播放头已落后于当前时间（长时间卡顿/后台节流后恢复），
+    // 把 nextStartTime 拉回「现在 + 小余量」，避免一次性把积压帧全挤在 0 时刻
+    // 播放（会爆音/重叠），也避免与后续帧形成大量重叠 BufferSource。
+    if (nextStartTime > 0 && nextStartTime < ctx.currentTime - 0.02) {
+      nextStartTime = ctx.currentTime + 0.02
     }
 
     while (queue.length > 0 && nextStartTime < ctx.currentTime + LOOKAHEAD_SEC) {

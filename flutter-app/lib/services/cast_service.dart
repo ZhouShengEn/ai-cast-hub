@@ -133,9 +133,18 @@ class CastService {
 
       // 3. 设置 ICE 候选回调和断开回调
       _castLog('步骤3: 设置ICE回调');
-      _webrtc.onIceDisconnected(() {
-        _castLog('ICE连接断开，重置投屏状态', level: LogLevel.warn);
+      // 仅 failed/closed 才销毁会话；disconnected 是「可恢复的瞬时断开」
+      // （WiFi 抖动、ICE consent 短暂失败）。若在此也拆会话，重连后 DataChannel 已关、
+      // _isDisposed 仍为 true，Web 端所有控制指令（含系统音频开关、画质切换）都会
+      // 被 _handleDataChannelMessage 静默 return —— 表现就是「重连后按钮无响应」。
+      _webrtc.onIceDisconnected((state) {
+        _castLog('ICE连接状态: $state', level: LogLevel.warn);
         _updateSessionStatus('disconnected');
+        if (state == 'disconnected') {
+          _castLog('ICE 瞬时断开（可恢复），保留会话与控制通道', level: LogLevel.warn);
+          return;
+        }
+        _castLog('ICE连接不可恢复，清理投屏状态', level: LogLevel.warn);
         _isDisposed = true;
         unawaited(_cleanupResources());
       });
@@ -472,6 +481,10 @@ class CastService {
         unawaited(_handleToggleSystemAudio(data));
         return;
       }
+      if (type == 'set_quality') {
+        unawaited(_handleSetQuality(data));
+        return;
+      }
 
       onControlCommand?.call(data);
     } catch (e) {
@@ -560,6 +573,60 @@ class CastService {
       _castLog('系统内录已关闭', level: LogLevel.info);
       _reportSystemAudioState(enabled: false);
     }
+  }
+
+  /// 处理 Web 端下发的画质配置（分辨率 / 帧率 / 码率）
+  ///
+  /// 经 RTCRtpSender.setParameters 实时生效，不打断投屏：
+  ///   - 分辨率：用当前视频轨高度 ÷ 目标高度 算出 scaleResolutionDownBy（编码端缩放）
+  ///   - 帧率 / 码率：直接设置 encodings 的 maxFramerate / maxBitrate
+  Future<void> _handleSetQuality(Map<String, dynamic> data) async {
+    final payload = (data['payload'] as Map<String, dynamic>?) ?? data;
+    final profile = payload['profile'] as String?;
+    final targetHeight = payload['height'] as int?;
+    final fps = payload['fps'] as int?;
+    final bitrate = payload['bitrate'] as int?;
+
+    double? scale;
+    if (targetHeight != null && targetHeight > 0) {
+      final current = await _webrtc.getVideoTrackHeight();
+      // 只降不升（scale < 1 反而放大无意义），并夹紧到合理上限
+      scale = (current / targetHeight).clamp(1.0, 4.0);
+    }
+    await _webrtc.setVideoEncoding(
+      scaleResolutionDownBy: scale,
+      maxFramerate: fps?.toDouble(),
+      maxBitrate: bitrate,
+    );
+    _reportQualityState(
+      profile: profile,
+      height: targetHeight,
+      fps: fps,
+      bitrate: bitrate,
+    );
+    _castLog(
+      '画质已切换: profile=$profile, height=$targetHeight, fps=$fps, bitrate=$bitrate',
+      level: LogLevel.info,
+    );
+  }
+
+  /// 向 Web 回传当前生效画质，供其同步选择器显示
+  void _reportQualityState({
+    String? profile,
+    int? height,
+    int? fps,
+    int? bitrate,
+  }) {
+    _sendControlMessage(<String, dynamic>{
+      'type': 'quality_state',
+      'payload': <String, dynamic>{
+        'profile': profile,
+        'height': height,
+        'fps': fps,
+        'bitrate': bitrate,
+        'applied': true,
+      },
+    });
   }
 
   /// 停止系统内录并取消 PCM 转发

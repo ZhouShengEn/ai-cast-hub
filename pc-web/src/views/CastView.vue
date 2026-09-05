@@ -20,9 +20,12 @@
           :remote-status="remoteStatus"
           :system-audio-supported="systemAudioSupported"
           :system-audio-active="systemAudioActive"
+          :current-quality="currentQuality"
+          :quality-profiles="qualityProfiles"
           @control="onControl"
           @refresh-status="refreshRemoteStatus"
-          @toggle-system-audio="toggleSystemAudio"
+          @toggle-system-audio="onToggleSystemAudio"
+          @set-quality="setQuality"
         />
 
         <!-- 停止投屏按钮（仅连接后显示） -->
@@ -79,7 +82,10 @@ const {
   systemAudioSupported,
   systemAudioActive,
   toggleSystemAudio,
-} = useCastReceiver()
+  currentQuality,
+  qualityProfiles,
+  setQuality,
+} = useCastReceiver(undefined, { showToast })
 
 // 当 CastReceiver 组件渲染后，绑定 video 元素
 watch(castReceiverRef, (ref) => {
@@ -99,6 +105,14 @@ onUnmounted(() => {
 
 function onControl(event) {
   sendControl(event)
+}
+
+/** 系统音频开关：控制通道未就绪时给出提示，避免「点了没反应」 */
+async function onToggleSystemAudio(enabled) {
+  const ok = await toggleSystemAudio(enabled)
+  if (!ok) {
+    showToast('控制通道未就绪，请稍候重试', 'warn')
+  }
 }
 
 function stopCasting() {
