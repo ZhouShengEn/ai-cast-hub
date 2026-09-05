@@ -41,9 +41,12 @@ jobs:
         run: flutter pub get
 
       # 编译Debug测试APK
+      # 只编 arm64-v8a：真机主流架构。x86/x86_64 仅模拟器用，且 Flutter 已宣布
+      # 在 3.27 之后的稳定版移除 x86 支持；armeabi-v7a 为老设备兜底，按需再开。
+      # 加 --target-platform 后只产出 app-arm64-v8a-debug.apk 一个文件，构建也更快。
       - name: Build Debug APK
         working-directory: ./flutter-app
-        run: flutter build apk --debug --split-per-abi
+        run: flutter build apk --debug --split-per-abi --target-platform android-arm64
 
       # 上传APK产物
       - name: Upload APK
