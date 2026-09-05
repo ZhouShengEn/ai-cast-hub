@@ -196,6 +196,31 @@ class WebrtcService {
     return channel;
   }
 
+  /// 创建辅助 DataChannel（不接管 _dataChannel、不接管消息监听）
+  ///
+  /// [createDataChannel] 会把通道记为 _dataChannel 并接管其 onMessage，
+  /// 重复调用会顶掉前一个通道的引用。因此音频等旁路通道必须走这里：
+  /// 否则 control 通道会被覆盖，且二进制音频帧会被当成 JSON 文本解析报错。
+  ///
+  /// [maxRetransmitTime] > 0 时该通道为「有限重传」，适合实时音频；
+  /// 留空（默认 -1）则为可靠通道。
+  Future<webrtc.RTCDataChannel> createAuxDataChannel(
+    String label, {
+    bool ordered = true,
+    int maxRetransmitTime = -1,
+  }) async {
+    _ensureConnection();
+    final init = webrtc.RTCDataChannelInit()
+      ..ordered = ordered
+      ..maxRetransmitTime = maxRetransmitTime;
+    final channel = await _peerConnection!.createDataChannel(label, init);
+    _rtcLog(
+      '创建辅助DataChannel: $label '
+      '(ordered=$ordered, maxRetransmitTime=$maxRetransmitTime)',
+    );
+    return channel;
+  }
+
   /// 通过 DataChannel 发送消息
   void sendViaDataChannel(webrtc.RTCDataChannelMessage message) {
     _dataChannel?.send(message);

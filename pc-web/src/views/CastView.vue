@@ -17,7 +17,12 @@
           ref="castReceiverRef"
           :connection-state="castStore.connectionState"
           :stream="castStore.remoteStream"
+          :remote-status="remoteStatus"
+          :system-audio-supported="systemAudioSupported"
+          :system-audio-active="systemAudioActive"
           @control="onControl"
+          @refresh-status="refreshRemoteStatus"
+          @toggle-system-audio="toggleSystemAudio"
         />
 
         <!-- 停止投屏按钮（仅连接后显示） -->
@@ -64,7 +69,17 @@ const showToast = inject('showToast', () => {})
 const castReceiverRef = ref(null)
 
 // 将 CastReceiver 的 videoEl 传入 useCastReceiver，使视频流能正确绑定
-const { startListening, stopReceiving, setVideoRef, sendControl } = useCastReceiver()
+const {
+  startListening,
+  stopReceiving,
+  setVideoRef,
+  sendControl,
+  remoteStatus,
+  refreshRemoteStatus,
+  systemAudioSupported,
+  systemAudioActive,
+  toggleSystemAudio,
+} = useCastReceiver()
 
 // 当 CastReceiver 组件渲染后，绑定 video 元素
 watch(castReceiverRef, (ref) => {

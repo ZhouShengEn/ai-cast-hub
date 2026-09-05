@@ -166,35 +166,68 @@ class RemoteControlService : AccessibilityService() {
     }
 
     fun dispatchTap(xPercent: Double, yPercent: Double): Boolean {
-        try {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+
+        return try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent).toInt()
-            val y = (screenSize.y * yPercent).toInt()
+            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toFloat()
+            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toFloat()
 
             Log.d(TAG, "dispatchTap: ($x, $y)")
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                val path = Path().apply {
-                    moveTo(x.toFloat(), y.toFloat())
-                }
-                val gestureBuilder = GestureDescription.Builder()
-                gestureBuilder.addStroke(
-                    GestureDescription.StrokeDescription(path, 0, 50)
-                )
-                dispatchGesture(gestureBuilder.build(), null, null)
+            val path = Path().apply {
+                moveTo(x, y)
             }
-            return true
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
+                .build()
+            val accepted = dispatchGesture(gesture, null, null)
+            Log.d(TAG, "dispatchTap accepted=$accepted")
+            accepted
         } catch (e: Exception) {
-            Log.e(TAG, "dispatchTap failed: ${e.message}")
-            return false
+            Log.e(TAG, "dispatchTap failed", e)
+            false
+        }
+    }
+
+    /**
+     * 长按：单点停留指定时长后抬起。
+     *
+     * AccessibilityService.dispatchGesture 的单点 stroke 停留超过系统长按阈值
+     * （ViewConfiguration.getLongPressTimeout()，通常 500ms）即产生长按语义。
+     * 因此这里用单点 + 可调时长实现，默认 600ms。
+     */
+    fun dispatchLongPress(xPercent: Double, yPercent: Double, durationMs: Long = 600L): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+
+        return try {
+            val screenSize = getScreenSize()
+            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toFloat()
+            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toFloat()
+            val duration = durationMs.coerceIn(500L, 3000L)
+
+            Log.d(TAG, "dispatchLongPress: ($x, $y) duration=${duration}ms")
+
+            val path = Path().apply {
+                moveTo(x, y)
+            }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+                .build()
+            val accepted = dispatchGesture(gesture, null, null)
+            Log.d(TAG, "dispatchLongPress accepted=$accepted")
+            accepted
+        } catch (e: Exception) {
+            Log.e(TAG, "dispatchLongPress failed", e)
+            false
         }
     }
 
     fun dispatchTouchStart(xPercent: Double, yPercent: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent).toInt()
-            val y = (screenSize.y * yPercent).toInt()
+            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
+            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
             lastTouchPoint = Point(x, y)
 
             Log.d(TAG, "dispatchTouchStart: ($x, $y)")
@@ -208,8 +241,8 @@ class RemoteControlService : AccessibilityService() {
     fun dispatchTouchMove(xPercent: Double, yPercent: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent).toInt()
-            val y = (screenSize.y * yPercent).toInt()
+            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
+            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
 
             val startPoint = lastTouchPoint ?: Point(x, y)
 
@@ -238,8 +271,8 @@ class RemoteControlService : AccessibilityService() {
     fun dispatchTouchEnd(xPercent: Double, yPercent: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent).toInt()
-            val y = (screenSize.y * yPercent).toInt()
+            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
+            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
 
             Log.d(TAG, "dispatchTouchEnd: ($x, $y)")
             lastTouchPoint = null
@@ -253,8 +286,8 @@ class RemoteControlService : AccessibilityService() {
     fun dispatchScroll(xPercent: Double, yPercent: Double, deltaX: Double, deltaY: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent).toInt()
-            val y = (screenSize.y * yPercent).toInt()
+            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
+            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
 
             val scrollAmountX = (-deltaX * 2).toInt()
             val scrollAmountY = (-deltaY * 2).toInt()
@@ -265,23 +298,21 @@ class RemoteControlService : AccessibilityService() {
             val node = findScrollableNode(rootNode, x, y)
 
             if (node != null) {
-                node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                node.recycle()
-            } else {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    val startY = y.toFloat()
-                    val endY = (y + scrollAmountY).toFloat().coerceIn(0f, screenSize.y.toFloat())
-
-                    val path = Path().apply {
-                        moveTo(x.toFloat(), startY)
-                        lineTo(x.toFloat(), endY)
-                    }
-                    val gestureBuilder = GestureDescription.Builder()
-                    gestureBuilder.addStroke(
-                        GestureDescription.StrokeDescription(path, 0, 200)
-                    )
-                    dispatchGesture(gestureBuilder.build(), null, null)
+                // 以位移绝对值较大的轴为准判断方向。此前恒定 ACTION_SCROLL_FORWARD，
+                // 导致向上/向左滚动无效。
+                val action = if (isForwardScroll(deltaX, deltaY)) {
+                    AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                } else {
+                    AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                 }
+                val performed = node.performAction(action)
+                if (!performed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    Log.d(TAG, "dispatchScroll: 节点不支持该方向，退化为手势滑动")
+                    performScrollGesture(x, y, scrollAmountX, scrollAmountY, screenSize)
+                }
+                node.recycle()
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                performScrollGesture(x, y, scrollAmountX, scrollAmountY, screenSize)
             }
 
             return true
@@ -289,6 +320,45 @@ class RemoteControlService : AccessibilityService() {
             Log.e(TAG, "dispatchScroll failed: ${e.message}")
             return false
         }
+    }
+
+    /**
+     * 判断滚动方向：以位移绝对值较大的轴为准。
+     * deltaY > 0（滚轮向下）→ 向前滚；deltaY < 0（滚轮向上）→ 向后滚。
+     */
+    private fun isForwardScroll(deltaX: Double, deltaY: Double): Boolean {
+        return if (Math.abs(deltaX) > Math.abs(deltaY)) deltaX > 0 else deltaY > 0
+    }
+
+    /**
+     * 退化为手势滑动：找不到可滚动节点，或节点不支持对应滚动方向时使用。
+     * 向下滚（deltaY>0）等价于手指由下往上划；scrollAmountY 已取负，
+     * 因此终点直接取 y + scrollAmountY。
+     */
+    private fun performScrollGesture(
+        x: Int,
+        y: Int,
+        scrollAmountX: Int,
+        scrollAmountY: Int,
+        screenSize: Point,
+    ) {
+        val horizontal = Math.abs(scrollAmountX) > Math.abs(scrollAmountY)
+        val path = Path().apply {
+            if (horizontal) {
+                val endX = (x + scrollAmountX).toFloat().coerceIn(0f, screenSize.x.toFloat())
+                moveTo(x.toFloat(), y.toFloat())
+                lineTo(endX, y.toFloat())
+            } else {
+                val endY = (y + scrollAmountY).toFloat().coerceIn(0f, screenSize.y.toFloat())
+                moveTo(x.toFloat(), y.toFloat())
+                lineTo(x.toFloat(), endY)
+            }
+        }
+        val gestureBuilder = GestureDescription.Builder()
+        gestureBuilder.addStroke(
+            GestureDescription.StrokeDescription(path, 0, 200)
+        )
+        dispatchGesture(gestureBuilder.build(), null, null)
     }
 
     fun performGlobalAction(action: String): Boolean {
@@ -344,5 +414,50 @@ class RemoteControlService : AccessibilityService() {
 
     private fun clearRuntimeState() {
         lastTouchPoint = null
+    }
+
+    /**
+     * 投屏结束时清理手势运行态（例如未抬起的触点），
+     * 避免残留的 lastTouchPoint 影响下一次投屏的触控判定。
+     */
+    fun clearGestureState() {
+        clearRuntimeState()
+        Log.d(TAG, "clearGestureState: 手势运行态已清理")
+    }
+
+    fun dispatchSwipe(
+        startXPercent: Double,
+        startYPercent: Double,
+        endXPercent: Double,
+        endYPercent: Double,
+        durationMs: Int
+    ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+
+        return try {
+            val screenSize = getScreenSize()
+            val startX = (screenSize.x * startXPercent.coerceIn(0.0, 1.0)).toFloat()
+            val startY = (screenSize.y * startYPercent.coerceIn(0.0, 1.0)).toFloat()
+            val endX = (screenSize.x * endXPercent.coerceIn(0.0, 1.0)).toFloat()
+            val endY = (screenSize.y * endYPercent.coerceIn(0.0, 1.0)).toFloat()
+            val duration = durationMs.coerceIn(50, 2000).toLong()
+            val path = Path().apply {
+                moveTo(startX, startY)
+                lineTo(endX, endY)
+            }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+                .build()
+            val accepted = dispatchGesture(gesture, null, null)
+            Log.d(
+                TAG,
+                "dispatchSwipe: ($startX, $startY) -> ($endX, $endY), " +
+                        "duration=${duration}ms accepted=$accepted"
+            )
+            accepted
+        } catch (e: Exception) {
+            Log.e(TAG, "dispatchSwipe failed", e)
+            false
+        }
     }
 }

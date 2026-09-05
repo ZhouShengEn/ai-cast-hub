@@ -8,6 +8,8 @@ import 'websocket_service.dart';
 import 'webrtc_service.dart';
 import 'screen_capture_service.dart';
 import 'camera_capture_service.dart';
+import 'remote_control_service.dart';
+import 'system_audio_service.dart';
 import 'api_client.dart';
 import 'debug_service.dart';
 import '../models/cast_session.dart';
@@ -41,8 +43,21 @@ class CastService {
   final WebrtcService _webrtc = WebrtcService();
   final ScreenCaptureService _screenCapture = ScreenCaptureService();
   final CameraCaptureService _cameraCapture = CameraCaptureService();
+  final SystemAudioService _systemAudio = SystemAudioService();
 
   StreamSubscription? _wsSubscription;
+
+  /// 系统内录 PCM 转发订阅
+  StreamSubscription<Uint8List>? _pcmSubscription;
+
+  /// 音频旁路 DataChannel（PCM 二进制帧经此下发到 Web）
+  webrtc.RTCDataChannel? _audioChannel;
+
+  /// 系统内录是否已开启（由 Web 端开关控制）
+  bool _systemAudioEnabled = false;
+
+  /// PCM 转发失败是否已打过日志（避免高频刷屏）
+  bool _pcmErrorLogged = false;
   CastSession? _currentSession;
   bool _isDisposed = false;
   String _captureMode = 'screen'; // 'screen' | 'camera'
@@ -254,6 +269,21 @@ class CastService {
       await _webrtc.addStream(stream);
       _castLog('步骤8: 轨道已添加 ✓');
 
+      // 手机端是 offer 发起方，控制通道也必须在 createOffer() 前由手机端创建，
+      // 否则 SDP 不包含 datachannel 的 m=application，Web 应答端无法补加。
+      final controlChannel = await _webrtc.createDataChannel('control');
+      _castLog('步骤8: 远程控制DataChannel已创建, state=${controlChannel.state}');
+
+      // 系统内录音频通道：同样必须在 createOffer() 前创建，否则 SDP 中不含该通道。
+      // 音频走「不保序 + 100ms 有限重传」：实时音频宁可丢包，也不要等待重传，
+      // 否则一个丢包会把后续帧全堵住，听感是卡顿而不是轻微失真。
+      _audioChannel = await _webrtc.createAuxDataChannel(
+        'audio',
+        ordered: false,
+        maxRetransmitTime: 100,
+      );
+      _castLog('步骤8: 音频DataChannel已创建, state=${_audioChannel?.state}');
+
       // 9. 创建 offer 并发送
       _castLog('步骤9: 创建并发送offer...', level: LogLevel.info);
       final offer = await _webrtc.createOffer();
@@ -431,11 +461,144 @@ class CastService {
     try {
       final data = jsonDecode(message.text) as Map<String, dynamic>;
       final type = data['type'] as String?;
-      _castLog('收到控制指令: $type', level: LogLevel.debug);
+      _castLog('收到控制指令: $type', level: LogLevel.info);
+
+      // 以下指令由本服务直接应答，不下发给手势层
+      if (type == 'query_status') {
+        unawaited(_reportRemoteControlStatus());
+        return;
+      }
+      if (type == 'toggle_system_audio') {
+        unawaited(_handleToggleSystemAudio(data));
+        return;
+      }
+
       onControlCommand?.call(data);
     } catch (e) {
       _castLog('DataChannel消息解析失败: $e', level: LogLevel.warn);
     }
+  }
+
+  /// 向 Web 端上报远程控制状态（无障碍服务是否可用等），供其做 UI 提示
+  Future<void> _reportRemoteControlStatus() async {
+    try {
+      final status = await RemoteControlService().getStatus();
+      final audioSupported = await _systemAudio.isSupported();
+      _castLog(
+        '上报状态: $status, 系统内录支持=$audioSupported',
+        level: LogLevel.info,
+      );
+      _sendControlMessage(<String, dynamic>{
+        'type': 'status',
+        'payload': <String, dynamic>{
+          ...status,
+          'systemAudioSupported': audioSupported,
+          'systemAudioActive': _systemAudioEnabled,
+          // Web 端播放 PCM 需要知道格式
+          'audioFormat': <String, dynamic>{
+            'sampleRate': SystemAudioService.sampleRate,
+            'channels': SystemAudioService.channels,
+            'bitsPerSample': SystemAudioService.bitsPerSample,
+            'frameMillis': SystemAudioService.frameMillis,
+          },
+        },
+      });
+    } catch (e) {
+      _castLog('上报远程控制状态失败: $e', level: LogLevel.warn);
+    }
+  }
+
+  /// 通过 control 通道向 Web 端发送消息
+  void _sendControlMessage(Map<String, dynamic> message) {
+    if (_isDisposed) return;
+    try {
+      _webrtc.sendViaDataChannel(
+        webrtc.RTCDataChannelMessage(
+          jsonEncode(<String, dynamic>{
+            'id': 'ack_${DateTime.now().millisecondsSinceEpoch}',
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            ...message,
+          }),
+        ),
+      );
+    } catch (e) {
+      _castLog('发送控制通道消息失败: $e', level: LogLevel.warn);
+    }
+  }
+
+  // ---- 系统内录（AudioPlaybackCapture → DataChannel → Web）----
+
+  /// 处理 Web 端的系统音频开关
+  Future<void> _handleToggleSystemAudio(Map<String, dynamic> data) async {
+    final enabled = data['enabled'] == true;
+
+    // 状态一致时仍回传一次，避免前端开关卡在中间态
+    if (enabled == _systemAudioEnabled) {
+      _reportSystemAudioState(enabled: _systemAudioEnabled);
+      return;
+    }
+
+    if (enabled) {
+      if (_audioChannel == null) {
+        _castLog('音频通道未创建，无法开启系统内录', level: LogLevel.warn);
+        _reportSystemAudioState(enabled: false, error: '音频通道未就绪');
+        return;
+      }
+      final ok = await _systemAudio.start();
+      if (!ok) {
+        _castLog('系统内录启动失败', level: LogLevel.warn);
+        _reportSystemAudioState(enabled: false, error: '系统内录启动失败');
+        return;
+      }
+      _systemAudioEnabled = true;
+      _pcmErrorLogged = false;
+      _pcmSubscription = _systemAudio.pcmStream.listen(_forwardPcm);
+      _castLog('系统内录已开启，开始转发 PCM', level: LogLevel.info);
+      _reportSystemAudioState(enabled: true);
+    } else {
+      await _stopSystemAudio();
+      _castLog('系统内录已关闭', level: LogLevel.info);
+      _reportSystemAudioState(enabled: false);
+    }
+  }
+
+  /// 停止系统内录并取消 PCM 转发
+  Future<void> _stopSystemAudio() async {
+    _systemAudioEnabled = false;
+    try {
+      await _pcmSubscription?.cancel();
+    } catch (e) {
+      _castLog('取消 PCM 转发失败: $e', level: LogLevel.warn);
+    } finally {
+      _pcmSubscription = null;
+    }
+    await _systemAudio.stop();
+  }
+
+  /// 将一帧 PCM 通过音频旁路通道下发（高频调用，避免打日志刷屏）
+  void _forwardPcm(Uint8List pcm) {
+    final channel = _audioChannel;
+    if (_isDisposed || channel == null) return;
+    if (channel.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) return;
+    try {
+      channel.send(webrtc.RTCDataChannelMessage.fromBinary(pcm));
+    } catch (e) {
+      if (!_pcmErrorLogged) {
+        _pcmErrorLogged = true;
+        _castLog('转发 PCM 失败（后续同类错误不再打印）: $e', level: LogLevel.warn);
+      }
+    }
+  }
+
+  /// 向 Web 端回传系统内录状态，供其同步开关显示
+  void _reportSystemAudioState({required bool enabled, String? error}) {
+    _sendControlMessage(<String, dynamic>{
+      'type': 'system_audio_state',
+      'payload': <String, dynamic>{
+        'enabled': enabled,
+        if (error != null) 'error': error,
+      },
+    });
   }
 
   void _updateSessionStatus(String status) {
@@ -461,6 +624,29 @@ class CastService {
   }
 
   Future<void> _performCleanup() async {
+    // 释放原生手势运行态（未抬起的触点等），避免残留状态影响下次投屏
+    try {
+      await RemoteControlService().clearGestureState();
+    } catch (e) {
+      _castLog('清理手势状态失败: $e', level: LogLevel.warn);
+    }
+
+    // 释放系统内录：必须显式停止，否则 AudioRecord 会在后台持续采集造成泄漏
+    try {
+      await _stopSystemAudio();
+    } catch (e) {
+      _castLog('停止系统内录失败: $e', level: LogLevel.warn);
+    }
+
+    // 关闭音频旁路通道
+    try {
+      await _audioChannel?.close();
+    } catch (e) {
+      _castLog('关闭音频通道失败: $e', level: LogLevel.warn);
+    } finally {
+      _audioChannel = null;
+    }
+
     try {
       await _wsSubscription?.cancel();
     } catch (e) {

@@ -23,12 +23,11 @@
     <!-- 远程控制交互层（连接成功后显示） -->
     <div
       v-if="connectionState === 'connected'"
-      class="absolute inset-0 cursor-pointer z-10"
-      @mousedown="onMouseDown"
-      @mousemove="onMouseMove"
-      @mouseup="onMouseUp"
-      @mouseleave="onMouseUp"
-      @click="onClick"
+      class="absolute inset-0 cursor-pointer z-10 select-none touch-none"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel"
       @wheel.prevent="onWheel"
     ></div>
 
@@ -47,23 +46,44 @@
       ⛶
     </button>
 
-    <!-- 取消静音按钮（浏览器自动播放策略需要用户交互才能播放声音） -->
-    <button
-      v-if="connectionState === 'connected' && isMuted && hasAudioTrack"
-      class="absolute bottom-3 left-3 px-3 h-9 rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-sm flex items-center gap-1 transition-colors z-20 animate-pulse"
-      @click.stop="unmute"
-      title="开启声音"
+    <!-- 底部左侧：手机系统声音开关 + 视频流音轨静音 -->
+    <div
+      v-if="connectionState === 'connected'"
+      class="absolute bottom-3 left-3 z-20 flex items-center gap-2"
     >
-      🔇 点击开启声音
-    </button>
-    <button
-      v-else-if="connectionState === 'connected' && !isMuted && hasAudioTrack"
-      class="absolute bottom-3 left-3 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors z-20"
-      @click.stop="mute"
-      title="静音"
-    >
-      🔊
-    </button>
+      <!--
+        手机系统内录音频（AudioPlaybackCapture）。
+        点击必须在用户手势中触发，否则浏览器的 AudioContext 无法启动、会没声音。
+      -->
+      <button
+        v-if="systemAudioSupported"
+        class="px-3 h-9 rounded-lg text-white text-sm flex items-center gap-1 transition-colors"
+        :class="systemAudioActive
+          ? 'bg-green-500/80 hover:bg-green-500'
+          : 'bg-white/20 hover:bg-white/30'"
+        :title="systemAudioActive ? '关闭手机系统声音' : '开启手机系统声音'"
+        @click.stop="emit('toggle-system-audio', !systemAudioActive)"
+      >
+        {{ systemAudioActive ? '🔊 系统声音' : '🔈 开系统声音' }}
+      </button>
+      <span
+        v-else
+        class="px-3 h-9 rounded-lg bg-white/10 text-white/40 text-sm flex items-center cursor-not-allowed"
+        title="手机系统版本低于 Android 10，不支持系统内录"
+      >
+        🔈 不支持内录
+      </span>
+
+      <!-- 视频流自带音轨的静音（摄像头模式的麦克风声） -->
+      <button
+        v-if="hasAudioTrack"
+        class="w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors"
+        @click.stop="toggleMute"
+        :title="isMuted ? '取消静音' : '静音'"
+      >
+        {{ isMuted ? '🔇' : '🔊' }}
+      </button>
+    </div>
 
     <!-- 操作提示 -->
     <div
@@ -71,7 +91,22 @@
       class="absolute top-3 right-3 text-xs text-white/50 z-20 text-right"
     >
       🖱️ 远程控制已开启<br/>
+      🖱️ 长按 0.5 秒 = 手机长按<br/>
       ⌨️ Home/Bksp/Tab 快捷操作
+    </div>
+
+    <!-- 无障碍服务未开启时提示：否则点击/滑动不会有任何效果 -->
+    <div
+      v-if="connectionState === 'connected' && accessibilityEnabled === false"
+      class="absolute top-12 left-1/2 -translate-x-1/2 z-30 max-w-[92%] px-3 py-2 rounded-lg bg-amber-500/90 text-white text-xs shadow-lg flex items-center gap-2"
+    >
+      <span>⚠️ 手机端未开启无障碍服务，远程触控不可用</span>
+      <button
+        class="shrink-0 px-2 py-0.5 rounded bg-white/20 hover:bg-white/30 transition-colors"
+        @click.stop="emit('refresh-status')"
+      >
+        重新检测
+      </button>
     </div>
   </div>
 </template>
@@ -86,9 +121,15 @@ const props = defineProps({
   connectionState: { type: String, default: 'disconnected' },
   /** 远程视频流 */
   stream: { type: Object, default: null },
+  /** 手机端上报的远程控制状态：{ accessibilityEnabled, platform } */
+  remoteStatus: { type: Object, default: null },
+  /** 手机端是否支持系统内录（Android 10+） */
+  systemAudioSupported: { type: Boolean, default: false },
+  /** 系统内录是否已开启 */
+  systemAudioActive: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['control'])
+const emit = defineEmits(['control', 'refresh-status', 'toggle-system-audio'])
 
 /** 暴露 video ref 供 composable 绑定 */
 const videoEl = ref(null)
@@ -99,16 +140,37 @@ defineExpose({ videoEl })
 const isMuted = ref(true)
 
 /** 远程控制状态 */
-const isDragging = ref(false)
-const dragStart = ref({ x: 0, y: 0 })
+const activePointerId = ref(null)
+const gestureStart = ref(null)
+const gestureLast = ref(null)
+const gestureStartedAt = ref(0)
+const gestureDistance = ref(0)
+const TAP_THRESHOLD_PX = 8
+
+/** 长按判定阈值：按住且位移未超 tap 阈值，持续超过该时长即触发 long_press */
+const LONG_PRESS_MS = 500
+let longPressTimer = null
+let longPressFired = false
+
+/**
+ * 手机端无障碍服务是否可用。
+ * null 表示手机端尚未上报状态（例如旧版本 App），此时不显示提示，避免误报。
+ */
+const accessibilityEnabled = computed(() => {
+  if (!props.remoteStatus) return null
+  return props.remoteStatus.accessibilityEnabled === true
+})
 
 /** 获取视频显示区域的实际尺寸（去除黑边） */
 function _getVideoRect() {
   if (!videoEl.value || !containerRef.value) return null
   const containerRect = containerRef.value.getBoundingClientRect()
   const video = videoEl.value
-  const videoWidth = video.videoWidth || 1920
-  const videoHeight = video.videoHeight || 1080
+  const videoWidth = video.videoWidth
+  const videoHeight = video.videoHeight
+  if (!videoWidth || !videoHeight || !containerRect.width || !containerRect.height) {
+    return null
+  }
   const aspectRatio = videoWidth / videoHeight
   const containerAspectRatio = containerRect.width / containerRect.height
 
@@ -150,66 +212,110 @@ function _mapToPhonePercent(clientX, clientY) {
   }
 
   return {
-    x: Math.round((x / videoRect.width) * 100) / 100,
-    y: Math.round((y / videoRect.height) * 100) / 100,
+    x: Number((x / videoRect.width).toFixed(6)),
+    y: Number((y / videoRect.height).toFixed(6)),
   }
 }
 
-/** 鼠标按下 */
-function onMouseDown(e) {
-  if (e.button !== 0) return
-  isDragging.value = true
+/** Pointer Events 同时覆盖鼠标、触控笔和浏览器触摸事件。 */
+function onPointerDown(e) {
+  if (activePointerId.value !== null || (e.pointerType === 'mouse' && e.button !== 0)) return
+  const percent = _mapToPhonePercent(e.clientX, e.clientY)
+  if (!percent) return
+
+  activePointerId.value = e.pointerId
+  gestureStart.value = { ...percent, clientX: e.clientX, clientY: e.clientY }
+  gestureLast.value = percent
+  gestureStartedAt.value = performance.now()
+  gestureDistance.value = 0
+  longPressFired = false
+
+  // 长按检测：按住不动达到阈值即触发，触发后 onPointerUp 不再补发 tap
+  longPressTimer = setTimeout(() => {
+    longPressTimer = null
+    if (gestureDistance.value <= TAP_THRESHOLD_PX && gestureLast.value) {
+      longPressFired = true
+      const held = Math.round(performance.now() - gestureStartedAt.value)
+      emit('control', {
+        type: 'long_press',
+        x: gestureLast.value.x,
+        y: gestureLast.value.y,
+        duration: Math.max(500, Math.min(3000, held)),
+      })
+    }
+  }, LONG_PRESS_MS)
+
+  e.currentTarget.setPointerCapture?.(e.pointerId)
+  e.preventDefault()
+}
+
+function onPointerMove(e) {
+  if (activePointerId.value !== e.pointerId || !gestureStart.value) return
   const percent = _mapToPhonePercent(e.clientX, e.clientY)
   if (percent) {
-    dragStart.value = percent
-    emit('control', {
-      type: 'touch_start',
-      x: percent.x,
-      y: percent.y,
-    })
+    gestureLast.value = percent
+    gestureDistance.value = Math.max(
+      gestureDistance.value,
+      Math.hypot(e.clientX - gestureStart.value.clientX, e.clientY - gestureStart.value.clientY),
+    )
+    // 位移超过阈值即认定为滑动，取消长按计时
+    if (gestureDistance.value > TAP_THRESHOLD_PX) {
+      _clearLongPressTimer()
+    }
+  }
+  e.preventDefault()
+}
+
+function onPointerUp(e) {
+  if (activePointerId.value !== e.pointerId || !gestureStart.value) return
+  _clearLongPressTimer()
+  const end = _mapToPhonePercent(e.clientX, e.clientY) || gestureLast.value
+  const start = gestureStart.value
+  const duration = Math.max(50, Math.min(2000, Math.round(performance.now() - gestureStartedAt.value)))
+
+  // 长按已触发时不再补发 tap，避免点击与长按重复执行
+  if (end && !longPressFired) {
+    if (gestureDistance.value <= TAP_THRESHOLD_PX) {
+      emit('control', { type: 'tap', x: end.x, y: end.y })
+    } else {
+      emit('control', {
+        type: 'swipe',
+        startX: start.x,
+        startY: start.y,
+        endX: end.x,
+        endY: end.y,
+        duration,
+      })
+    }
+  }
+
+  e.currentTarget.releasePointerCapture?.(e.pointerId)
+  _resetPointerGesture()
+  e.preventDefault()
+}
+
+function onPointerCancel(e) {
+  if (activePointerId.value !== e.pointerId) return
+  e.currentTarget.releasePointerCapture?.(e.pointerId)
+  _resetPointerGesture()
+}
+
+/** 取消长按计时器 */
+function _clearLongPressTimer() {
+  if (longPressTimer !== null) {
+    clearTimeout(longPressTimer)
+    longPressTimer = null
   }
 }
 
-/** 鼠标移动 */
-function onMouseMove(e) {
-  if (!isDragging.value) return
-  const percent = _mapToPhonePercent(e.clientX, e.clientY)
-  if (percent) {
-    emit('control', {
-      type: 'touch_move',
-      x: percent.x,
-      y: percent.y,
-      startX: dragStart.value.x,
-      startY: dragStart.value.y,
-    })
-  }
-}
-
-/** 鼠标松开 */
-function onMouseUp(e) {
-  if (!isDragging.value) return
-  isDragging.value = false
-  const percent = _mapToPhonePercent(e.clientX, e.clientY)
-  if (percent) {
-    emit('control', {
-      type: 'touch_end',
-      x: percent.x,
-      y: percent.y,
-    })
-  }
-}
-
-/** 鼠标点击 */
-function onClick(e) {
-  if (isDragging.value) return
-  const percent = _mapToPhonePercent(e.clientX, e.clientY)
-  if (percent) {
-    emit('control', {
-      type: 'tap',
-      x: percent.x,
-      y: percent.y,
-    })
-  }
+function _resetPointerGesture() {
+  _clearLongPressTimer()
+  longPressFired = false
+  activePointerId.value = null
+  gestureStart.value = null
+  gestureLast.value = null
+  gestureStartedAt.value = 0
+  gestureDistance.value = 0
 }
 
 /** 鼠标滚轮 */
@@ -292,20 +398,14 @@ watch(
   },
 )
 
-/** 取消静音 */
-function unmute() {
-  isMuted.value = false
+/** 切换视频流自带音轨的静音（浏览器自动播放策略要求由用户手势触发） */
+function toggleMute() {
+  isMuted.value = !isMuted.value
   if (videoEl.value) {
-    videoEl.value.muted = false
-    videoEl.value.play().catch(() => {})
-  }
-}
-
-/** 静音 */
-function mute() {
-  isMuted.value = true
-  if (videoEl.value) {
-    videoEl.value.muted = true
+    videoEl.value.muted = isMuted.value
+    if (!isMuted.value) {
+      videoEl.value.play().catch(() => {})
+    }
   }
 }
 
@@ -340,6 +440,7 @@ function _handleKeyDown(e) {
 }
 
 onUnmounted(() => {
+  _clearLongPressTimer()
   if (videoEl.value) {
     videoEl.value.srcObject = null
   }

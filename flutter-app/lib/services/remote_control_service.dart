@@ -34,6 +34,10 @@ class RemoteControlService {
       switch (type) {
         case 'tap':
           return _handleTap(command);
+        case 'long_press':
+          return _handleLongPress(command);
+        case 'swipe':
+          return _handleSwipe(command);
         case 'touch_start':
           return _handleTouchStart(command);
         case 'touch_move':
@@ -59,8 +63,8 @@ class RemoteControlService {
   }
 
   Future<bool> _handleTap(Map<String, dynamic> command) async {
-    final x = command['x'] as double?;
-    final y = command['y'] as double?;
+    final x = (command['x'] as num?)?.toDouble();
+    final y = (command['y'] as num?)?.toDouble();
     if (x == null || y == null) {
       _rcLog('缺少坐标参数', level: LogLevel.warn);
       return false;
@@ -70,9 +74,55 @@ class RemoteControlService {
     return _dispatchTap(x, y);
   }
 
+  /// 长按：Web 端在 pointerdown 后启动计时器，位移未超阈值且达到时长即触发
+  Future<bool> _handleLongPress(Map<String, dynamic> command) async {
+    final x = (command['x'] as num?)?.toDouble();
+    final y = (command['y'] as num?)?.toDouble();
+    final duration = (command['duration'] as num?)?.toInt() ?? 600;
+    if (x == null || y == null) {
+      _rcLog('长按指令缺少坐标参数', level: LogLevel.warn);
+      return false;
+    }
+
+    _rcLog(
+      '执行长按: (${(x * 100).round()}%, ${(y * 100).round()}%), ${duration}ms',
+    );
+    return _dispatchLongPress(x, y, duration);
+  }
+
+  Future<bool> _handleSwipe(Map<String, dynamic> command) async {
+    final startX = (command['startX'] as num?)?.toDouble();
+    final startY = (command['startY'] as num?)?.toDouble();
+    final endX = (command['endX'] as num?)?.toDouble();
+    final endY = (command['endY'] as num?)?.toDouble();
+    final duration = (command['duration'] as num?)?.toInt() ?? 300;
+    if (startX == null || startY == null || endX == null || endY == null) {
+      _rcLog('滑动指令缺少坐标参数', level: LogLevel.warn);
+      return false;
+    }
+
+    _rcLog(
+      '执行滑动: (${(startX * 100).round()}%, ${(startY * 100).round()}%) -> '
+      '(${(endX * 100).round()}%, ${(endY * 100).round()}%), ${duration}ms',
+    );
+    try {
+      final result = await _channel.invokeMethod<bool>('dispatchSwipe', {
+        'startX': startX,
+        'startY': startY,
+        'endX': endX,
+        'endY': endY,
+        'duration': duration.clamp(50, 2000),
+      });
+      return result ?? false;
+    } on PlatformException catch (e) {
+      _rcLog('dispatchSwipe失败: ${e.message}', level: LogLevel.error);
+      return false;
+    }
+  }
+
   Future<bool> _handleTouchStart(Map<String, dynamic> command) async {
-    final x = command['x'] as double?;
-    final y = command['y'] as double?;
+    final x = (command['x'] as num?)?.toDouble();
+    final y = (command['y'] as num?)?.toDouble();
     if (x == null || y == null) return false;
 
     _rcLog('触摸开始: ($x, $y)');
@@ -80,8 +130,8 @@ class RemoteControlService {
   }
 
   Future<bool> _handleTouchMove(Map<String, dynamic> command) async {
-    final x = command['x'] as double?;
-    final y = command['y'] as double?;
+    final x = (command['x'] as num?)?.toDouble();
+    final y = (command['y'] as num?)?.toDouble();
     if (x == null || y == null) return false;
 
     _rcLog('触摸移动: ($x, $y)');
@@ -89,8 +139,8 @@ class RemoteControlService {
   }
 
   Future<bool> _handleTouchEnd(Map<String, dynamic> command) async {
-    final x = command['x'] as double?;
-    final y = command['y'] as double?;
+    final x = (command['x'] as num?)?.toDouble();
+    final y = (command['y'] as num?)?.toDouble();
     if (x == null || y == null) return false;
 
     _rcLog('触摸结束: ($x, $y)');
@@ -98,10 +148,10 @@ class RemoteControlService {
   }
 
   Future<bool> _handleScroll(Map<String, dynamic> command) async {
-    final x = command['x'] as double?;
-    final y = command['y'] as double?;
-    final deltaX = command['deltaX'] as double? ?? 0;
-    final deltaY = command['deltaY'] as double? ?? 0;
+    final x = (command['x'] as num?)?.toDouble();
+    final y = (command['y'] as num?)?.toDouble();
+    final deltaX = (command['deltaX'] as num?)?.toDouble() ?? 0;
+    final deltaY = (command['deltaY'] as num?)?.toDouble() ?? 0;
 
     if (x == null || y == null) return false;
 
@@ -133,6 +183,27 @@ class RemoteControlService {
       return result ?? false;
     } on PlatformException catch (e) {
       _rcLog('dispatchTap失败: ${e.message}', level: LogLevel.error);
+      return false;
+    }
+  }
+
+  Future<bool> _dispatchLongPress(
+    double xPercent,
+    double yPercent,
+    int durationMs,
+  ) async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'dispatchLongPress',
+        {
+          'x': xPercent,
+          'y': yPercent,
+          'duration': durationMs.clamp(500, 3000).toInt(),
+        },
+      );
+      return result ?? false;
+    } on PlatformException catch (e) {
+      _rcLog('dispatchLongPress失败: ${e.message}', level: LogLevel.error);
       return false;
     }
   }
@@ -217,6 +288,26 @@ class RemoteControlService {
     } on MissingPluginException catch (e) {
       _rcLog('原生通道不可用: ${e.message}', level: LogLevel.error);
       return false;
+    }
+  }
+
+  /// 采集一份状态快照，供上层通过 DataChannel 上报给 Web 端做 UI 提示
+  Future<Map<String, dynamic>> getStatus() async {
+    final enabled = await checkServiceEnabled();
+    return <String, dynamic>{
+      'accessibilityEnabled': enabled,
+      'platform': defaultTargetPlatform.name,
+    };
+  }
+
+  /// 投屏结束时释放原生手势运行态（未抬起的触点等）
+  Future<void> clearGestureState() async {
+    try {
+      await _channel.invokeMethod<void>('clearGestureState');
+    } on PlatformException catch (e) {
+      _rcLog('清理手势状态失败: ${e.message}', level: LogLevel.warn);
+    } on MissingPluginException catch (e) {
+      _rcLog('原生通道不可用: ${e.message}', level: LogLevel.warn);
     }
   }
 

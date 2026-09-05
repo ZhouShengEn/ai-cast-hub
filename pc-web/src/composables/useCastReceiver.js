@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { useWebSocket } from './useWebSocket'
 import { useWebRTC } from './useWebRTC'
 import { useCastStore } from '../stores/cast'
+import { usePcmPlayer } from './usePcmPlayer'
 
 /**
  * 投屏接收 Composable
@@ -29,13 +30,35 @@ export function useCastReceiver(externalVideoRef) {
     offIceCandidate,
     onTrack,
     offTrack,
+    onDataChannel,
+    offDataChannel,
     onConnectionStateChange,
     offConnectionStateChange,
-    createDataChannel,
     close: rtcClose,
   } = useWebRTC('cast')
 
   let _controlChannel = null
+
+  /** 手机端上报的远程控制状态，形如 { accessibilityEnabled, platform } */
+  const remoteStatus = ref(null)
+
+  // ---- 系统内录音频 ----
+  const {
+    isPlaying: isAudioPlaying,
+    configure: configureAudio,
+    enqueue: enqueuePcm,
+    unlock: unlockAudio,
+    stop: stopAudio,
+  } = usePcmPlayer()
+
+  /** 手机端是否支持系统内录（Android 10+） */
+  const systemAudioSupported = ref(false)
+  /** 系统内录是否已开启 */
+  const systemAudioActive = ref(false)
+  /** 音频 DataChannel 是否就绪 */
+  const audioChannelReady = ref(false)
+
+  let _audioChannel = null
 
   let _currentRoomId = null
 
@@ -45,6 +68,7 @@ export function useCastReceiver(externalVideoRef) {
   let _roomClosedHandler = null
   let _iceCandidateCb = null
   let _trackCb = null
+  let _dataChannelCb = null
   let _connectionStateCb = null
 
   /**
@@ -190,18 +214,16 @@ export function useCastReceiver(externalVideoRef) {
     }
     onIceCandidate(_iceCandidateCb)
 
-    // 创建远程控制 DataChannel
-    _controlChannel = createDataChannel('control')
-    _controlChannel.onopen = () => {
-      console.log('[CastReceiver] ✅ 远程控制 DataChannel 已打开')
+    // 手机端是 offer 发起方，必须由手机端在 createOffer() 前创建通道，
+    // 才会在 SDP 中包含 m=application；Web 应答端仅接收该通道。
+    _dataChannelCb = (channel) => {
+      if (channel.label === 'control') {
+        _bindControlChannel(channel)
+      } else if (channel.label === 'audio') {
+        _bindAudioChannel(channel)
+      }
     }
-    _controlChannel.onclose = () => {
-      console.log('[CastReceiver] 🔌 远程控制 DataChannel 已关闭')
-      _controlChannel = null
-    }
-    _controlChannel.onerror = (err) => {
-      console.error('[CastReceiver] ❌ 远程控制 DataChannel 错误:', err)
-    }
+    onDataChannel(_dataChannelCb)
 
     // 监听远程媒体流
     _trackCb = () => {
@@ -247,10 +269,106 @@ export function useCastReceiver(externalVideoRef) {
       offTrack(_trackCb)
       _trackCb = null
     }
+    if (_dataChannelCb) {
+      offDataChannel(_dataChannelCb)
+      _dataChannelCb = null
+    }
     if (_connectionStateCb) {
       offConnectionStateChange(_connectionStateCb)
       _connectionStateCb = null
     }
+    _controlChannel = null
+    _audioChannel = null
+    remoteStatus.value = null
+    systemAudioSupported.value = false
+    systemAudioActive.value = false
+    audioChannelReady.value = false
+    stopAudio()
+  }
+
+  function _bindControlChannel(channel) {
+    _controlChannel = channel
+    channel.onopen = () => {
+      console.log('[CastReceiver] ✅ 远程控制 DataChannel 已打开')
+      // 通道就绪后立即查询一次无障碍服务状态，用于 Web 端提示用户
+      sendControl({ type: 'query_status' })
+    }
+    channel.onclose = () => {
+      console.log('[CastReceiver] 🔌 远程控制 DataChannel 已关闭')
+      if (_controlChannel === channel) _controlChannel = null
+      remoteStatus.value = null
+    }
+    channel.onerror = (err) => {
+      console.error('[CastReceiver] ❌ 远程控制 DataChannel 错误:', err)
+    }
+    channel.onmessage = (event) => {
+      // 控制通道只走 JSON 文本；二进制音频帧走独立的 audio 通道，不会进这里
+      if (typeof event.data !== 'string') return
+      try {
+        const msg = JSON.parse(event.data)
+        if (msg.type === 'status') {
+          remoteStatus.value = msg.payload || null
+          systemAudioSupported.value = msg.payload?.systemAudioSupported === true
+          systemAudioActive.value = msg.payload?.systemAudioActive === true
+          if (msg.payload?.audioFormat) {
+            configureAudio(msg.payload.audioFormat)
+          }
+          console.log('[CastReceiver] 收到手机端状态上报:', msg.payload)
+        } else if (msg.type === 'system_audio_state') {
+          systemAudioActive.value = msg.payload?.enabled === true
+          if (msg.payload?.error) {
+            console.warn('[CastReceiver] 系统内录异常:', msg.payload.error)
+          }
+          console.log('[CastReceiver] 系统内录状态:', msg.payload)
+        }
+      } catch (err) {
+        console.warn('[CastReceiver] 控制通道收到无法解析的消息:', err)
+      }
+    }
+  }
+
+  /** 绑定音频旁路通道（接收手机端系统内录的 PCM 二进制帧） */
+  function _bindAudioChannel(channel) {
+    _audioChannel = channel
+    // 音频帧是二进制，必须显式声明 arraybuffer，否则收到的是 Blob
+    channel.binaryType = 'arraybuffer'
+    channel.onopen = () => {
+      audioChannelReady.value = true
+      console.log('[CastReceiver] ✅ 音频 DataChannel 已打开')
+    }
+    channel.onclose = () => {
+      audioChannelReady.value = false
+      if (_audioChannel === channel) _audioChannel = null
+      stopAudio()
+      console.log('[CastReceiver] 🔌 音频 DataChannel 已关闭')
+    }
+    channel.onerror = (err) => {
+      console.error('[CastReceiver] ❌ 音频 DataChannel 错误:', err)
+    }
+    channel.onmessage = (event) => {
+      // 音频通道只走二进制；文本帧（若有）直接忽略
+      if (event.data instanceof ArrayBuffer) {
+        enqueuePcm(event.data)
+      } else if (event.data && typeof event.data.byteLength === 'number') {
+        enqueuePcm(event.data)
+      }
+    }
+  }
+
+  /**
+   * 开关手机端系统内录。
+   * 必须在用户手势（点击）中调用，否则 AudioContext 无法 resume。
+   */
+  async function toggleSystemAudio(enabled) {
+    if (enabled) {
+      const unlocked = await unlockAudio()
+      if (!unlocked) {
+        console.warn('[CastReceiver] AudioContext 未能启动，系统音频可能无声')
+      }
+    } else {
+      stopAudio()
+    }
+    return sendControl({ type: 'toggle_system_audio', enabled: !!enabled })
   }
 
   /** 停止接收当前会话（保持 invitation 监听，可接受下次投屏） */
@@ -299,7 +417,7 @@ export function useCastReceiver(externalVideoRef) {
         ...command,
       }
       _controlChannel.send(JSON.stringify(cmd))
-      console.log('[CastReceiver] 📡 发送控制指令:', command.type)
+      console.log('[CastReceiver] 📡 发送控制指令:', command)
       return true
     } catch (err) {
       console.error('[CastReceiver] ❌ 发送控制指令失败:', err)
@@ -313,5 +431,16 @@ export function useCastReceiver(externalVideoRef) {
     setVideoRef,
     connectionState,
     sendControl,
+    remoteStatus,
+    /** 重新查询手机端远程控制状态（用户在手机上开启无障碍后点「重新检测」） */
+    refreshRemoteStatus() {
+      return sendControl({ type: 'query_status' })
+    },
+    // 系统内录音频
+    systemAudioSupported,
+    systemAudioActive,
+    audioChannelReady,
+    isAudioPlaying,
+    toggleSystemAudio,
   }
 }
