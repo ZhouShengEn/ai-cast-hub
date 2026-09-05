@@ -48,9 +48,10 @@ jobs:
         working-directory: ./flutter-app
         run: flutter build apk --debug --split-per-abi --target-platform android-arm64
 
-      # 上传APK产物
+      # 上传APK产物（仅 arm64 单包，保留 7 天）
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Flutter-Debug-APK
-          path: flutter-app/build/app/outputs/flutter-apk/*.apk
+          path: flutter-app/build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
+          retention-days: 7

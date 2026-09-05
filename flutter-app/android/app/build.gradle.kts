@@ -28,6 +28,12 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // 只编 arm64-v8a 一个架构：真机主流架构，CI 出包更快、产物更小。
+        // 配合 flutter build apk --split-per-abi，产物固定为 app-arm64-v8a-debug.apk。
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
