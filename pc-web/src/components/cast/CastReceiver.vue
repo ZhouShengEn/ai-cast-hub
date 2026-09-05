@@ -73,13 +73,13 @@
       <button
         v-if="systemAudioSupported"
         class="px-3 h-9 rounded-lg text-white text-sm flex items-center gap-1 transition-colors"
-        :class="systemAudioActive
+        :class="(systemAudioActive && !systemAudioMuted)
           ? 'bg-green-500/80 hover:bg-green-500'
           : 'bg-white/20 hover:bg-white/30'"
-        :title="systemAudioActive ? '关闭手机系统声音' : '开启手机系统声音'"
-        @click.stop="emit('toggle-system-audio', !systemAudioActive)"
+        :title="(systemAudioActive && !systemAudioMuted) ? '静音手机系统声音' : '取消静音'"
+        @click.stop="emit('toggle-system-audio-mute')"
       >
-        {{ systemAudioActive ? '🔊 系统声音' : '🔈 开系统声音' }}
+        {{ (systemAudioActive && !systemAudioMuted) ? '🔊 系统声音' : '🔇 已静音' }}
       </button>
       <span
         v-else
@@ -105,9 +105,9 @@
       v-if="connectionState === 'connected'"
       class="absolute top-3 right-3 text-xs text-white/50 z-20 text-right"
     >
-      🖱️ 远程控制已开启<br/>
-      🖱️ 长按 0.5 秒 = 手机长按<br/>
-      ⌨️ Home/Bksp/Tab 快捷操作
+      🖱️ 画布可点击/拖拽控制手机<br/>
+      🖱️ 滚轮滚动 · 长按 0.5 秒 = 手机长按<br/>
+      ⌨️ H/Bksp/Tab = Home/Back/多任务
     </div>
 
     <!-- 无障碍服务未开启时提示：否则点击/滑动不会有任何效果 -->
@@ -142,13 +142,21 @@ const props = defineProps({
   systemAudioSupported: { type: Boolean, default: false },
   /** 系统内录是否已开启 */
   systemAudioActive: { type: Boolean, default: false },
+  /** 系统音频是否被本地静音（仅控制播放，不触发权限） */
+  systemAudioMuted: { type: Boolean, default: false },
   /** 当前画质档位 key（high/medium/low） */
   currentQuality: { type: String, default: 'high' },
   /** 画质档位表 { key: { label, width, height, fps, bitrate } } */
   qualityProfiles: { type: Object, default: () => ({}) },
 })
 
-const emit = defineEmits(['control', 'refresh-status', 'toggle-system-audio', 'set-quality'])
+const emit = defineEmits([
+  'control',
+  'refresh-status',
+  'toggle-system-audio-mute',
+  'set-quality',
+  'unlock-audio',
+])
 
 /** 暴露 video ref 供 composable 绑定 */
 const videoEl = ref(null)
@@ -162,6 +170,8 @@ const isMuted = ref(true)
 const activePointerId = ref(null)
 const gestureStart = ref(null)
 const gestureLast = ref(null)
+/** 上一次已下发 move 的归一化坐标，用于节流判断 */
+const gestureLastSent = ref(null)
 const gestureStartedAt = ref(0)
 const gestureDistance = ref(0)
 const TAP_THRESHOLD_PX = 8
@@ -170,6 +180,11 @@ const TAP_THRESHOLD_PX = 8
 const LONG_PRESS_MS = 500
 let longPressTimer = null
 let longPressFired = false
+
+/** move 节流：最小时间间隔与最小位移，避免高频 PointerMove 淹没控制通道 */
+const MOVE_THROTTLE_MS = 16
+const MOVE_MIN_DELTA = 0.004
+let lastMoveSentAt = 0
 
 /**
  * 手机端无障碍服务是否可用。
@@ -278,12 +293,20 @@ function onPointerDown(e) {
   const percent = _mapToPhonePercent(e.clientX, e.clientY)
   if (!percent) return
 
+  // 用户手势内解锁 AudioContext（系统音频自动播放兼容）
+  emit('unlock-audio')
+
   activePointerId.value = e.pointerId
   gestureStart.value = { ...percent, clientX: e.clientX, clientY: e.clientY }
   gestureLast.value = percent
+  gestureLastSent.value = percent
   gestureStartedAt.value = performance.now()
   gestureDistance.value = 0
   longPressFired = false
+  lastMoveSentAt = 0
+
+  // 下发按下：归一化坐标 nx/ny（0~1）
+  emit('control', { type: 'remote_touch', action: 'down', nx: percent.x, ny: percent.y })
 
   // 长按检测：按住不动达到阈值即触发，触发后 onPointerUp 不再补发 tap
   longPressTimer = setTimeout(() => {
@@ -317,6 +340,16 @@ function onPointerMove(e) {
     if (gestureDistance.value > TAP_THRESHOLD_PX) {
       _clearLongPressTimer()
     }
+    // 节流下发 move：满足最小时间间隔 + 最小位移，避免高频事件淹没控制通道
+    const now = performance.now()
+    const dx = percent.x - gestureLastSent.value.x
+    const dy = percent.y - gestureLastSent.value.y
+    const movedEnough = Math.hypot(dx, dy) >= MOVE_MIN_DELTA
+    if (movedEnough && now - lastMoveSentAt >= MOVE_THROTTLE_MS) {
+      emit('control', { type: 'remote_touch', action: 'move', nx: percent.x, ny: percent.y })
+      gestureLastSent.value = percent
+      lastMoveSentAt = now
+    }
   }
   e.preventDefault()
 }
@@ -325,25 +358,10 @@ function onPointerUp(e) {
   if (activePointerId.value !== e.pointerId || !gestureStart.value) return
   _clearLongPressTimer()
   const end = _mapToPhonePercent(e.clientX, e.clientY) || gestureLast.value
-  const start = gestureStart.value
-  const duration = Math.max(50, Math.min(2000, Math.round(performance.now() - gestureStartedAt.value)))
 
-  // 长按已触发时不再补发 tap，避免点击与长按重复执行
+  // 下发抬起；Kotlin 端在「无位移的 up」会自动补一次点击，因此 down→up 即点击
   if (end && !longPressFired) {
-    if (gestureDistance.value <= TAP_THRESHOLD_PX) {
-      console.log('[CastReceiver] 🖱️ tap', end.x, end.y)
-      emit('control', { type: 'tap', x: end.x, y: end.y })
-    } else {
-      console.log('[CastReceiver] 🖱️ swipe', start, '→', end, `${duration}ms`)
-      emit('control', {
-        type: 'swipe',
-        startX: start.x,
-        startY: start.y,
-        endX: end.x,
-        endY: end.y,
-        duration,
-      })
-    }
+    emit('control', { type: 'remote_touch', action: 'up', nx: end.x, ny: end.y })
   }
 
   e.currentTarget.releasePointerCapture?.(e.pointerId)
@@ -371,20 +389,21 @@ function _resetPointerGesture() {
   activePointerId.value = null
   gestureStart.value = null
   gestureLast.value = null
+  gestureLastSent.value = null
   gestureStartedAt.value = 0
   gestureDistance.value = 0
 }
 
-/** 鼠标滚轮 */
+/** 鼠标滚轮 → 滚动指令 */
 function onWheel(e) {
   const percent = _mapToPhonePercent(e.clientX, e.clientY)
   if (percent) {
     emit('control', {
-      type: 'scroll',
-      x: percent.x,
-      y: percent.y,
-      deltaX: e.deltaX,
-      deltaY: e.deltaY,
+      type: 'remote_touch',
+      action: 'scroll',
+      nx: percent.x,
+      ny: percent.y,
+      scrollDeltaY: e.deltaY,
     })
   }
 }

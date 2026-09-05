@@ -447,6 +447,8 @@ class CastService {
         _webrtc.handleAnswer(payload['sdp'] as String);
         _updateSessionStatus('connected');
         _castLog('✅ 投屏连接已建立!', level: LogLevel.info);
+        // 投屏建立后自动开启系统音频采集（用户仍需在手机上确认授权弹窗）
+        unawaited(_autoStartSystemAudio());
         break;
       case 'ice_candidate':
         _castLog('收到PC的ice_candidate', level: LogLevel.debug);
@@ -485,11 +487,50 @@ class CastService {
         unawaited(_handleSetQuality(data));
         return;
       }
+      if (type == 'remote_touch') {
+        _handleRemoteTouch(data);
+        return;
+      }
 
       onControlCommand?.call(data);
     } catch (e) {
       _castLog('DataChannel消息解析失败: $e', level: LogLevel.warn);
     }
+  }
+
+  /// 将 Web 端统一投屏触控协议 remote_touch 映射为底层指令并下发到 Kotlin 手势层。
+  /// 协议: { type:'remote_touch', action:'down|move|up|scroll', nx, ny, scrollDeltaY }
+  /// Kotlin 侧在 touch_end 且无位移时会自动补发一次点击，因此 down→up 即为点击。
+  void _handleRemoteTouch(Map<String, dynamic> data) {
+    final action = data['action'] as String?;
+    final nx = (data['nx'] as num?)?.toDouble();
+    final ny = (data['ny'] as num?)?.toDouble();
+    if (action == null || nx == null || ny == null) {
+      _castLog('remote_touch 参数缺失', level: LogLevel.warn);
+      return;
+    }
+    Map<String, dynamic> cmd;
+    switch (action) {
+      case 'down':
+        cmd = <String, dynamic>{'type': 'touch_start', 'x': nx, 'y': ny};
+      case 'move':
+        cmd = <String, dynamic>{'type': 'touch_move', 'x': nx, 'y': ny};
+      case 'up':
+        cmd = <String, dynamic>{'type': 'touch_end', 'x': nx, 'y': ny};
+      case 'scroll':
+        final dy = (data['scrollDeltaY'] as num?)?.toDouble() ?? 0.0;
+        cmd = <String, dynamic>{
+          'type': 'scroll',
+          'x': nx,
+          'y': ny,
+          'deltaX': 0.0,
+          'deltaY': dy,
+        };
+      default:
+        _castLog('remote_touch 未知 action: $action', level: LogLevel.warn);
+        return;
+    }
+    onControlCommand?.call(cmd);
   }
 
   /// 向 Web 端上报远程控制状态（无障碍服务是否可用等），供其做 UI 提示
@@ -572,6 +613,32 @@ class CastService {
       await _stopSystemAudio();
       _castLog('系统内录已关闭', level: LogLevel.info);
       _reportSystemAudioState(enabled: false);
+    }
+  }
+
+  /// 投屏建立成功后自动开启系统音频采集。
+  /// 注意：Android MediaProjection 授权弹窗无法被程序自动同意，必须由用户在手机上点按确认；
+  /// Web 端 AudioContext 也需用户手势才能 resume（已在触摸/开关手势中处理）。
+  Future<void> _autoStartSystemAudio() async {
+    if (_systemAudioEnabled) return;
+    if (!await _systemAudio.isSupported()) {
+      _castLog('系统音频不支持（API<29），跳过自动开启', level: LogLevel.info);
+      return;
+    }
+    if (_audioChannel == null) {
+      _castLog('音频通道未就绪，跳过自动开启系统音频', level: LogLevel.warn);
+      return;
+    }
+    final ok = await _systemAudio.start();
+    if (ok) {
+      _systemAudioEnabled = true;
+      _pcmErrorLogged = false;
+      _pcmSubscription = _systemAudio.pcmStream.listen(_forwardPcm);
+      _castLog('投屏建立后已自动开启系统音频', level: LogLevel.info);
+      _reportSystemAudioState(enabled: true);
+    } else {
+      _castLog('自动开启系统音频失败（可能需用户在手机上授权）',
+          level: LogLevel.warn);
     }
   }
 
@@ -701,8 +768,10 @@ class CastService {
     // 释放系统内录：必须显式停止，否则 AudioRecord 会在后台持续采集造成泄漏
     try {
       await _stopSystemAudio();
+      // dispose 关闭 PCM 事件控制器，确保每次新建会话完整重建音频链路、杜绝僵尸实例
+      await _systemAudio.dispose();
     } catch (e) {
-      _castLog('停止系统内录失败: $e', level: LogLevel.warn);
+      _castLog('停止/释放系统内录失败: $e', level: LogLevel.warn);
     }
 
     // 关闭音频旁路通道

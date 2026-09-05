@@ -20,11 +20,13 @@
           :remote-status="remoteStatus"
           :system-audio-supported="systemAudioSupported"
           :system-audio-active="systemAudioActive"
+          :system-audio-muted="systemAudioMuted"
           :current-quality="currentQuality"
           :quality-profiles="qualityProfiles"
           @control="onControl"
           @refresh-status="refreshRemoteStatus"
-          @toggle-system-audio="onToggleSystemAudio"
+          @toggle-system-audio-mute="onToggleSystemAudioMute"
+          @unlock-audio="unlockAudio"
           @set-quality="setQuality"
         />
 
@@ -81,7 +83,9 @@ const {
   refreshRemoteStatus,
   systemAudioSupported,
   systemAudioActive,
-  toggleSystemAudio,
+  systemAudioMuted,
+  toggleSystemAudioPlayback,
+  unlockAudio,
   currentQuality,
   qualityProfiles,
   setQuality,
@@ -107,12 +111,10 @@ function onControl(event) {
   sendControl(event)
 }
 
-/** 系统音频开关：控制通道未就绪时给出提示，避免「点了没反应」 */
-async function onToggleSystemAudio(enabled) {
-  const ok = await toggleSystemAudio(enabled)
-  if (!ok) {
-    showToast('控制通道未就绪，请稍候重试', 'warn')
-  }
+/** 系统音频播放/静音开关（仅控制本地播放，不触发手机端权限申请） */
+async function onToggleSystemAudioMute() {
+  const muted = await toggleSystemAudioPlayback()
+  showToast(muted ? '已静音系统声音' : '已开启系统声音', 'info')
 }
 
 function stopCasting() {

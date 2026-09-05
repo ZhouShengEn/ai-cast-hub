@@ -16,8 +16,12 @@ import { ref } from 'vue'
 export function usePcmPlayer() {
   /** 是否正在发声 */
   const isPlaying = ref(false)
+  /** 是否被用户静音（仅控制增益，不停止采集/接收） */
+  const muted = ref(false)
 
   let ctx = null
+  /** 增益节点：用于静音而不打断 PCM 接收链路 */
+  let gainNode = null
   /** 待播放的 AudioBuffer 队列 */
   let queue = []
   /** 下一帧的播放时刻（AudioContext 时间轴，秒） */
@@ -49,6 +53,9 @@ export function usePcmPlayer() {
       return null
     }
     ctx = new AC()
+    gainNode = ctx.createGain()
+    gainNode.gain.value = muted.value ? 0 : 1
+    gainNode.connect(ctx.destination)
     return ctx
   }
 
@@ -94,7 +101,7 @@ export function usePcmPlayer() {
       const buf = queue.shift()
       const source = ctx.createBufferSource()
       source.buffer = buf
-      source.connect(ctx.destination)
+      source.connect(gainNode)
       const startAt = Math.max(nextStartTime, ctx.currentTime)
       source.start(startAt)
       nextStartTime = startAt + buf.duration
@@ -142,6 +149,21 @@ export function usePcmPlayer() {
     return context.state === 'running'
   }
 
+  /**
+   * 静音/取消静音（仅控制增益，不停止接收与播放调度）。
+   * 用平滑斜坡避免咔哒声。
+   */
+  function setMuted(value) {
+    muted.value = !!value
+    if (gainNode && ctx) {
+      const now = ctx.currentTime
+      const target = muted.value ? 0 : 1
+      gainNode.gain.cancelScheduledValues(now)
+      gainNode.gain.setValueAtTime(gainNode.gain.value, now)
+      gainNode.gain.linearRampToValueAtTime(target, now + 0.03)
+    }
+  }
+
   /** 停止播放并释放 AudioContext */
   function stop() {
     if (schedulerTimer) {
@@ -151,6 +173,7 @@ export function usePcmPlayer() {
     queue = []
     nextStartTime = 0
     isPlaying.value = false
+    muted.value = false
     if (ctx) {
       try {
         ctx.close()
@@ -158,8 +181,9 @@ export function usePcmPlayer() {
         console.warn('[PcmPlayer] 关闭 AudioContext 失败:', err)
       }
       ctx = null
+      gainNode = null
     }
   }
 
-  return { isPlaying, configure, enqueue, unlock, stop }
+  return { isPlaying, muted, configure, enqueue, unlock, stop, setMuted }
 }

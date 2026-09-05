@@ -56,6 +56,7 @@ export function useCastReceiver(externalVideoRef, options = {}) {
     configure: configureAudio,
     enqueue: enqueuePcm,
     unlock: unlockAudio,
+    setMuted: setAudioMuted,
     stop: stopAudio,
   } = usePcmPlayer()
 
@@ -413,19 +414,22 @@ export function useCastReceiver(externalVideoRef, options = {}) {
   }
 
   /**
-   * 开关手机端系统内录。
+   * 系统音频「播放/静音」开关。
+   *
+   * 注意：投屏建立后系统音频采集已由 Flutter 端自动开启（用户只需在手机上确认一次授权弹窗），
+   * 因此 Web 端不再触发权限申请，只负责本地 PCM 播放的启用/禁用（静音）。
    * 必须在用户手势（点击）中调用，否则 AudioContext 无法 resume。
    */
-  async function toggleSystemAudio(enabled) {
-    if (enabled) {
-      const unlocked = await unlockAudio()
-      if (!unlocked) {
-        console.warn('[CastReceiver] AudioContext 未能启动，系统音频可能无声')
-      }
-    } else {
-      stopAudio()
+  const systemAudioMuted = ref(false)
+  async function toggleSystemAudioPlayback() {
+    // 先在当前用户手势里 resume AudioContext，兼容浏览器自动播放策略
+    const unlocked = await unlockAudio()
+    if (!unlocked) {
+      console.warn('[CastReceiver] AudioContext 未能启动，系统音频可能无声')
     }
-    return sendControl({ type: 'toggle_system_audio', enabled: !!enabled })
+    systemAudioMuted.value = !systemAudioMuted.value
+    setAudioMuted(systemAudioMuted.value)
+    return systemAudioMuted.value
   }
 
   /**
@@ -525,9 +529,11 @@ export function useCastReceiver(externalVideoRef, options = {}) {
     // 系统内录音频
     systemAudioSupported,
     systemAudioActive,
+    systemAudioMuted,
     audioChannelReady,
     isAudioPlaying,
-    toggleSystemAudio,
+    unlockAudio,
+    toggleSystemAudioPlayback,
     // 投屏画质
     currentQuality,
     qualityProfiles: QUALITY_PROFILES,
