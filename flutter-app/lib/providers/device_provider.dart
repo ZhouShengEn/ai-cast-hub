@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,7 @@ import '../models/device.dart';
 import '../services/device_service.dart';
 import '../services/local_storage.dart';
 import '../services/debug_service.dart';
+import '../services/websocket_service.dart';
 
 /// 设备状态
 class DeviceState {
@@ -45,7 +47,62 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
   final DeviceService _service = DeviceService();
   final LocalStorage _storage = LocalStorage.instance;
 
-  DeviceNotifier() : super(const DeviceState());
+  /// WebSocket 消息订阅（用于实时接收上下线 / 自动解绑事件）
+  StreamSubscription<Map<String, dynamic>>? _wsSubscription;
+
+  DeviceNotifier() : super(const DeviceState()) {
+    _initWsListener();
+  }
+
+  /// 订阅全局 WebSocket 消息流，处理 device_status / device_unbound 事件
+  void _initWsListener() {
+    _wsSubscription = WebSocketService.instance.messages.listen(_onWsMessage);
+  }
+
+  void _onWsMessage(Map<String, dynamic> msg) {
+    final type = msg['type'] as String?;
+    if (type == 'device_status') {
+      final payload = msg['payload'] as Map<String, dynamic>? ?? {};
+      final uuid = payload['deviceUuid'] as String?;
+      final status = payload['status'] as String?;
+      if (uuid != null && status != null) {
+        _applyDeviceStatus(uuid, status == 'online');
+      }
+    } else if (type == 'device_unbound') {
+      final payload = msg['payload'] as Map<String, dynamic>? ?? {};
+      final from = payload['fromDeviceUuid'] as String?;
+      if (from != null) {
+        _applyDeviceUnbound(from, auto: payload['reason'] == 'auto');
+      }
+    }
+  }
+
+  /// 实时更新某配对设备的在线状态（通过修改其 lastSeenAt，复用已有 isOnline() 逻辑）
+  void _applyDeviceStatus(String deviceUuid, bool online) {
+    if (state.pairedDevices.isEmpty) return;
+    final devices = state.pairedDevices.map((d) {
+      if (d.deviceUuid != deviceUuid) return d;
+      final newLastSeen = online
+          ? DateTime.now()
+          : DateTime.now().subtract(const Duration(hours: 1));
+      return d.copyWith(lastSeenAt: newLastSeen);
+    }).toList();
+    if (!listEquals(devices, state.pairedDevices)) {
+      state = state.copyWith(pairedDevices: devices);
+    }
+  }
+
+  /// 收到解绑事件（手动或离线超10分钟自动解绑），从配对列表移除对方
+  void _applyDeviceUnbound(String fromDeviceUuid, {bool auto = false}) {
+    final devices =
+        state.pairedDevices.where((d) => d.deviceUuid != fromDeviceUuid).toList();
+    if (devices.length != state.pairedDevices.length) {
+      state = state.copyWith(pairedDevices: devices);
+      DebugService().info(
+        '[Device] 收到解绑事件(${auto ? "自动" : "手动"}): $fromDeviceUuid',
+      );
+    }
+  }
 
   /// 将异常转换为用户友好的中文提示
   String _friendlyError(Object e) {
@@ -225,6 +282,13 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
   }
 
   String _hex89ab(int n) => '89ab'[n];
+
+  @override
+  void dispose() {
+    _wsSubscription?.cancel();
+    _wsSubscription = null;
+    super.dispose();
+  }
 }
 
 /// 设备 Provider

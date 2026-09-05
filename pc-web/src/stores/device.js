@@ -136,5 +136,26 @@ export const useDeviceStore = defineStore('device', {
         this.loading = false
       }
     },
+
+    /**
+     * 收到服务端 device_status 事件时，即时更新已配对设备的在线状态（无需重新拉取列表）。
+     * @param {string} deviceUuid - 状态变化的设备 UUID
+     * @param {boolean} online - 是否在线
+     */
+    setDeviceOnline(deviceUuid, online) {
+      if (!deviceUuid) return
+      const target = this.pairedDevices.find(
+        (d) => (d.uuid || d.id || d.deviceUuid) === deviceUuid,
+      )
+      if (!target) return
+      const idx = this.pairedDevices.indexOf(target)
+      const updated = {
+        ...target,
+        isOnline: online,
+        lastSeen: online ? new Date().toISOString() : target.lastSeen,
+      }
+      this.pairedDevices.splice(idx, 1, updated)
+      this.isConnected = this.pairedDevices.some((d) => d.isOnline)
+    },
   },
 })

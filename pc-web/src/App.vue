@@ -75,11 +75,30 @@ async function onDeviceBound(msg) {
 /** 收到设备解绑通知 */
 async function onDeviceUnbound(msg) {
   console.log('[App] 收到设备解绑通知:', msg)
-  showToast('设备绑定已解除', 'warning')
+  const auto = msg?.payload?.reason === 'auto'
+  showToast(auto ? '对方设备离线超过10分钟，已自动解除绑定' : '设备绑定已解除', 'warning')
   try {
     await deviceStore.fetchDeviceList()
     deviceConnected.value = deviceStore.pairedDevices.length > 0
   } catch (_) {}
+}
+
+/** 收到设备上下线状态通知 */
+function onDeviceStatus(msg) {
+  const payload = msg?.payload || {}
+  const uuid = payload.deviceUuid
+  const online = payload.status === 'online'
+  if (!uuid) return
+  console.log('[App] 收到设备状态变更:', uuid, payload.status)
+  deviceStore.setDeviceOnline(uuid, online)
+  const name = deviceStore.pairedDevices.find(
+    (d) => (d.uuid || d.id || d.deviceUuid) === uuid,
+  )?.name || '设备'
+  if (online) {
+    showToast(`「${name}」已上线`, 'success')
+  } else {
+    showToast(`「${name}」已离线`, 'warning')
+  }
 }
 
 onMounted(async () => {
@@ -111,6 +130,7 @@ onMounted(async () => {
   // 注册 WS 监听并建立连接（全局唯一）
   onMessage('device_bound', onDeviceBound)
   onMessage('device_unbound', onDeviceUnbound)
+  onMessage('device_status', onDeviceStatus)
   wsConnect()
 
   // 全局启动消息通道监听（无论是否在消息页面都能收到消息）
@@ -123,6 +143,7 @@ onMounted(async () => {
 onUnmounted(() => {
   offMessage('device_bound', onDeviceBound)
   offMessage('device_unbound', onDeviceUnbound)
+  offMessage('device_status', onDeviceStatus)
   disconnectMessageChannel()
   wsDisconnect()
   uiStore.unbindViewportListener()

@@ -1,16 +1,16 @@
 <template>
   <div class="h-full flex flex-col">
     <!-- 页面标题 -->
-    <div class="px-6 py-3 bg-white border-b border-gray-100 flex items-center justify-between">
+    <div class="px-4 py-2 md:px-6 md:py-3 bg-white border-b border-gray-100 flex items-center justify-between">
       <h2 class="text-lg font-semibold text-gray-800">📺 投屏</h2>
       <div class="flex items-center gap-3">
         <ConnectionBadge :state="castStore.connectionState" />
-        <span v-if="castStore.connectionState === 'connected'" class="text-xs text-green-600">🖱️ 远程控制</span>
+        <span v-if="castStore.connectionState === 'connected'" class="text-xs text-green-600 hidden sm:inline">🖱️ 远程控制</span>
       </div>
     </div>
 
     <!-- 内容区 -->
-    <div class="flex-1 p-6 overflow-auto">
+    <div class="flex-1 p-3 md:p-6 overflow-auto">
       <div class="max-w-4xl mx-auto">
         <!-- CastReceiver 始终渲染（v-show 保持 DOM 存在），等待状态由组件内部覆盖层处理 -->
         <CastReceiver

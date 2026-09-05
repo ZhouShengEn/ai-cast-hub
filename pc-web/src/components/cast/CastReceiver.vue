@@ -1,13 +1,20 @@
 <template>
   <div ref="containerRef" class="relative w-full aspect-video bg-black rounded-lg overflow-hidden">
-    <!-- 视频区域（始终渲染，确保 videoEl 始终可用） -->
-    <video
-      ref="videoEl"
-      class="w-full h-full object-contain"
-      autoplay
-      playsinline
-      :muted="isMuted"
-    ></video>
+    <!-- 视频变换层：双指捏合缩放 / 平移作用于此层，坐标映射按屏幕实际渲染框计算 -->
+    <div
+      ref="transformRef"
+      class="absolute inset-0 flex items-center justify-center will-change-transform"
+      :style="transformStyle"
+    >
+      <!-- 视频区域（始终渲染，确保 videoEl 始终可用） -->
+      <video
+        ref="videoEl"
+        class="w-full h-full object-contain"
+        autoplay
+        playsinline
+        :muted="isMuted"
+      ></video>
+    </div>
 
     <!-- 等待/加载状态覆盖层 -->
     <div
@@ -46,10 +53,20 @@
       ⛶
     </button>
 
+    <!-- 缩放复位按钮（双指放大后出现） -->
+    <button
+      v-if="connectionState === 'connected' && zoom > 1.01"
+      class="absolute bottom-3 right-14 w-9 h-9 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-colors z-20 text-base"
+      @click.stop="resetZoom"
+      title="重置缩放"
+    >
+      ⤢
+    </button>
+
     <!-- 底部左侧：画质选择 + 手机系统声音开关 + 视频流音轨静音 -->
     <div
       v-if="connectionState === 'connected'"
-      class="absolute bottom-3 left-3 z-20 flex items-center gap-2"
+      class="absolute bottom-3 left-3 z-20 flex items-center gap-2 flex-wrap max-w-[calc(100%-5rem)]"
     >
       <!-- 投屏画质档位：高清 / 流畅 / 省流，切换经 RTCRtpSender 实时生效不打断投屏 -->
       <select
@@ -100,14 +117,21 @@
       </button>
     </div>
 
-    <!-- 操作提示 -->
+    <!-- 操作提示（桌面：鼠标/键盘；移动端：触控/手势） -->
     <div
       v-if="connectionState === 'connected'"
-      class="absolute top-3 right-3 text-xs text-white/50 z-20 text-right"
+      class="absolute top-3 right-3 text-xs text-white/50 z-20 text-right leading-relaxed"
     >
-      🖱️ 画布可点击/拖拽控制手机<br/>
-      🖱️ 滚轮滚动 · 长按 0.5 秒 = 手机长按<br/>
-      ⌨️ H/Bksp/Tab = Home/Back/多任务
+      <template v-if="ui.isMobile">
+        👆 单指点击/滑动控制手机<br/>
+        🤏 双指捏合缩放画面<br/>
+        ⛶ 全屏后横屏观看
+      </template>
+      <template v-else>
+        🖱️ 画布可点击/拖拽控制手机<br/>
+        🖱️ 滚轮滚动 · 长按 0.5 秒 = 手机长按<br/>
+        ⌨️ H/Bksp/Tab = Home/Back/多任务
+      </template>
     </div>
 
     <!-- 无障碍服务未开启时提示：否则点击/滑动不会有任何效果 -->
@@ -130,6 +154,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Spinner from '../common/Spinner.vue'
 import ConnectionBadge from './ConnectionBadge.vue'
+import { useUiStore } from '../../stores/ui'
 
 const props = defineProps({
   /** 连接状态 */
@@ -158,10 +183,97 @@ const emit = defineEmits([
   'unlock-audio',
 ])
 
+/** UI 状态（移动端判定） */
+const ui = useUiStore()
+
 /** 暴露 video ref 供 composable 绑定 */
 const videoEl = ref(null)
 const containerRef = ref(null)
+const transformRef = ref(null)
 defineExpose({ videoEl })
+
+// ---- 双指缩放 / 平移状态 ----
+const zoom = ref(1)
+const panX = ref(0)
+const panY = ref(0)
+const MIN_ZOOM = 1
+const MAX_ZOOM = 4
+/** 当前活跃指针集合（用于区分单指远程控制 / 双指捏合） */
+const pointers = new Map()
+let pinchActive = false
+let pinchStartDist = 0
+let pinchStartZoom = 1
+let pinchStartPan = { x: 0, y: 0 }
+let pinchStartMid = { x: 0, y: 0 }
+
+/** 变换层样式：先平移后缩放，原点居中 */
+const transformStyle = computed(() => ({
+  transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
+  transformOrigin: 'center center',
+}))
+
+/** 缩放复位 */
+function resetZoom() {
+  zoom.value = 1
+  panX.value = 0
+  panY.value = 0
+}
+
+function _clampPan() {
+  const box = containerRef.value?.getBoundingClientRect()
+  if (!box) return
+  // 限制平移范围，避免画面被拖出可视区
+  const maxX = ((zoom.value - 1) * box.width) / 2
+  const maxY = ((zoom.value - 1) * box.height) / 2
+  panX.value = Math.max(-maxX, Math.min(maxX, panX.value))
+  panY.value = Math.max(-maxY, Math.min(maxY, panY.value))
+  if (zoom.value <= 1.01) {
+    panX.value = 0
+    panY.value = 0
+  }
+}
+
+function _distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
+function _midpoint(a, b) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+}
+
+/** 双指捏合开始 */
+function _startPinch() {
+  pinchActive = true
+  const pts = [...pointers.values()]
+  pinchStartDist = _distance(pts[0], pts[1]) || 1
+  pinchStartZoom = zoom.value
+  pinchStartPan = { x: panX.value, y: panY.value }
+  pinchStartMid = _midpoint(pts[0], pts[1])
+}
+
+/** 双指捏合 / 平移更新 */
+function _updatePinch() {
+  const pts = [...pointers.values()]
+  if (pts.length < 2) return
+  const dist = _distance(pts[0], pts[1])
+  zoom.value = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, (pinchStartZoom * dist) / pinchStartDist))
+  const mid = _midpoint(pts[0], pts[1])
+  panX.value = pinchStartPan.x + (mid.x - pinchStartMid.x)
+  panY.value = pinchStartPan.y + (mid.y - pinchStartMid.y)
+  _clampPan()
+}
+
+/** 若正在远程控制，先补发 up 释放手机端按压，避免卡住 */
+function _releaseRemoteIfActive() {
+  if (gestureLast.value) {
+    emit('control', {
+      type: 'remote_touch',
+      action: 'up',
+      nx: gestureLast.value.x,
+      ny: gestureLast.value.y,
+    })
+  }
+  _resetPointerGesture()
+}
 
 /** 静音状态（默认静音以满足浏览器自动播放策略，用户可手动取消） */
 const isMuted = ref(true)
@@ -198,6 +310,9 @@ const accessibilityEnabled = computed(() => {
 /**
  * 获取视频实际渲染区域（扣除 object-contain 产生的 letterbox 黑边）
  *
+ * 直接使用 video 元素自身的屏幕矩形（含祖先 transform 缩放/平移），
+ * 因此对双指缩放/平移同样准确。
+ *
  * 关键兜底：视频原始宽高未知时（流刚建立、首帧未到）不再返回 null，
  * 而是退回 video 元素的盒子。原实现此刻直接 return null，
  * 使得 onPointerDown 静默退出 —— 表现就是「点画面完全没反应」。
@@ -206,10 +321,8 @@ function _getVideoRect() {
   const video = videoEl.value
   if (!video) return null
 
-  const box = containerRef.value
-    ? containerRef.value.getBoundingClientRect()
-    : video.getBoundingClientRect()
-  if (!box.width || !box.height) return null
+  const rect = video.getBoundingClientRect()
+  if (!rect.width || !rect.height) return null
 
   const videoWidth = video.videoWidth
   const videoHeight = video.videoHeight
@@ -217,8 +330,10 @@ function _getVideoRect() {
   // 原始宽高未知 → 算不出黑边，按元素盒子处理，保证点击仍可用
   if (!videoWidth || !videoHeight) {
     return {
-      width: box.width,
-      height: box.height,
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
       offsetX: 0,
       offsetY: 0,
       videoWidth,
@@ -228,23 +343,25 @@ function _getVideoRect() {
   }
 
   const aspectRatio = videoWidth / videoHeight
-  const containerAspectRatio = box.width / box.height
+  const boxAspectRatio = rect.width / rect.height
 
   let renderWidth, renderHeight, offsetX, offsetY
 
-  if (aspectRatio > containerAspectRatio) {
-    renderWidth = box.width
-    renderHeight = box.width / aspectRatio
+  if (aspectRatio > boxAspectRatio) {
+    renderWidth = rect.width
+    renderHeight = rect.width / aspectRatio
     offsetX = 0
-    offsetY = (box.height - renderHeight) / 2
+    offsetY = (rect.height - renderHeight) / 2
   } else {
-    renderHeight = box.height
-    renderWidth = box.height * aspectRatio
-    offsetX = (box.width - renderWidth) / 2
+    renderHeight = rect.height
+    renderWidth = rect.height * aspectRatio
+    offsetX = (rect.width - renderWidth) / 2
     offsetY = 0
   }
 
   return {
+    left: rect.left,
+    top: rect.top,
     width: renderWidth,
     height: renderHeight,
     offsetX,
@@ -255,7 +372,7 @@ function _getVideoRect() {
   }
 }
 
-/** 将鼠标坐标转换为手机屏幕归一化坐标（0~1） */
+/** 将屏幕坐标转换为手机屏幕归一化坐标（0~1） */
 function _mapToPhonePercent(clientX, clientY) {
   const videoRect = _getVideoRect()
   if (!videoRect) {
@@ -263,11 +380,8 @@ function _mapToPhonePercent(clientX, clientY) {
     return null
   }
 
-  const box = containerRef.value
-    ? containerRef.value.getBoundingClientRect()
-    : videoEl.value.getBoundingClientRect()
-  const x = clientX - box.left - videoRect.offsetX
-  const y = clientY - box.top - videoRect.offsetY
+  const x = clientX - videoRect.left - videoRect.offsetX
+  const y = clientY - videoRect.top - videoRect.offsetY
 
   if (x < 0 || x > videoRect.width || y < 0 || y > videoRect.height) {
     // 落在黑边内，属于画面之外的点击，静默忽略
@@ -282,6 +396,18 @@ function _mapToPhonePercent(clientX, clientY) {
 
 /** Pointer Events 同时覆盖鼠标、触控笔和浏览器触摸事件。 */
 function onPointerDown(e) {
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+  // 双指及以上 → 进入捏合缩放，先释放可能正在进行的远程控制
+  if (pointers.size >= 2) {
+    if (activePointerId.value !== null) {
+      _releaseRemoteIfActive()
+    }
+    _startPinch()
+    e.preventDefault()
+    return
+  }
+
   // 上一个手势没正常收尾（指针在容器外抬起、页面切走、断点调试等）时强制复位。
   // 原实现里 activePointerId 一旦残留就永久非 null，之后每一次点击都会被这里吞掉。
   if (activePointerId.value !== null) {
@@ -328,6 +454,17 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
+  if (!pointers.has(e.pointerId)) return
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+  // 捏合缩放中：更新缩放与平移，不触发远程控制
+  if (pinchActive && pointers.size >= 2) {
+    _updatePinch()
+    e.preventDefault()
+    return
+  }
+  if (pinchActive) return
+
   if (activePointerId.value !== e.pointerId || !gestureStart.value) return
   const percent = _mapToPhonePercent(e.clientX, e.clientY)
   if (percent) {
@@ -355,6 +492,17 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
+  pointers.delete(e.pointerId)
+
+  // 捏合过程中：手指逐一抬起，全部抬起后才结束捏合（不恢复远程控制，避免误触）
+  if (pinchActive) {
+    if (pointers.size < 2) {
+      pinchActive = false
+    }
+    e.preventDefault()
+    return
+  }
+
   if (activePointerId.value !== e.pointerId || !gestureStart.value) return
   _clearLongPressTimer()
   const end = _mapToPhonePercent(e.clientX, e.clientY) || gestureLast.value
@@ -370,6 +518,11 @@ function onPointerUp(e) {
 }
 
 function onPointerCancel(e) {
+  pointers.delete(e.pointerId)
+  if (pinchActive) {
+    if (pointers.size < 2) pinchActive = false
+    return
+  }
   if (activePointerId.value !== e.pointerId) return
   e.currentTarget.releasePointerCapture?.(e.pointerId)
   _resetPointerGesture()
@@ -463,6 +616,7 @@ onMounted(() => {
     _bindStream(props.stream)
   }
   window.addEventListener('keydown', _handleKeyDown)
+  document.addEventListener('fullscreenchange', _onFullscreenChange)
 })
 
 /** 监听 stream prop 变化 */
@@ -473,6 +627,13 @@ watch(
     _bindStream(stream)
   },
 )
+
+/** 全屏状态变化：退出全屏时解除方向锁定 */
+function _onFullscreenChange() {
+  if (!document.fullscreenElement) {
+    _unlockOrientation()
+  }
+}
 
 /** 切换视频流自带音轨的静音（浏览器自动播放策略要求由用户手势触发） */
 function toggleMute() {
@@ -485,15 +646,32 @@ function toggleMute() {
   }
 }
 
-/** 全屏切换 */
-function toggleFullscreen() {
-  const el = videoEl.value?.parentElement || videoEl.value
+/** 全屏切换（移动端进入全屏时尝试锁定横屏，获得更大观看区域） */
+async function toggleFullscreen() {
+  const el = containerRef.value || videoEl.value?.parentElement || videoEl.value
   if (!el) return
-  if (document.fullscreenElement) {
-    document.exitFullscreen()
-  } else {
-    el.requestFullscreen()
-  }
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen()
+      _unlockOrientation()
+    } else {
+      await el.requestFullscreen()
+      if (ui.isMobile) {
+        try {
+          await screen.orientation?.lock?.('landscape')
+        } catch (_) {
+          // 部分浏览器/上下文不支持锁定方向，忽略
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+/** 解除方向锁定 */
+function _unlockOrientation() {
+  try {
+    screen.orientation?.unlock?.()
+  } catch (_) {}
 }
 
 /** 键盘快捷键处理 */
@@ -521,5 +699,7 @@ onUnmounted(() => {
     videoEl.value.srcObject = null
   }
   window.removeEventListener('keydown', _handleKeyDown)
+  document.removeEventListener('fullscreenchange', _onFullscreenChange)
+  _unlockOrientation()
 })
 </script>
