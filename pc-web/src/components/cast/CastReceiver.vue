@@ -161,30 +161,52 @@ const accessibilityEnabled = computed(() => {
   return props.remoteStatus.accessibilityEnabled === true
 })
 
-/** 获取视频显示区域的实际尺寸（去除黑边） */
+/**
+ * 获取视频实际渲染区域（扣除 object-contain 产生的 letterbox 黑边）
+ *
+ * 关键兜底：视频原始宽高未知时（流刚建立、首帧未到）不再返回 null，
+ * 而是退回 video 元素的盒子。原实现此刻直接 return null，
+ * 使得 onPointerDown 静默退出 —— 表现就是「点画面完全没反应」。
+ */
 function _getVideoRect() {
-  if (!videoEl.value || !containerRef.value) return null
-  const containerRect = containerRef.value.getBoundingClientRect()
   const video = videoEl.value
+  if (!video) return null
+
+  const box = containerRef.value
+    ? containerRef.value.getBoundingClientRect()
+    : video.getBoundingClientRect()
+  if (!box.width || !box.height) return null
+
   const videoWidth = video.videoWidth
   const videoHeight = video.videoHeight
-  if (!videoWidth || !videoHeight || !containerRect.width || !containerRect.height) {
-    return null
+
+  // 原始宽高未知 → 算不出黑边，按元素盒子处理，保证点击仍可用
+  if (!videoWidth || !videoHeight) {
+    return {
+      width: box.width,
+      height: box.height,
+      offsetX: 0,
+      offsetY: 0,
+      videoWidth,
+      videoHeight,
+      fallback: true,
+    }
   }
+
   const aspectRatio = videoWidth / videoHeight
-  const containerAspectRatio = containerRect.width / containerRect.height
+  const containerAspectRatio = box.width / box.height
 
   let renderWidth, renderHeight, offsetX, offsetY
 
   if (aspectRatio > containerAspectRatio) {
-    renderWidth = containerRect.width
-    renderHeight = containerRect.width / aspectRatio
+    renderWidth = box.width
+    renderHeight = box.width / aspectRatio
     offsetX = 0
-    offsetY = (containerRect.height - renderHeight) / 2
+    offsetY = (box.height - renderHeight) / 2
   } else {
-    renderHeight = containerRect.height
-    renderWidth = containerRect.height * aspectRatio
-    offsetX = (containerRect.width - renderWidth) / 2
+    renderHeight = box.height
+    renderWidth = box.height * aspectRatio
+    offsetX = (box.width - renderWidth) / 2
     offsetY = 0
   }
 
@@ -195,19 +217,26 @@ function _getVideoRect() {
     offsetY,
     videoWidth,
     videoHeight,
+    fallback: false,
   }
 }
 
-/** 将鼠标坐标转换为手机屏幕百分比 */
+/** 将鼠标坐标转换为手机屏幕归一化坐标（0~1） */
 function _mapToPhonePercent(clientX, clientY) {
   const videoRect = _getVideoRect()
-  if (!videoRect) return null
+  if (!videoRect) {
+    console.warn('[CastReceiver] ⚠️ 定位不到视频区域，本次点击被忽略')
+    return null
+  }
 
-  const containerRect = containerRef.value.getBoundingClientRect()
-  const x = clientX - containerRect.left - videoRect.offsetX
-  const y = clientY - containerRect.top - videoRect.offsetY
+  const box = containerRef.value
+    ? containerRef.value.getBoundingClientRect()
+    : videoEl.value.getBoundingClientRect()
+  const x = clientX - box.left - videoRect.offsetX
+  const y = clientY - box.top - videoRect.offsetY
 
   if (x < 0 || x > videoRect.width || y < 0 || y > videoRect.height) {
+    // 落在黑边内，属于画面之外的点击，静默忽略
     return null
   }
 
@@ -219,7 +248,14 @@ function _mapToPhonePercent(clientX, clientY) {
 
 /** Pointer Events 同时覆盖鼠标、触控笔和浏览器触摸事件。 */
 function onPointerDown(e) {
-  if (activePointerId.value !== null || (e.pointerType === 'mouse' && e.button !== 0)) return
+  // 上一个手势没正常收尾（指针在容器外抬起、页面切走、断点调试等）时强制复位。
+  // 原实现里 activePointerId 一旦残留就永久非 null，之后每一次点击都会被这里吞掉。
+  if (activePointerId.value !== null) {
+    console.warn('[CastReceiver] 上一个手势未正常收尾，强制复位')
+    _resetPointerGesture()
+  }
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+
   const percent = _mapToPhonePercent(e.clientX, e.clientY)
   if (!percent) return
 
@@ -276,8 +312,10 @@ function onPointerUp(e) {
   // 长按已触发时不再补发 tap，避免点击与长按重复执行
   if (end && !longPressFired) {
     if (gestureDistance.value <= TAP_THRESHOLD_PX) {
+      console.log('[CastReceiver] 🖱️ tap', end.x, end.y)
       emit('control', { type: 'tap', x: end.x, y: end.y })
     } else {
+      console.log('[CastReceiver] 🖱️ swipe', start, '→', end, `${duration}ms`)
       emit('control', {
         type: 'swipe',
         startX: start.x,

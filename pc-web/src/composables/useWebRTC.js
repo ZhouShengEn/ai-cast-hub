@@ -201,7 +201,9 @@ function _createInstance(ns, config) {
     async fetchIceServers() {
       try {
         const client = (await import('../api/client.js')).default
-        const data = await client.get('/api/v1/webrtc/config')
+        // client 已配置 baseURL='/api/v1'，这里不能重复拼前缀，
+        // 否则请求会变成 /api/v1/api/v1/webrtc/config 直接 404
+        const data = await client.get('/webrtc/config')
         if (data?.iceServers) {
           state.iceServers = data.iceServers
           log('fetched ICE servers:', data.iceServers.length)

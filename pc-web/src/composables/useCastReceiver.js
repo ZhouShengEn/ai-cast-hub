@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useWebSocket } from './useWebSocket'
 import { useWebRTC } from './useWebRTC'
 import { useCastStore } from '../stores/cast'
@@ -17,7 +17,13 @@ import { usePcmPlayer } from './usePcmPlayer'
 export function useCastReceiver(externalVideoRef) {
   const castStore = useCastStore()
   const videoRef = externalVideoRef || ref(null)
-  const connectionState = ref('disconnected')
+
+  /**
+   * 连接状态的唯一来源是 Pinia store。
+   * 这里只做只读映射，禁止再写 connectionState.value，
+   * 否则就会出现「store 已恢复、组件还停在失败态」的不一致。
+   */
+  const connectionState = computed(() => castStore.connectionState)
 
   const { send, onMessage, offMessage } = useWebSocket()
   const {
@@ -87,8 +93,8 @@ export function useCastReceiver(externalVideoRef) {
       _roomClosedHandler = null
     }
 
-    connectionState.value = 'disconnected'
-    castStore.setConnectionState('disconnected')
+    // 重置全部状态（含历史错误标记），保证每次进入页面都是干净的起点
+    castStore.resetForReconnect()
 
     // 从服务器获取 ICE 配置（STUN/TURN）
     fetchIceServers()
@@ -140,9 +146,8 @@ export function useCastReceiver(externalVideoRef) {
     rtcClose()
 
     _currentRoomId = roomId
-    castStore.roomId = roomId
-    connectionState.value = 'connecting'
-    castStore.setConnectionState('connecting')
+    castStore.setRoomId(roomId)
+    castStore.setConnectionState('pairing', `收到房间邀请 ${roomId}`)
 
     // 加入房间
     console.log('[CastReceiver] 发送join_room, roomId:', roomId)
@@ -150,6 +155,10 @@ export function useCastReceiver(externalVideoRef) {
       type: 'join_room',
       roomId,
     })
+
+    // 房间已建立 = 信令链路就绪
+    castStore.setSignalingConnected(true)
+    castStore.setConnectionState('signaling', '已加入房间，等待手机端 offer')
 
     // 设置 WebRTC 回调
     _setupWebRTCCallbacks()
@@ -166,6 +175,7 @@ export function useCastReceiver(externalVideoRef) {
       try {
         if (signalType === 'offer') {
           console.log('[CastReceiver] 收到offer, SDP长度:', payload.sdp?.length)
+          castStore.setConnectionState('connecting', '收到 offer，开始 ICE 协商')
           // 收到手机端 offer → 创建 answer 并回复
           await handleOffer(payload.sdp, (answerPayload) => {
             console.log('[CastReceiver] 发送answer, SDP长度:', answerPayload.sdp?.length)
@@ -190,9 +200,7 @@ export function useCastReceiver(externalVideoRef) {
       } catch (err) {
         // offer/answer 处理失败才是致命错误
         console.error('[CastReceiver] 投屏信令处理失败:', err)
-        connectionState.value = 'error'
-        castStore.setConnectionState('error')
-        castStore.error = err.message
+        castStore.setError(err.message || '投屏信令处理失败')
       }
     }
     onMessage('signal', _signalHandler)
@@ -238,8 +246,7 @@ export function useCastReceiver(externalVideoRef) {
         } else {
           console.log('[CastReceiver] ⚠️ videoRef不存在，无法绑定流')
         }
-        connectionState.value = 'connected'
-        castStore.setConnectionState('connected')
+        castStore.setConnectionState('connected', '已收到媒体轨道')
         console.log('[CastReceiver] ✅ 投屏连接已建立')
       } else {
         console.log('[CastReceiver] ⚠️ remoteStream为空，无法绑定')
@@ -249,8 +256,11 @@ export function useCastReceiver(externalVideoRef) {
 
     // 监听 WebRTC 连接状态变化：仅在连接彻底失败或关闭时自动清理
     // 注意: 'disconnected' 在 WebRTC 中是可恢复状态（ICE consent 短暂失败），不应销毁连接
+    // 统一交给 store 判定：store 会在 connected 时自动清除失败态，
+    // 这里不再单独维护一份判断逻辑，避免两处状态打架
     _connectionStateCb = (state) => {
       console.log('[CastReceiver] WebRTC连接状态变化:', state)
+      castStore.setPeerState(state)
       if (state === 'failed' || state === 'closed') {
         console.log('[CastReceiver] WebRTC 连接不可恢复 (state=%s)，清理投屏状态', state)
         stopReceiving()
@@ -290,11 +300,13 @@ export function useCastReceiver(externalVideoRef) {
     _controlChannel = channel
     channel.onopen = () => {
       console.log('[CastReceiver] ✅ 远程控制 DataChannel 已打开')
+      castStore.setControlChannelOpen(true)
       // 通道就绪后立即查询一次无障碍服务状态，用于 Web 端提示用户
       sendControl({ type: 'query_status' })
     }
     channel.onclose = () => {
       console.log('[CastReceiver] 🔌 远程控制 DataChannel 已关闭')
+      castStore.setControlChannelOpen(false)
       if (_controlChannel === channel) _controlChannel = null
       remoteStatus.value = null
     }
@@ -387,7 +399,6 @@ export function useCastReceiver(externalVideoRef) {
       videoRef.value.srcObject = null
     }
     castStore.cleanup()
-    connectionState.value = 'disconnected'
     _currentRoomId = null
   }
 

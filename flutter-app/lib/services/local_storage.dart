@@ -49,11 +49,14 @@ class LocalStorage {
   Future<bool> saveTransferKey(String key) =>
       _prefs.setString('transfer_key', key);
 
+  /// 线上服务器地址（韩国云服务器，cast.zhoushengen.xyz 反代）
+  static const String _prodServerUrl = 'https://cast.zhoushengen.xyz/api/v1';
+
   /// 获取服务器地址
   ///
   /// 优先级：用户自定义设置 > 平台默认值
   /// - Web: http://localhost:3000/api/v1
-  /// - 真机/其他: http://192.168.1.41:3000/api/v1
+  /// - 真机/其他: https://cast.zhoushengen.xyz/api/v1
   String getServerUrl() {
     final saved = _prefs.getString('server_url');
     if (saved != null && saved.isNotEmpty) {
@@ -68,9 +71,9 @@ class LocalStorage {
     if (kIsWeb) {
       return 'http://localhost:3000/api/v1';
     }
-    // 默认使用局域网 IP（真机通过 WiFi 连接）
-    // 模拟器用户请在「设置」中修改为 10.0.2.2
-    return 'http://192.168.1.41:3000/api/v1';
+    // 真机默认直连线上服务器，无需先在同一局域网内配对
+    // 局域网调试时可在「设置 → 服务器地址」改回 http://<PC 内网 IP>:3000/api/v1
+    return _prodServerUrl;
   }
 
   /// 保存服务器地址

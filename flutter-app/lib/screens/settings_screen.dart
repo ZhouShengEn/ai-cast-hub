@@ -82,7 +82,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     controller: _serverUrlController,
                     decoration: const InputDecoration(
                       labelText: '服务器地址',
-                      hintText: 'http://192.168.1.41:3000/api/v1',
+                      hintText: 'https://cast.zhoushengen.xyz/api/v1',
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.dns),
                     ),
