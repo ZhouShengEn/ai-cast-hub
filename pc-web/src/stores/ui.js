@@ -23,6 +23,17 @@ export const useUiStore = defineStore('ui', {
     isSidebarOpen: false,
     /** 当前视口宽度，0 表示尚未初始化 */
     viewportWidth: 0,
+    /**
+     * PC 端侧边栏是否收起（手动折叠）。
+     * 持久化到 localStorage，刷新后保持用户选择；移动端走 isSidebarOpen 分支，不受此值影响。
+     */
+    pcSidebarCollapsed: (() => {
+      try {
+        return localStorage.getItem('pcSidebarCollapsed') === '1'
+      } catch (_) {
+        return false
+      }
+    })(),
   }),
 
   getters: {
@@ -32,10 +43,11 @@ export const useUiStore = defineStore('ui', {
 
     /**
      * 侧边栏是否可见。
-     * PC 端恒为 true；移动端跟随 isSidebarOpen。
+     * 移动端：浮层模式，跟随 isSidebarOpen。
+     * PC 端：跟随 pcSidebarCollapsed（可手动折叠，持久化）。
      */
     sidebarVisible() {
-      return this.isMobile ? this.isSidebarOpen : true
+      return this.isMobile ? this.isSidebarOpen : !this.pcSidebarCollapsed
     },
   },
 
@@ -50,6 +62,16 @@ export const useUiStore = defineStore('ui', {
 
     toggleSidebar() {
       this.isSidebarOpen = !this.isSidebarOpen
+    },
+
+    /** PC 端侧边栏手动折叠/展开，并持久化到 localStorage */
+    togglePcSidebar() {
+      this.pcSidebarCollapsed = !this.pcSidebarCollapsed
+      try {
+        localStorage.setItem('pcSidebarCollapsed', this.pcSidebarCollapsed ? '1' : '0')
+      } catch (_) {
+        // localStorage 不可用时仅内存态生效
+      }
     },
 
     /**

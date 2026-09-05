@@ -57,6 +57,38 @@
             ⏹ 停止接收
           </button>
         </div>
+
+        <!-- 设备快捷控制（音量 / 截图 / 电源菜单） -->
+        <div v-if="castStore.connectionState === 'connected'" class="flex justify-center mt-3 gap-3 flex-wrap">
+          <button
+            class="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+            @click="sendControl({ type: 'volume_up' })"
+            title="音量增加"
+          >
+            🔊 音量+
+          </button>
+          <button
+            class="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+            @click="sendControl({ type: 'volume_down' })"
+            title="音量减少"
+          >
+            🔉 音量-
+          </button>
+          <button
+            class="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+            @click="sendControl({ type: 'screenshot' })"
+            title="截屏（Android 12+）"
+          >
+            📸 截图
+          </button>
+          <button
+            class="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+            @click="sendControl({ type: 'power' })"
+            title="电源菜单"
+          >
+            ⏻ 电源
+          </button>
+        </div>
       </div>
     </div>
   </div>

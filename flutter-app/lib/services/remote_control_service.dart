@@ -52,6 +52,14 @@ class RemoteControlService {
           return _handleBack();
         case 'recent':
           return _handleRecent();
+        case 'volume_up':
+          return _handleVolumeAdjust(1);
+        case 'volume_down':
+          return _handleVolumeAdjust(-1);
+        case 'screenshot':
+          return _performGlobalAction('screenshot');
+        case 'power':
+          return _performGlobalAction('power');
         default:
           _rcLog('未知指令类型: $type', level: LogLevel.warn);
           return false;
@@ -172,6 +180,21 @@ class RemoteControlService {
   Future<bool> _handleRecent() async {
     _rcLog('执行多任务键');
     return _performGlobalAction('recent');
+  }
+
+  /// 音量调节：direction>0 增大，<0 减小（经 Kotlin AudioManager 调整媒体音量）
+  Future<bool> _handleVolumeAdjust(int direction) async {
+    _rcLog('执行音量调节: ${direction > 0 ? '+' : '-'}');
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'dispatchVolumeAdjust',
+        {'direction': direction},
+      );
+      return result ?? false;
+    } on PlatformException catch (e) {
+      _rcLog('dispatchVolumeAdjust失败: ${e.message}', level: LogLevel.error);
+      return false;
+    }
   }
 
   Future<bool> _dispatchTap(double xPercent, double yPercent) async {

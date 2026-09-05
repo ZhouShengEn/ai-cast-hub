@@ -6,6 +6,7 @@ import android.accessibilityservice.GestureDescription
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.graphics.Path
 import android.graphics.Point
 import android.graphics.Rect
@@ -396,6 +397,16 @@ class RemoteControlService : AccessibilityService() {
                 "home" -> GLOBAL_ACTION_HOME
                 "back" -> GLOBAL_ACTION_BACK
                 "recent" -> GLOBAL_ACTION_RECENTS
+                "power" -> GLOBAL_ACTION_POWER_DIALOG
+                "screenshot" -> {
+                    // 系统级截图需 Android 12(API 31) 及以上
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        GLOBAL_ACTION_TAKE_SCREENSHOT
+                    } else {
+                        _rcLog("截图需要 Android 12(S) 及以上", level = LogLevel.warn)
+                        return false
+                    }
+                }
                 else -> return false
             }
             Log.d(TAG, "performGlobalAction: $action")
@@ -403,6 +414,35 @@ class RemoteControlService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "performGlobalAction failed: ${e.message}")
             return false
+        }
+    }
+
+    /**
+     * 调节媒体音量。
+     * @param direction 1 = 增大，-1 = 减小（其他值视为增大）
+     */
+    fun dispatchVolumeAdjust(direction: Int): Boolean {
+        return try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val flag = AudioManager.FLAG_SHOW_UI
+            if (direction > 0) {
+                audioManager.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_RAISE,
+                    flag,
+                )
+            } else {
+                audioManager.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_LOWER,
+                    flag,
+                )
+            }
+            Log.d(TAG, "dispatchVolumeAdjust: ${if (direction > 0) "+" else "-"}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "dispatchVolumeAdjust failed: ${e.message}")
+            false
         }
     }
 

@@ -149,6 +149,12 @@ class MainActivity : FlutterActivity() {
                         it.performGlobalAction(action)
                     }
                 }
+                "dispatchVolumeAdjust" -> {
+                    val direction = call.argument<Int>("direction") ?: 0
+                    dispatchGestureSafe("dispatchVolumeAdjust", result) {
+                        it.dispatchVolumeAdjust(direction)
+                    }
+                }
                 "clearGestureState" -> {
                     // 投屏结束时释放手势运行态，服务未连接也视为清理成功
                     RemoteControlService.instance?.clearGestureState()

@@ -68,11 +68,28 @@
                md:static md:z-auto md:translate-x-0"
       >
         <!-- Logo 区域（移动端顶部栏已有标题，这里仅在 PC 显示） -->
-        <div class="p-6 border-b border-white/10 hidden md:block">
-          <h1 class="text-xl font-bold tracking-wide">
-            <span class="text-primary-500">AI</span> Cast Hub
-          </h1>
-          <p class="text-xs text-gray-400 mt-1">跨设备 AI 协作平台</p>
+        <div class="p-6 border-b border-white/10 hidden md:flex items-start justify-between gap-2">
+          <div>
+            <h1 class="text-xl font-bold tracking-wide">
+              <span class="text-primary-500">AI</span> Cast Hub
+            </h1>
+            <p class="text-xs text-gray-400 mt-1">跨设备 AI 协作平台</p>
+          </div>
+          <!-- PC 端收起按钮 -->
+          <button
+            type="button"
+            class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg
+                   text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            :aria-label="'收起侧边栏'"
+            title="收起侧边栏"
+            @click="ui.togglePcSidebar()"
+          >
+            <!-- 收起图标：向左的双箭头 -->
+            <span class="block w-4 h-4 relative">
+              <span class="absolute left-0 top-1 h-0.5 w-4 rounded bg-current rotate-45"></span>
+              <span class="absolute left-0 bottom-1 h-0.5 w-4 rounded bg-current -rotate-45"></span>
+            </span>
+          </button>
         </div>
 
         <!-- 移动端顶部留白，避免菜单被顶部栏压住 -->
@@ -125,6 +142,26 @@
     >
       <slot />
     </main>
+
+    <!-- PC 端折叠状态下的展开浮层按钮（侧边栏收起时出现，点击恢复） -->
+    <Transition name="fade">
+      <button
+        v-if="!ui.isMobile && ui.pcSidebarCollapsed"
+        type="button"
+        class="fixed top-3 left-3 z-40 w-10 h-10 flex items-center justify-center rounded-lg
+               bg-surface-800 text-white shadow-lg hover:bg-surface-700 transition-colors"
+        :aria-label="'展开侧边栏'"
+        title="展开侧边栏"
+        @click="ui.togglePcSidebar()"
+      >
+        <!-- 汉堡图标 -->
+        <span class="block w-5 h-4 relative">
+          <span class="absolute left-0 top-0 h-0.5 w-5 rounded bg-current"></span>
+          <span class="absolute left-0 top-[7px] h-0.5 w-5 rounded bg-current"></span>
+          <span class="absolute left-0 top-[14px] h-0.5 w-5 rounded bg-current"></span>
+        </span>
+      </button>
+    </Transition>
   </div>
 </template>
 
