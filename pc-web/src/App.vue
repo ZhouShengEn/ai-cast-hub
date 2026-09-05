@@ -1,116 +1,56 @@
 <template>
-  <div class="flex h-screen overflow-hidden">
-    <!-- 左侧导航栏 -->
-    <aside class="w-64 bg-surface-800 text-white flex flex-col shrink-0">
-      <!-- Logo 区域 -->
-      <div class="p-6 border-b border-white/10">
-        <h1 class="text-xl font-bold tracking-wide">
-          <span class="text-primary-500">AI</span> Cast Hub
-        </h1>
-        <p class="text-xs text-gray-400 mt-1">跨设备 AI 协作平台</p>
-      </div>
+  <!--
+    布局已抽到 MainLayout：PC 保持原有左栏 + 右内容；
+    移动端自动切换为顶部汉堡栏 + 浮层侧边栏。
+  -->
+  <MainLayout>
+    <router-view v-slot="{ Component }">
+      <transition name="fade" mode="out-in">
+        <component :is="Component" />
+      </transition>
+    </router-view>
+  </MainLayout>
 
-      <!-- 导航菜单 -->
-      <nav class="flex-1 py-4">
-        <ul class="space-y-1 px-3">
-          <li v-for="item in navItems" :key="item.path">
-            <router-link
-              :to="item.path"
-              class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors relative"
-              :class="isActive(item.path)
-                ? 'bg-primary-600 text-white'
-                : 'text-gray-300 hover:bg-white/10 hover:text-white'"
-            >
-              <span class="text-lg">{{ item.icon }}</span>
-              <span>{{ item.label }}</span>
-              <!-- 消息未读红点 -->
-              <span
-                v-if="item.hasBadge && messageStore.unreadCount > 0"
-                class="absolute top-1 right-2 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center"
-              >
-                {{ messageStore.unreadCount > 99 ? '99+' : messageStore.unreadCount }}
-              </span>
-            </router-link>
-          </li>
-        </ul>
-      </nav>
-
-      <!-- 底部状态 -->
-      <div class="p-4 border-t border-white/10">
-        <div class="flex items-center gap-2 text-xs text-gray-400">
-          <span class="w-2 h-2 rounded-full" :class="deviceStatusClass"></span>
-          <span>{{ deviceStatusText }}</span>
-        </div>
-      </div>
-    </aside>
-
-    <!-- 右侧内容区 -->
-    <main class="flex-1 overflow-auto bg-surface-50">
-      <router-view v-slot="{ Component }">
-        <transition name="fade" mode="out-in">
-          <component :is="Component" />
-        </transition>
-      </router-view>
-    </main>
-
-    <!-- 全局 Toast 通知 -->
-    <TransitionGroup
-      tag="div"
-      name="toast"
-      class="fixed top-4 right-4 z-50 flex flex-col gap-2"
+  <!-- 全局 Toast 通知（移动端下移，避让顶部汉堡栏） -->
+  <TransitionGroup
+    tag="div"
+    name="toast"
+    class="fixed right-4 top-4 z-[60] flex flex-col gap-2 md:top-4"
+    :class="uiStore.isMobile ? 'top-16' : ''"
+  >
+    <div
+      v-for="toast in toasts"
+      :key="toast.id"
+      class="px-4 py-3 rounded-lg shadow-lg text-sm max-w-[calc(100vw-2rem)] sm:max-w-sm"
+      :class="toastClass(toast.type)"
     >
-      <div
-        v-for="toast in toasts"
-        :key="toast.id"
-        class="px-4 py-3 rounded-lg shadow-lg text-sm max-w-sm"
-        :class="toastClass(toast.type)"
-      >
-        {{ toast.message }}
-      </div>
-    </TransitionGroup>
-  </div>
+      {{ toast.message }}
+    </div>
+  </TransitionGroup>
 </template>
 
 <script setup>
-import { ref, computed, provide, onMounted, onUnmounted, watch } from 'vue'
+import { ref, provide, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useWebSocket } from './composables/useWebSocket'
 import { useDeviceStore } from './stores/device'
 import { useMessageStore } from './stores/message'
 import { useMessageTransfer } from './composables/useMessageTransfer'
+import { useUiStore } from './stores/ui'
+import MainLayout from './layout/MainLayout.vue'
 
 const route = useRoute()
 const deviceStore = useDeviceStore()
 const messageStore = useMessageStore()
+const uiStore = useUiStore()
 const { connect: wsConnect, disconnect: wsDisconnect, onMessage, offMessage } = useWebSocket()
 const { startListening: startMessageListening, disconnect: disconnectMessageChannel } = useMessageTransfer()
 
-/** 导航菜单项 */
-const navItems = [
-  { path: '/', label: '首页', icon: '🏠' },
-  { path: '/chat', label: 'AI 对话', icon: '💬' },
-  { path: '/cast', label: '投屏接收', icon: '📺' },
-  { path: '/message', label: '消息', icon: '💬', hasBadge: true },
-]
-
-/** 设备连接状态 */
+/**
+ * 设备连接状态。
+ * 通过 provide 注入给 MainLayout 渲染侧边栏底部状态点，保持原有逻辑不变。
+ */
 const deviceConnected = ref(false)
-
-const deviceStatusClass = computed(() =>
-  deviceConnected.value ? 'bg-green-400' : 'bg-yellow-400'
-)
-
-const deviceStatusText = computed(() =>
-  deviceConnected.value ? '设备已连接' : '等待设备连接'
-)
-
-/** 判断当前路由是否激活 */
-function isActive(path) {
-  if (path === '/') {
-    return route.path === '/'
-  }
-  return route.path.startsWith(path)
-}
 
 // 监听路由变化，更新消息页面查看状态
 watch(() => route.path, (newPath) => {
@@ -175,6 +115,9 @@ onMounted(async () => {
 
   // 全局启动消息通道监听（无论是否在消息页面都能收到消息）
   startMessageListening()
+
+  // 注册视口监听：窗口尺寸变化时自动切换 PC / 移动端布局模式
+  uiStore.bindViewportListener()
 })
 
 onUnmounted(() => {
@@ -182,6 +125,7 @@ onUnmounted(() => {
   offMessage('device_unbound', onDeviceUnbound)
   disconnectMessageChannel()
   wsDisconnect()
+  uiStore.unbindViewportListener()
 })
 
 // ============================================================
