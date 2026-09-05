@@ -32,11 +32,20 @@ const config = {
     // 如需持久化，可启用 MySQL 或添加 SQLite 支持
   },
 
-  /** TURN/STUN 服务器配置 */
+  /**
+   * TURN/STUN 服务器配置
+   *
+   * 注意：这里**不能**给 TURN 回落 localhost 之类的占位值。
+   * 空字符串是 falsy，`||` 会把占位值填回来，于是把不可达的 TURN 下发给
+   * 客户端——ICE 会去连一个永远不通的地址并等待超时，反而比不给 TURN 更慢。
+   *
+   * 未部署 coturn 时保持为空：turnConfig.js 检测到空值就不下发 TURN，
+   * 客户端只用公共 STUN。真正部署后再在 .env 里配这三个变量。
+   */
   turn: {
-    server: process.env.TURN_SERVER || 'turn:localhost:3478',
-    username: process.env.TURN_USERNAME || 'ai_cast',
-    credential: process.env.TURN_CREDENTIAL || 'ai_cast_turn',
+    server: process.env.TURN_SERVER || '',
+    username: process.env.TURN_USERNAME || '',
+    credential: process.env.TURN_CREDENTIAL || '',
   },
 
   /** Docker 沙箱配置 */
