@@ -82,14 +82,27 @@ class SystemAudioCaptureManager {
             }
             val bufferSize = maxOf(minBuffer, FRAME_BYTES * 4)
 
-            // 不限制 usage，默认采集全部可捕获的应用播放声；
-            // setAllowedCapturePolicy(ALLOW_CAPTURE_BY_ALL) 进一步放宽到允许被「所有」捕获的应用，
-            // 以尽量多地采集游戏/语音/媒体等音频。
-            // 注意：通知、键盘、系统 UI 等并非「应用播放声」，Android 不允许非 root 应用采集；
-            // 标记为 ALLOW_CAPTURE_BY_NONE 的 DRM 内容同样无法采集。
-            val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
-                .setAllowedCapturePolicy(AudioPlaybackCaptureConfiguration.ALLOW_CAPTURE_BY_ALL)
-                .build()
+            // 采集尽可能多的「可捕获应用播放声」：
+            // - AudioPlaybackCaptureConfiguration 默认 allowedCapturePolicy 即为 ALLOW_CAPTURE_BY_ALL，
+            //   故无需显式调用 setAllowedCapturePolicy（该 API 在部分 compileSdk 下不可见，省略不影响范围）；
+            // - 通过 addMatchingUsage 匹配常见 usage，尽量覆盖媒体/游戏/语音/通知/辅助音。
+            // 注意：被 App 标记为禁止捕获(ALLOW_CAPTURE_BY_NONE) 的音频（如部分 DRM 内容），
+            // 或非「应用播放声」（键盘音、系统 UI 音、通话底层），Android 仍不允许非 root 应用采集。
+            val builder = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .addMatchingUsage(AudioAttributes.USAGE_ALARM)
+                .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_REQUEST)
+                .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_DELAYED)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANT)
+            val config = builder.build()
 
             val record = AudioRecord.Builder()
                 .setAudioPlaybackCaptureConfig(config)
