@@ -86,7 +86,7 @@ class CastNotifier extends StateNotifier<CastState> {
       }
     };
     _service!.onControlCommand = (command) async {
-      await RemoteControlService().executeCommand(command);
+      return RemoteControlService().executeCommand(command);
     };
 
     try {

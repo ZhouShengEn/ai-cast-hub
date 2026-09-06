@@ -104,6 +104,8 @@ class RemoteControlService : AccessibilityService() {
     private var touchStartPoint: Point? = null
     /** 本次连续手势是否发生过移动 */
     private var touchMoved = false
+    /** 最近一次 move/up 派发的手势是否被系统受理（供上层回执失败用） */
+    private var lastTouchAccepted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -264,7 +266,9 @@ class RemoteControlService : AccessibilityService() {
                 gestureBuilder.addStroke(
                     GestureDescription.StrokeDescription(path, 0, 100)
                 )
-                dispatchGesture(gestureBuilder.build(), null, null)
+                lastTouchAccepted = dispatchGesture(gestureBuilder.build(), null, null)
+            } else {
+                lastTouchAccepted = false
             }
 
             lastTouchPoint = Point(x, y)
@@ -285,31 +289,35 @@ class RemoteControlService : AccessibilityService() {
             Log.d(TAG, "dispatchTouchEnd: ($x, $y)")
             // 整段手势没有发生移动（down 之后直接 up）→ 等价于一次点击，补发 tap，
             // 否则纯 touch_start/end 在 Kotlin 侧不会触发任何手势（仅记录坐标）。
+            var accepted = lastTouchAccepted
             if (!touchMoved && touchStartPoint != null) {
                 Log.d(TAG, "dispatchTouchEnd: 无位移，按点击处理 (${touchStartPoint!!.x}, ${touchStartPoint!!.y})")
-                performTapAt(touchStartPoint!!.x, touchStartPoint!!.y)
+                accepted = performTapAt(touchStartPoint!!.x, touchStartPoint!!.y)
             }
             lastTouchPoint = null
             touchStartPoint = null
             touchMoved = false
-            return true
+            return accepted
         } catch (e: Exception) {
             Log.e(TAG, "dispatchTouchEnd failed: ${e.message}")
             return false
         }
     }
 
-    /** 在指定像素坐标处触发一次短点击（供 touch_end 无移动时补发） */
-    private fun performTapAt(x: Int, y: Int) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
-        try {
+    /** 在指定像素坐标处触发一次短点击（供 touch_end 无移动时补发），返回是否被系统受理 */
+    private fun performTapAt(x: Int, y: Int): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        return try {
             val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
             val gesture = GestureDescription.Builder()
                 .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
                 .build()
-            dispatchGesture(gesture, null, null)
+            val accepted = dispatchGesture(gesture, null, null)
+            Log.d(TAG, "performTapAt accepted=$accepted")
+            accepted
         } catch (e: Exception) {
             Log.e(TAG, "performTapAt failed: ${e.message}")
+            false
         }
     }
 
@@ -485,6 +493,7 @@ class RemoteControlService : AccessibilityService() {
         lastTouchPoint = null
         touchStartPoint = null
         touchMoved = false
+        lastTouchAccepted = false
     }
 
     /**

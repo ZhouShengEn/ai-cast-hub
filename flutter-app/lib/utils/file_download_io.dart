@@ -1,13 +1,67 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+/// 文件接收目录名（在文件管理「我的手机」中可见）
+const String _receiveFolderName = 'ai-cast-hub';
+
+/// 与原生约定的文件通道（获取内部存储根目录）
+const MethodChannel _fileChannel = MethodChannel('ai_cast_hub/file');
+
+/// 首启时确保接收目录已创建。
+///
+/// 优先级：已授予「所有文件访问」权限 → 内部存储根目录 `/ai-cast-hub`（文件管理器可见）；
+/// 否则回退应用专属外部存储目录（保证目录一定存在，但位于 Android/data 下，部分系统不可直接浏览）。
+Future<Directory?> ensureReceiveDir() async {
+  try {
+    final dir = await _preferredReceiveDir();
+    if (dir != null) {
+      await dir.create(recursive: true);
+      debugPrint('[File] 接收目录已就绪: ${dir.path}');
+    }
+    return dir;
+  } catch (e) {
+    debugPrint('[File] 创建接收目录失败: $e');
+    return null;
+  }
+}
+
+/// 选择优先接收目录：授予 MANAGE_EXTERNAL_STORAGE 时用内部存储根目录，否则用应用专属目录。
+Future<Directory?> _preferredReceiveDir() async {
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    try {
+      if (await Permission.manageExternalStorage.isGranted) {
+        final root = await _externalStorageRoot();
+        if (root != null && root.isNotEmpty) {
+          return Directory(path.join(root, _receiveFolderName));
+        }
+      }
+    } catch (_) {
+      // 权限查询异常时忽略，走兜底
+    }
+  }
+  final candidates = await _receiveDirCandidates();
+  return candidates.isNotEmpty ? candidates.first : null;
+}
+
+/// 通过原生通道获取内部存储根目录（如 /storage/emulated/0）
+Future<String?> _externalStorageRoot() async {
+  try {
+    return await _fileChannel.invokeMethod<String>('getExternalStorageRoot');
+  } on PlatformException catch (_) {
+    return null;
+  }
+}
 
 /// Android / iOS 平台的文件下载
 ///
 /// 文件统一保存到 `ai-cast-hub` 接收目录（自动创建），方便用户集中查找。
-/// 目录优先级：外部存储根目录 `/ai-cast-hub`（最直观）→ 应用文档目录 `/ai-cast-hub`（兜底，无需存储权限）。
+/// 目录优先级：内部存储根目录 `/ai-cast-hub`（最直观，需所有文件访问权限）→ 应用文档目录 `/ai-cast-hub`（兜底）。
 /// 同名文件自动追加 `(1)`/`(2)` 序号，避免覆盖。
 Future<String?> downloadFile(Uint8List bytes, String fileName) async {
   try {
@@ -38,18 +92,34 @@ Future<String?> downloadFile(Uint8List bytes, String fileName) async {
 }
 
 /// 接收目录候选列表（按优先级）。
-/// 1) 外部存储根目录下的 `ai-cast-hub`（用户最直观，部分系统受作用域存储限制可能不可写）
+/// 1) 内部存储根目录下的 `ai-cast-hub`（用户最直观，需所有文件访问权限）
 /// 2) 应用文档目录下的 `ai-cast-hub`（兜底，应用专属、无需运行时权限）
 Future<List<Directory>> _receiveDirCandidates() async {
   final List<Directory> candidates = [];
+
+  // 已授予所有文件访问权限时，优先放到内部存储根目录（文件管理器可见）
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    try {
+      if (await Permission.manageExternalStorage.isGranted) {
+        final root = await _externalStorageRoot();
+        if (root != null && root.isNotEmpty) {
+          candidates.add(Directory(path.join(root, _receiveFolderName)));
+        }
+      }
+    } catch (_) {
+      // 忽略，走下方兜底
+    }
+  }
+
+  // 应用专属外部存储目录（作用域存储下为 Android/data/<pkg>/files/ai-cast-hub）
   // ignore: deprecated_member_use
   final extDir = await getExternalStorageDirectory();
   if (extDir != null) {
-    candidates.add(Directory(path.join(extDir.path, 'ai-cast-hub')));
+    candidates.add(Directory(path.join(extDir.path, _receiveFolderName)));
   }
   try {
     final docsDir = await getApplicationDocumentsDirectory();
-    candidates.add(Directory(path.join(docsDir.path, 'ai-cast-hub')));
+    candidates.add(Directory(path.join(docsDir.path, _receiveFolderName)));
   } catch (_) {
     // 兜底目录不可用时忽略
   }

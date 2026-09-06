@@ -82,6 +82,10 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("mimeType"),
                     result
                 )
+                "getExternalStorageRoot" -> {
+                    // 返回内部存储根目录（如 /storage/emulated/0），用于在「我的手机」中创建可见的 ai-cast-hub 文件夹
+                    result.success(android.os.Environment.getExternalStorageDirectory().absolutePath)
+                }
                 else -> result.notImplemented()
             }
         }

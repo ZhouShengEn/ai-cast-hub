@@ -378,6 +378,15 @@ export function useCastReceiver(externalVideoRef, options = {}) {
             currentQuality.value = msg.payload.profile
           }
           console.log('[CastReceiver] 画质已生效:', msg.payload)
+        } else if (msg.type === 'control_result') {
+          // 远程控制指令未被手机端受理（无障碍服务未运行 / 被系统拒绝）时给出明确提示
+          if (msg.payload?.ok === false) {
+            options.showToast?.(
+              '远程控制失败：请确认手机端已开启无障碍服务且正在运行',
+              'warn',
+            )
+          }
+          console.log('[CastReceiver] 控制指令回执:', msg.payload)
         }
       } catch (err) {
         console.warn('[CastReceiver] 控制通道收到无法解析的消息:', err)

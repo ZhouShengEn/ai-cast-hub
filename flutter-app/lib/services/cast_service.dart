@@ -78,7 +78,8 @@ class CastService {
   void Function(String error)? onError;
 
   /// 远程控制指令回调
-  void Function(Map<String, dynamic> command)? onControlCommand;
+  /// 执行一条远程控制指令，返回是否被系统受理（供上层回执失败原因）
+  Future<bool> Function(Map<String, dynamic> command)? onControlCommand;
 
   /// 当前投屏会话
   CastSession? get currentSession => _currentSession;
@@ -492,7 +493,8 @@ class CastService {
         return;
       }
 
-      onControlCommand?.call(data);
+      // 其余指令（home/back/recent/volume_*/screenshot/power 等）执行后回执结果
+      unawaited(_dispatchControlAndReport(data));
     } catch (e) {
       _castLog('DataChannel消息解析失败: $e', level: LogLevel.warn);
     }
@@ -510,13 +512,16 @@ class CastService {
       return;
     }
     Map<String, dynamic> cmd;
+    bool report = false;
     switch (action) {
       case 'down':
         cmd = <String, dynamic>{'type': 'touch_start', 'x': nx, 'y': ny};
       case 'move':
         cmd = <String, dynamic>{'type': 'touch_move', 'x': nx, 'y': ny};
       case 'up':
+        // up 是点击/拖拽的结束，受理结果最有诊断价值，回执给 Web
         cmd = <String, dynamic>{'type': 'touch_end', 'x': nx, 'y': ny};
+        report = true;
       case 'scroll':
         final dy = (data['scrollDeltaY'] as num?)?.toDouble() ?? 0.0;
         cmd = <String, dynamic>{
@@ -526,11 +531,31 @@ class CastService {
           'deltaX': 0.0,
           'deltaY': dy,
         };
+        report = true;
       default:
         _castLog('remote_touch 未知 action: $action', level: LogLevel.warn);
         return;
     }
-    onControlCommand?.call(cmd);
+    if (report) {
+      unawaited(_dispatchControlAndReport(cmd));
+    } else {
+      onControlCommand?.call(cmd);
+    }
+  }
+
+  /// 执行一条控制指令并把受理结果回执给 Web 端（失败时可给出明确提示）
+  Future<void> _dispatchControlAndReport(Map<String, dynamic> cmd) async {
+    final ok = await onControlCommand?.call(cmd) ?? false;
+    if (!ok) {
+      _castLog('控制指令未被受理: ${cmd['type']}', level: LogLevel.warn);
+    }
+    _sendControlMessage(<String, dynamic>{
+      'type': 'control_result',
+      'payload': <String, dynamic>{
+        'ok': ok,
+        'command': cmd['type'],
+      },
+    });
   }
 
   /// 向 Web 端上报远程控制状态（无障碍服务是否可用等），供其做 UI 提示

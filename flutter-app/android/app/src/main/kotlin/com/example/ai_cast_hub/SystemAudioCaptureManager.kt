@@ -82,9 +82,13 @@ class SystemAudioCaptureManager {
             }
             val bufferSize = maxOf(minBuffer, FRAME_BYTES * 4)
 
+            // 不限制 usage，默认采集全部可捕获的应用播放声；
+            // setAllowedCapturePolicy(ALLOW_CAPTURE_BY_ALL) 进一步放宽到允许被「所有」捕获的应用，
+            // 以尽量多地采集游戏/语音/媒体等音频。
+            // 注意：通知、键盘、系统 UI 等并非「应用播放声」，Android 不允许非 root 应用采集；
+            // 标记为 ALLOW_CAPTURE_BY_NONE 的 DRM 内容同样无法采集。
             val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .setAllowedCapturePolicy(AudioPlaybackCaptureConfiguration.ALLOW_CAPTURE_BY_ALL)
                 .build()
 
             val record = AudioRecord.Builder()
