@@ -140,13 +140,16 @@ class CastService {
       // 被 _handleDataChannelMessage 静默 return —— 表现就是「重连后按钮无响应」。
       _webrtc.onIceDisconnected((state) {
         _castLog('ICE连接状态: $state', level: LogLevel.warn);
-        _updateSessionStatus('disconnected');
         if (state == 'disconnected') {
+          // ICE 瞬时断开（可恢复）：只通知 UI 断连，保留会话与控制通道
           _castLog('ICE 瞬时断开（可恢复），保留会话与控制通道', level: LogLevel.warn);
+          _updateSessionStatus('disconnected');
           return;
         }
+        // 不可恢复：发 'closed' 通知 Provider 彻底重置（区别于可恢复的 'disconnected'）
         _castLog('ICE连接不可恢复，清理投屏状态', level: LogLevel.warn);
         _isDisposed = true;
+        _updateSessionStatus('closed');
         unawaited(_cleanupResources());
       });
       _webrtc.onIceCandidate((candidate) {
@@ -463,8 +466,9 @@ class CastService {
 
   void _onRoomClosed(Map<String, dynamic> message) {
     _castLog('收到room_closed, 投屏结束', level: LogLevel.warn);
-    _updateSessionStatus('disconnected');
     _isDisposed = true;
+    // 房间关闭=会话真正结束，发 'closed' 让 Provider 完全重置
+    _updateSessionStatus('closed');
     unawaited(_cleanupResources());
   }
 

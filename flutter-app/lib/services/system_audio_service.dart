@@ -40,7 +40,10 @@ class SystemAudioService {
   static const int frameMillis = 20;
 
   StreamSubscription<dynamic>? _pcmSubscription;
-  final StreamController<Uint8List> _pcmController =
+  // 注意：单例控制器不可声明为 final 后在 dispose 中关闭——否则二次投屏时
+  // 控制器已 closed，PCM 被静默丢弃且原生采集线程持续泄漏。这里允许在
+  // 极端情况下重建（dispose 已不再关闭控制器）。
+  StreamController<Uint8List> _pcmController =
       StreamController<Uint8List>.broadcast();
 
   bool _isCapturing = false;
@@ -100,6 +103,10 @@ class SystemAudioService {
       if (!granted) return false;
     }
 
+    // 单例控制器若曾被关闭（理论上不会，dispose 已不再关闭），则重建以便重新接收 PCM
+    if (_pcmController.isClosed) {
+      _pcmController = StreamController<Uint8List>.broadcast();
+    }
     // 先挂上 PCM 监听，再启动采集，避免丢掉起始帧
     _pcmSubscription ??= _pcmChannel.receiveBroadcastStream().listen(
       (dynamic event) {
@@ -159,10 +166,12 @@ class SystemAudioService {
   }
 
   /// 释放全部资源（投屏结束 / 服务销毁时调用）
+  ///
+  /// 单例：只停止采集并取消订阅，**不要关闭** [_pcmController]。
+  /// 否则二次投屏时控制器已关闭，PCM 被静默丢弃，且原生侧采集线程在后台
+  /// 持续运行造成 CPU/电量泄漏。
   Future<void> dispose() async {
     await stop();
-    if (!_pcmController.isClosed) {
-      await _pcmController.close();
-    }
+    await _releasePcmSubscription();
   }
 }

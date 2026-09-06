@@ -184,10 +184,12 @@ router.post('/bind-by-code', async (req, res, next) => {
     // 检查当前设备是否存在，不存在则自动注册
     let myDevice = await DeviceModel.findByUuid(myDeviceUuid);
     if (!myDevice) {
+      // 补全 transferKey：否则后续 WS 鉴权会因 transfer_key 不匹配被拒（4003）
       myDevice = await DeviceModel.register(
         myDeviceUuid,
         `Mobile-${myDeviceUuid.substring(0, 8)}`,
-        'android'
+        'android',
+        generateTransferKey(),
       );
     }
 
@@ -272,11 +274,12 @@ router.post('/bind', async (req, res, next) => {
     // 检查当前设备是否存在，不存在则自动注册（手机端可能还未注册）
     let myDevice = await DeviceModel.findByUuid(myDeviceUuid);
     if (!myDevice) {
-      // 自动注册手机设备
+      // 自动注册手机设备（补全 transferKey，避免后续 WS 鉴权失败）
       myDevice = await DeviceModel.register(
-        myDeviceUuid, 
-        `Mobile-${myDeviceUuid.substring(0, 8)}`, 
-        'android' // 默认 android
+        myDeviceUuid,
+        `Mobile-${myDeviceUuid.substring(0, 8)}`,
+        'android', // 默认 android
+        generateTransferKey(),
       );
     }
 

@@ -71,18 +71,19 @@ class CastNotifier extends StateNotifier<CastState> {
 
     _service = CastService();
     _service!.onStatusChanged = (status) {
-      if (status == 'disconnected') {
-        // ICE断开或房间关闭，完全重置状态
+      if (status == 'closed') {
+        // 会话真正结束（ICE failed/closed 或房间关闭）：完全重置
         state = state.copyWith(
           connectionState: 'disconnected',
           isCasting: false,
           roomId: null,
         );
+      } else if (status == 'disconnected') {
+        // ICE 瞬时断开是可恢复的，只更新连接态，不要拆会话/清空 roomId，
+        // 否则弱网下会话会被误清，重连后控制通道失效（按钮无响应）。
+        state = state.copyWith(connectionState: 'disconnected');
       } else if (state.isCasting) {
-        state = state.copyWith(
-          connectionState: status,
-          isCasting: status != 'disconnected',
-        );
+        state = state.copyWith(connectionState: status);
       }
     };
     _service!.onControlCommand = (command) async {

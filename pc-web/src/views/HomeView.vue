@@ -168,8 +168,8 @@ async function tryConnect(device) {
   showToast('正在尝试连接...', 'info')
 
   try {
-    // 尝试通过 WebSocket 创建房间唤醒对方
-    const roomId = await createRoom(targetUuid, 'ping')
+    // 尝试通过 WebSocket 创建房间唤醒对方（createRoom 仅需目标 UUID，第二参数无效）
+    const roomId = await createRoom(targetUuid)
     if (roomId) {
       showToast('连接请求已发送，请等待 App 响应', 'success')
       // 2秒后刷新设备列表查看是否在线

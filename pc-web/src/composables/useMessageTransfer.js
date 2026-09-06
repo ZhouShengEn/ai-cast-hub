@@ -157,9 +157,11 @@ export function useMessageTransfer() {
       const handler = (msg) => {
         if (msg.type === 'room_created') {
           offMessage('room_created', handler)
+          offMessage('error', handler)
           resolve(msg.roomId)
         } else if (msg.type === 'error') {
           offMessage('room_created', handler)
+          offMessage('error', handler)
           reject(new Error(msg.payload?.message || '创建房间失败'))
         }
       }
@@ -187,10 +189,12 @@ export function useMessageTransfer() {
       const handler = (msg) => {
         if (msg.type === 'peer_joined' && msg.roomId === _currentRoomId) {
           offMessage('peer_joined', handler)
+          offMessage('room_closed', handler)
           console.log('[Message] App 已加入房间')
           resolve()
         } else if (msg.type === 'room_closed' && msg.roomId === _currentRoomId) {
           offMessage('peer_joined', handler)
+          offMessage('room_closed', handler)
           reject(new Error('房间已关闭'))
         }
       }

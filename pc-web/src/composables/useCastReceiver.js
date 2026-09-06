@@ -6,6 +6,13 @@ import { usePcmPlayer } from './usePcmPlayer'
 import { QUALITY_PROFILES, QUALITY_ORDER, DEFAULT_QUALITY } from './castQuality'
 
 /**
+ * 记录已注册的全局 cast 监听 handler，避免组件（CastView）重复挂载时累积僵尸 handler：
+ * 旧实例卸载时若未显式清理，其 room_invitation / room_closed 监听会一直挂在全局 WS 单例上，
+ * 导致多次进/出投屏页后邀请被重复处理、且旧 videoRef 为 null 时远程流被静默丢弃。
+ */
+const _castGlobalHandlers = { invitation: [], roomClosed: [] }
+
+/**
  * 投屏接收 Composable
  *
  * 监听 room_invitation → 发送 join_room → 接收 offer/answer/ICE
@@ -100,7 +107,13 @@ export function useCastReceiver(externalVideoRef, options = {}) {
    * 幂等：重复调用安全（先清理旧 handler）
    */
   function startListening() {
-    // 先清理旧的 invitation handler 避免重复注册
+    // 清除任意残留的旧实例 handler（防止多次进/出投屏页累积，旧实例卸载时未清理导致僵尸 handler）
+    for (const h of _castGlobalHandlers.invitation) offMessage('room_invitation', h)
+    for (const h of _castGlobalHandlers.roomClosed) offMessage('room_closed', h)
+    _castGlobalHandlers.invitation = []
+    _castGlobalHandlers.roomClosed = []
+
+    // 先清理本实例旧的 invitation handler（幂等安全）
     if (_invitationHandler) {
       offMessage('room_invitation', _invitationHandler)
       _invitationHandler = null
@@ -124,6 +137,7 @@ export function useCastReceiver(externalVideoRef, options = {}) {
       _handleInvitation(msg)
     }
     onMessage('room_invitation', _invitationHandler)
+    _castGlobalHandlers.invitation.push(_invitationHandler)
 
     // 监听房间关闭/对端断开
     _roomClosedHandler = (msg) => {
@@ -132,12 +146,9 @@ export function useCastReceiver(externalVideoRef, options = {}) {
       }
     }
     onMessage('room_closed', _roomClosedHandler)
-    // 也监听对端主动断开消息
-    onMessage('peer_disconnected', (msg) => {
-      if (_currentRoomId && msg.roomId === _currentRoomId) {
-        stopReceiving()
-      }
-    })
+    _castGlobalHandlers.roomClosed.push(_roomClosedHandler)
+    // 注：peer_disconnected 由 server 端从不发送（server 只发 room_closed），
+    // 故此处不再注册该死 handler，避免无效监听累积。
   }
 
   /** 处理房间邀请 */

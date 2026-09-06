@@ -142,6 +142,11 @@ function initWebSocket(server) {
 
   logger.info('[WS] WebSocket 服务已挂载到 /ws');
 
+  // 捕获 WebSocketServer 层错误，避免未处理的 'error' 事件冒泡成 uncaughtException 致进程退出
+  wss.on('error', (err) => {
+    logger.error(`[WS] WebSocketServer 错误: ${err.message}`);
+  });
+
   wss.on('connection', async (ws, req) => {
     // 解析 URL 参数
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -251,6 +256,13 @@ function initWebSocket(server) {
 
     // 连接关闭
     ws.on('close', (code, reason) => {
+      // 身份守卫：若该 deviceUuid 的活跃连接已不是本 ws（已发生重连 / 多连接并存），
+      // 不要清理房间、也不要删连接表，否则会拆掉新连接正在使用的房间。
+      if (deviceConnections.get(deviceUuid) !== ws) {
+        logger.info(`[WS] 旧连接关闭(已被新连接取代): ${deviceUuid} code=${code}`);
+        return;
+      }
+
       const rooms = roomManager.getDeviceRooms(deviceUuid);
       const notify = (device, msg) => {
         const clientWs = deviceConnections.get(device);
@@ -274,7 +286,10 @@ function initWebSocket(server) {
     // 连接错误
     ws.on('error', (err) => {
       logger.error(`[WS] 连接错误: ${deviceUuid} - ${err.message}`);
-      deviceConnections.delete(deviceUuid);
+      // 仅当本 ws 仍是当前记录的活跃连接时才移除，避免旧 socket 的 error 误删新连接
+      if (deviceConnections.get(deviceUuid) === ws) {
+        deviceConnections.delete(deviceUuid);
+      }
     });
   });
 
@@ -283,12 +298,9 @@ function initWebSocket(server) {
     for (const [deviceUuid, ws] of deviceConnections) {
       if (ws._isAlive === false) {
         logger.warn(`[WS] 心跳超时，断开: ${deviceUuid}`);
-        deviceConnections.delete(deviceUuid);
-        // 清理房间
-        const rooms = roomManager.getDeviceRooms(deviceUuid);
-        for (const roomId of rooms) {
-          roomManager.leaveRoom(roomId, deviceUuid);
-        }
+        // 不要在此预清理房间/移除连接表：直接 terminate，由下方 close 事件统一处理房间清理。
+        // 否则 deviceConnections 已移除，close 处理会因找不到房间而漏发 room_closed、
+        // 且 sessionManager 房间记录会泄漏。
         ws.terminate();
         // 延迟广播 offline（宽限期容忍网络抖动，重连会取消）
         scheduleOfflineBroadcast(deviceUuid);

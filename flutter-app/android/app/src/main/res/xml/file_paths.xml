@@ -4,4 +4,12 @@
     <files-path
         name="received_files"
         path="received_files/" />
+    <!-- ai-cast-hub 接收目录：内部存储根目录（MANAGE_EXTERNAL_STORAGE）与应用专属目录
+         均需要能被 FileProvider 共享，否则 App 内「打开已下载文件」会抛 FILE_NOT_SHAREABLE -->
+    <external-path
+        name="ai_cast_hub"
+        path="ai-cast-hub/" />
+    <external-files-path
+        name="ext_ai_cast_hub"
+        path="ai-cast-hub/" />
 </paths>
