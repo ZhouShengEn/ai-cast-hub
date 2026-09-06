@@ -29,11 +29,10 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // 只编 arm64-v8a 一个架构：真机主流架构，CI 出包更快、产物更小。
-        // 配合 flutter build apk --split-per-abi，产物固定为 app-arm64-v8a-debug.apk。
-        ndk {
-            abiFilters += listOf("arm64-v8a")
-        }
+        // 注意：单 ABI 包（app-arm64-v8a-debug.apk）由 CI 命令
+        //   flutter build apk --debug --split-per-abi --target-platform android-arm64
+        // 控制，不要在这里再加 ndk.abiFilters —— 它会与 --split-per-abi 自动设置的
+        // splits.abi 过滤器冲突（Gradle 报 "Conflicting configuration"），导致 assembleDebug 失败。
     }
 
     buildTypes {
