@@ -90,8 +90,14 @@
           </ul>
         </div>
 
-        <!-- 设备防盗与定位 -->
-        <AntiTheftPanel />
+        <!--
+          设备防盗面板 AntiTheftPanel 暂不挂载：
+          其文件 components/cast/AntiTheftPanel.vue 与 composables/useAntiTheft.js
+          目前只存在于本地工作区、未提交进仓库，导致线上 npm run build 报
+          "Could not resolve ../components/cast/AntiTheftPanel.vue" 而构建失败。
+          待这两个文件提交后，再把下面两行的注释取消即可恢复。
+          <AntiTheftPanel />
+        -->
       </div>
 
       <!-- 错误提示 -->
@@ -107,7 +113,7 @@ import { onMounted, onUnmounted, inject, ref } from 'vue'
 import { useDeviceStore } from '../stores/device'
 import { useMessageTransfer } from '../composables/useMessageTransfer'
 import DevicePairCode from '../components/cast/DevicePairCode.vue'
-import AntiTheftPanel from '../components/cast/AntiTheftPanel.vue'
+// import AntiTheftPanel from '../components/cast/AntiTheftPanel.vue'  // 文件未入库，见模板中说明
 import Spinner from '../components/common/Spinner.vue'
 
 const deviceStore = useDeviceStore()
