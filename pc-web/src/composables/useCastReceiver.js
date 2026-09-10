@@ -13,6 +13,29 @@ import { QUALITY_PROFILES, QUALITY_ORDER, DEFAULT_QUALITY } from './castQuality'
 const _castGlobalHandlers = { invitation: [], roomClosed: [] }
 
 /**
+ * 把手机端回传的远程控制失败原因翻译成「用户可执行」的提示文案。
+ *
+ * 关键区别：
+ *  - settings_enabled_but_not_connected：设置里开着，但服务实例没绑上（最常见）。
+ *    此时让用户去「开启」毫无用处，正确解法是关闭再重开一次服务。
+ *  - service_not_enabled：压根没开过，才需要去设置里开启。
+ */
+function controlFailureMessage(reason) {
+  switch (reason) {
+    case 'settings_enabled_but_not_connected':
+      return '远程控制失败：无障碍服务已开启但未生效，请在手机「设置 → 无障碍」中把 AI-Cast-Hub 关闭再重新打开一次'
+    case 'service_not_enabled':
+      return '远程控制失败：请先在手机「设置 → 无障碍」中开启 AI-Cast-Hub 服务'
+    case 'service_not_connected':
+      return '远程控制失败：无障碍服务未在运行，请重新开启后重试'
+    case 'gesture_rejected':
+      return '远程控制失败：手势被系统拒绝（目标界面可能启用了录屏/防截屏保护）'
+    default:
+      return '远程控制失败：请确认手机端已开启无障碍服务且正在运行'
+  }
+}
+
+/**
  * 投屏接收 Composable
  *
  * 监听 room_invitation → 发送 join_room → 接收 offer/answer/ICE
@@ -390,12 +413,11 @@ export function useCastReceiver(externalVideoRef, options = {}) {
           }
           console.log('[CastReceiver] 画质已生效:', msg.payload)
         } else if (msg.type === 'control_result') {
-          // 远程控制指令未被手机端受理（无障碍服务未运行 / 被系统拒绝）时给出明确提示
+          // 远程控制失败时按具体原因给出「可执行」的提示。
+          // 笼统一句「请确认已开启无障碍服务」极具误导性——用户往往早就开了，
+          // 真实原因多为「设置里开着但服务实例未绑定」，需要关闭再重开一次才生效。
           if (msg.payload?.ok === false) {
-            options.showToast?.(
-              '远程控制失败：请确认手机端已开启无障碍服务且正在运行',
-              'warn',
-            )
+            options.showToast?.(controlFailureMessage(msg.payload.reason), 'warn')
           }
           console.log('[CastReceiver] 控制指令回执:', msg.payload)
         }

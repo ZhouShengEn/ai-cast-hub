@@ -36,19 +36,31 @@ class RemoteControlService : AccessibilityService() {
          * 注意：三种方式必须都能被走到，不能在中间提前 return，
          * 否则一旦前序方式误判，后续更可靠的兜底就失效了。
          */
-        fun isServiceEnabled(context: Context): Boolean {
-            // 方法1：服务实例存在（最可靠）
-            val instanceExists = instance != null
-            Log.d(TAG, "isServiceEnabled [1/3] service instance exists: $instanceExists")
-            if (instanceExists) return true
+        /**
+         * 无障碍服务实例是否已绑定到本进程。
+         *
+         * 只有它为 true 时 dispatchGesture 才可能成功，因此它才是「远程控制是否真的
+         * 可用」的判据。必须与 [isEnabledInSettings] 严格区分：
+         * 用户在系统设置里打开了开关（settings == true）**不代表** 服务实例还活着——
+         * App 进程重启、服务被系统回收、或改过 accessibility_service_config.xml 之后
+         * 都会出现「设置里开着但实例为 null」。历史上正是这个差异导致
+         * 「Web 端显示已开启、但点击仍然失败且提示让人去开启」的误导。
+         */
+        fun isServiceConnected(): Boolean = instance != null
 
-            // 方法2：Settings.Secure 精确匹配 "包名/完整类名"
+        /**
+         * 仅在系统设置层面判定是否已启用（不含「实例存活」这一条）。
+         *
+         * 两种检测方式按可靠性依次尝试，任一命中即返回 true。
+         */
+        fun isEnabledInSettings(context: Context): Boolean {
+            // 方式1：Settings.Secure 精确匹配 "包名/完整类名"
             try {
                 val enabledServicesString = Settings.Secure.getString(
                     context.contentResolver,
                     Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
                 ) ?: ""
-                Log.d(TAG, "isServiceEnabled [2/3] enabled services string: $enabledServicesString")
+                Log.d(TAG, "isEnabledInSettings [1/2] enabled services: $enabledServicesString")
 
                 if (enabledServicesString.isNotEmpty()) {
                     val target = ComponentName(context, RemoteControlService::class.java)
@@ -57,14 +69,14 @@ class RemoteControlService : AccessibilityService() {
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
                         .any { entry -> ComponentName.unflattenFromString(entry) == target }
-                    Log.d(TAG, "isServiceEnabled [2/3] exact match: $found")
+                    Log.d(TAG, "isEnabledInSettings [1/2] exact match: $found")
                     if (found) return true
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "isServiceEnabled Settings.Secure check failed: ${e.message}")
+                Log.e(TAG, "isEnabledInSettings Settings.Secure check failed: ${e.message}")
             }
 
-            // 方法3：AccessibilityManager 列表查询（用 FEEDBACK_ALL_MASK，避免按
+            // 方式2：AccessibilityManager 列表查询（用 FEEDBACK_ALL_MASK，避免按
             // feedbackType 过滤时把本服务漏掉）
             try {
                 val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
@@ -76,20 +88,44 @@ class RemoteControlService : AccessibilityService() {
                 var found = false
                 for (serviceInfo in enabledServices) {
                     val ri = serviceInfo.resolveInfo?.serviceInfo ?: continue
-                    Log.d(TAG, "isServiceEnabled [3/3] checking: ${ri.packageName}/${ri.name}")
+                    Log.d(TAG, "isEnabledInSettings [2/2] checking: ${ri.packageName}/${ri.name}")
                     if (ri.name == targetServiceName && ri.packageName == targetPackage) {
                         found = true
                         break
                     }
                 }
-                Log.d(TAG, "isServiceEnabled [3/3] AccessibilityManager: $found (count: ${enabledServices.size})")
+                Log.d(TAG, "isEnabledInSettings [2/2] AccessibilityManager: $found (count: ${enabledServices.size})")
                 if (found) return true
             } catch (e: Exception) {
-                Log.e(TAG, "isServiceEnabled AccessibilityManager check failed: ${e.message}")
+                Log.e(TAG, "isEnabledInSettings AccessibilityManager check failed: ${e.message}")
             }
 
-            Log.d(TAG, "isServiceEnabled => false (所有检测方式均未命中)")
+            Log.d(TAG, "isEnabledInSettings => false (设置项未命中)")
             return false
+        }
+
+        /**
+         * 综合判定：实例存活 或 设置已启用。
+         *
+         * 仅用于「是否曾开启过」这类宽松判断；**判定「能否派发手势」必须
+         * 使用 [isServiceConnected]**，否则会重演「显示已开启但点了没反应」。
+         */
+        fun isServiceEnabled(context: Context): Boolean {
+            val connected = isServiceConnected()
+            Log.d(TAG, "isServiceEnabled [1/2] instance connected: $connected")
+            if (connected) return true
+            val inSettings = isEnabledInSettings(context)
+            Log.d(TAG, "isServiceEnabled [2/2] enabled in settings: $inSettings")
+            return inSettings
+        }
+
+        /** 供 Dart 侧做远程控制诊断：返回最近一次可解释的失败原因 */
+        fun describeDispatchState(context: Context): String {
+            return when {
+                isServiceConnected() -> "ok"
+                isEnabledInSettings(context) -> "settings_enabled_but_not_connected"
+                else -> "service_not_enabled"
+            }
         }
 
         fun openAccessibilitySettings(context: Context) {
@@ -177,10 +213,11 @@ class RemoteControlService : AccessibilityService() {
 
         return try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toFloat()
-            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toFloat()
+            val p = resolvePoint(xPercent, yPercent, screenSize)
+            val x = p.x.toFloat()
+            val y = p.y.toFloat()
 
-            Log.d(TAG, "dispatchTap: ($x, $y)")
+            Log.d(TAG, "dispatchTap: ($x, $y) screen=${screenSize.x}x${screenSize.y}")
 
             val path = Path().apply {
                 moveTo(x, y)
@@ -209,8 +246,9 @@ class RemoteControlService : AccessibilityService() {
 
         return try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toFloat()
-            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toFloat()
+            val p = resolvePoint(xPercent, yPercent, screenSize)
+            val x = p.x.toFloat()
+            val y = p.y.toFloat()
             val duration = durationMs.coerceIn(500L, 3000L)
 
             Log.d(TAG, "dispatchLongPress: ($x, $y) duration=${duration}ms")
@@ -233,13 +271,12 @@ class RemoteControlService : AccessibilityService() {
     fun dispatchTouchStart(xPercent: Double, yPercent: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
-            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
-            lastTouchPoint = Point(x, y)
-            touchStartPoint = Point(x, y)
+            val start = resolvePoint(xPercent, yPercent, screenSize)
+            lastTouchPoint = Point(start.x, start.y)
+            touchStartPoint = Point(start.x, start.y)
             touchMoved = false
 
-            Log.d(TAG, "dispatchTouchStart: ($x, $y)")
+            Log.d(TAG, "dispatchTouchStart: (${start.x}, ${start.y}) screen=${screenSize.x}x${screenSize.y}")
             return true
         } catch (e: Exception) {
             Log.e(TAG, "dispatchTouchStart failed: ${e.message}")
@@ -250,8 +287,9 @@ class RemoteControlService : AccessibilityService() {
     fun dispatchTouchMove(xPercent: Double, yPercent: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
-            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
+            val target = resolvePoint(xPercent, yPercent, screenSize)
+            val x = target.x
+            val y = target.y
 
             val startPoint = lastTouchPoint ?: Point(x, y)
 
@@ -283,16 +321,25 @@ class RemoteControlService : AccessibilityService() {
     fun dispatchTouchEnd(xPercent: Double, yPercent: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
-            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
+            val end = resolvePoint(xPercent, yPercent, screenSize)
+            val x = end.x
+            val y = end.y
 
             Log.d(TAG, "dispatchTouchEnd: ($x, $y)")
             // 整段手势没有发生移动（down 之后直接 up）→ 等价于一次点击，补发 tap，
             // 否则纯 touch_start/end 在 Kotlin 侧不会触发任何手势（仅记录坐标）。
-            var accepted = lastTouchAccepted
-            if (!touchMoved && touchStartPoint != null) {
-                Log.d(TAG, "dispatchTouchEnd: 无位移，按点击处理 (${touchStartPoint!!.x}, ${touchStartPoint!!.y})")
-                accepted = performTapAt(touchStartPoint!!.x, touchStartPoint!!.y)
+            val accepted: Boolean
+            if (touchMoved) {
+                // 拖拽结束：以最后一次 move 的受理结果为准
+                accepted = lastTouchAccepted
+            } else {
+                // 无位移即一次点按。
+                // 若 down 丢失（没收到 / 被 clearGestureState 清掉），这里退回用 up 的坐标
+                // 补发点击；原实现此时直接把上一次的 lastTouchAccepted 当结果返回，
+                // 既没派发任何手势又报 ok:false —— 正是「点了没反应」的元凶之一。
+                val tapPoint = touchStartPoint ?: Point(x, y)
+                Log.d(TAG, "dispatchTouchEnd: 无位移，按点击处理 (${tapPoint.x}, ${tapPoint.y})")
+                accepted = performTapAt(tapPoint.x, tapPoint.y)
             }
             lastTouchPoint = null
             touchStartPoint = null
@@ -324,16 +371,20 @@ class RemoteControlService : AccessibilityService() {
     fun dispatchScroll(xPercent: Double, yPercent: Double, deltaX: Double, deltaY: Double): Boolean {
         try {
             val screenSize = getScreenSize()
-            val x = (screenSize.x * xPercent.coerceIn(0.0, 1.0)).toInt()
-            val y = (screenSize.y * yPercent.coerceIn(0.0, 1.0)).toInt()
+            val target = resolvePoint(xPercent, yPercent, screenSize)
+            val x = target.x
+            val y = target.y
 
             val scrollAmountX = (-deltaX * 2).toInt()
             val scrollAmountY = (-deltaY * 2).toInt()
 
             Log.d(TAG, "dispatchScroll: ($x, $y) delta=($scrollAmountX, $scrollAmountY)")
 
-            val rootNode = rootInActiveWindow ?: return false
-            val node = findScrollableNode(rootNode, x, y)
+            // rootInActiveWindow 为 null 很常见（窗口内容不可用 / 刚切窗口），
+            // 绝不能因此直接 return false —— 那会让滚轮滚动在大多数界面彻底失效。
+            // 正确做法是退化到手势滑动。
+            val rootNode = rootInActiveWindow
+            val node = if (rootNode != null) findScrollableNode(rootNode, x, y) else null
 
             if (node != null) {
                 // 以位移绝对值较大的轴为准判断方向。此前恒定 ACTION_SCROLL_FORWARD，
@@ -350,7 +401,10 @@ class RemoteControlService : AccessibilityService() {
                 }
                 node.recycle()
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                Log.d(TAG, "dispatchScroll: 无可用滚动节点(root=${rootNode != null})，退化为手势滑动")
                 performScrollGesture(x, y, scrollAmountX, scrollAmountY, screenSize)
+            } else {
+                return false
             }
 
             return true
@@ -487,6 +541,24 @@ class RemoteControlService : AccessibilityService() {
         val size = Point()
         display?.getRealSize(size)
         return size
+    }
+
+    /** 供 Dart 侧诊断使用（getScreenSize 为私有，对外暴露只读快照） */
+    fun screenSizeForDiagnostics(): Point = getScreenSize()
+
+    /**
+     * 把归一化坐标(0~1)换算为屏幕像素，并保证落在 [0, width-1] / [0, height-1] 内。
+     *
+     * 关键：percent 为 1.0 时 `width * 1.0 == width`，该点已在屏幕外，
+     * Android 会直接拒绝整条手势（dispatchGesture 返回 false），
+     * 因此必须收敛到 width-1。同时兜住屏幕尺寸异常（0）导致的负坐标。
+     */
+    private fun resolvePoint(xPercent: Double, yPercent: Double, size: Point): Point {
+        val maxX = (size.x - 1).coerceAtLeast(0)
+        val maxY = (size.y - 1).coerceAtLeast(0)
+        val x = (size.x * xPercent.coerceIn(0.0, 1.0)).toInt().coerceIn(0, maxX)
+        val y = (size.y * yPercent.coerceIn(0.0, 1.0)).toInt().coerceIn(0, maxY)
+        return Point(x, y)
     }
 
     private fun clearRuntimeState() {

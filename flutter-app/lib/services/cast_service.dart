@@ -547,19 +547,38 @@ class CastService {
     }
   }
 
-  /// 执行一条控制指令并把受理结果回执给 Web 端（失败时可给出明确提示）
+  /// 执行一条控制指令并把受理结果回执给 Web 端（失败时附带可执行的失败原因）
   Future<void> _dispatchControlAndReport(Map<String, dynamic> cmd) async {
     final ok = await onControlCommand?.call(cmd) ?? false;
+    String? reason;
     if (!ok) {
       _castLog('控制指令未被受理: ${cmd['type']}', level: LogLevel.warn);
+      reason = await _diagnoseControlFailure();
+      _castLog('控制失败原因: $reason', level: LogLevel.warn);
     }
     _sendControlMessage(<String, dynamic>{
       'type': 'control_result',
       'payload': <String, dynamic>{
         'ok': ok,
         'command': cmd['type'],
+        if (reason != null) 'reason': reason,
       },
     });
+  }
+
+  /// 判定控制失败的具体原因。
+  ///
+  /// 此前失败时 Web 端只能弹一句「请确认已开启无障碍服务」，而用户往往早就开了，
+  /// 真正原因（服务实例未绑定 / 手势被系统拒绝）无从得知，问题极难定位。
+  Future<String> _diagnoseControlFailure() async {
+    try {
+      final diag = await RemoteControlService().getControlDiagnostics();
+      final state = diag['state'] as String?;
+      if (state != null && state.isNotEmpty && state != 'ok') return state;
+      return diag['connected'] == true ? 'gesture_rejected' : 'service_not_connected';
+    } catch (_) {
+      return 'unknown';
+    }
   }
 
   /// 向 Web 端上报远程控制状态（无障碍服务是否可用等），供其做 UI 提示

@@ -96,6 +96,23 @@ class MainActivity : FlutterActivity() {
                     val enabled = RemoteControlService.isServiceEnabled(this)
                     result.success(enabled)
                 }
+                // 远程控制诊断：严格区分「设置里已开启」与「服务实例真的已绑定」。
+                // 只有 connected=true 时 dispatchGesture 才可能成功；
+                // 二者不一致（设置开着但实例为 null）时，Web 端必须提示用户
+                // 去系统设置里把本服务「关闭再重新打开」，否则点了永远没反应。
+                "getControlDiagnostics" -> {
+                    val service = RemoteControlService.instance
+                    val size = service?.screenSizeForDiagnostics()
+                    result.success(
+                        hashMapOf<String, Any?>(
+                            "connected" to (service != null),
+                            "settingsEnabled" to RemoteControlService.isEnabledInSettings(this),
+                            "state" to RemoteControlService.describeDispatchState(this),
+                            "screenWidth" to (size?.x ?: 0),
+                            "screenHeight" to (size?.y ?: 0),
+                        )
+                    )
+                }
                 "openAccessibilitySettings" -> {
                     RemoteControlService.openAccessibilitySettings(this)
                     result.success(null)

@@ -314,11 +314,48 @@ class RemoteControlService {
     }
   }
 
+  /// 远程控制诊断信息：connected / settingsEnabled / state / 屏幕尺寸
+  ///
+  /// connected 表示无障碍服务实例已绑定到本进程，是「能否真正派发手势」的唯一判据；
+  /// settingsEnabled 只表示用户在系统设置里打开了开关。二者常常不一致。
+  Future<Map<String, dynamic>> getControlDiagnostics() async {
+    try {
+      final result = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+        'getControlDiagnostics',
+      );
+      if (result == null) return <String, dynamic>{};
+      return Map<String, dynamic>.from(result);
+    } on PlatformException catch (e) {
+      _rcLog('获取控制诊断失败: ${e.message}', level: LogLevel.warn);
+      return <String, dynamic>{};
+    } on MissingPluginException catch (e) {
+      _rcLog('原生通道不可用: ${e.message}', level: LogLevel.warn);
+      return <String, dynamic>{};
+    }
+  }
+
+  /// 无障碍服务实例是否已绑定（决定能否真正派发手势）
+  Future<bool> checkServiceConnected() async {
+    final diag = await getControlDiagnostics();
+    return diag['connected'] == true;
+  }
+
   /// 采集一份状态快照，供上层通过 DataChannel 上报给 Web 端做 UI 提示
+  ///
+  /// 关键：`accessibilityEnabled` 取「服务实例已绑定(connected)」而非宽松的
+  /// 「设置里已开启」。只有 connected 为真手势才可能派发成功；若沿用宽松判定，
+  /// Web 端会以为已开启而不显示警示条，用户点击后只收到一句笼统的失败提示。
   Future<Map<String, dynamic>> getStatus() async {
-    final enabled = await checkServiceEnabled();
+    final diag = await getControlDiagnostics();
+    final connected = diag['connected'] == true;
+    _isEnabled = connected;
+    _isServiceRunning = connected;
     return <String, dynamic>{
-      'accessibilityEnabled': enabled,
+      'accessibilityEnabled': connected,
+      'settingsEnabled': diag['settingsEnabled'] == true,
+      'state': diag['state'] ?? 'unknown',
+      'screenWidth': diag['screenWidth'] ?? 0,
+      'screenHeight': diag['screenHeight'] ?? 0,
       'platform': defaultTargetPlatform.name,
     };
   }
