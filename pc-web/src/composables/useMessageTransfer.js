@@ -154,12 +154,21 @@ export function useMessageTransfer() {
 
     // 创建房间
     const roomCreatedCompleter = new Promise((resolve, reject) => {
+      // 同样必须超时：信令服务不可达时这里会永久挂起，
+      // 导致 isConnecting 卡死、连接按钮消失。
+      const timer = setTimeout(() => {
+        offMessage('room_created', handler)
+        offMessage('error', handler)
+        reject(new Error('创建房间超时（15 秒），信令服务未响应'))
+      }, 15000)
       const handler = (msg) => {
         if (msg.type === 'room_created') {
+          clearTimeout(timer)
           offMessage('room_created', handler)
           offMessage('error', handler)
           resolve(msg.roomId)
         } else if (msg.type === 'error') {
+          clearTimeout(timer)
           offMessage('room_created', handler)
           offMessage('error', handler)
           reject(new Error(msg.payload?.message || '创建房间失败'))
@@ -185,14 +194,25 @@ export function useMessageTransfer() {
     }
 
     // 等待 App 加入房间
+    //
+    // 关键：必须有超时。此前这个 Promise 会永久挂起，只要 App 端没响应，
+    // store.isConnecting 就永远卡在 true —— 连接按钮被 v-if 直接隐藏，
+    // 用户看到的现象就是「点了完全没反应」，且再也无法重试。
     const peerJoinedCompleter = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        offMessage('peer_joined', handler)
+        offMessage('room_closed', handler)
+        reject(new Error('等待 App 端加入房间超时（30 秒）'))
+      }, 30000)
       const handler = (msg) => {
         if (msg.type === 'peer_joined' && msg.roomId === _currentRoomId) {
+          clearTimeout(timer)
           offMessage('peer_joined', handler)
           offMessage('room_closed', handler)
           console.log('[Message] App 已加入房间')
           resolve()
         } else if (msg.type === 'room_closed' && msg.roomId === _currentRoomId) {
+          clearTimeout(timer)
           offMessage('peer_joined', handler)
           offMessage('room_closed', handler)
           reject(new Error('房间已关闭'))

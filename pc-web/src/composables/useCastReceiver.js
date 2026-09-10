@@ -417,7 +417,7 @@ export function useCastReceiver(externalVideoRef, options = {}) {
           // 笼统一句「请确认已开启无障碍服务」极具误导性——用户往往早就开了，
           // 真实原因多为「设置里开着但服务实例未绑定」，需要关闭再重开一次才生效。
           if (msg.payload?.ok === false) {
-            options.showToast?.(controlFailureMessage(msg.payload.reason), 'warn')
+            options.showToast?.(controlFailureMessage(msg.payload.reason), 'warning')
           }
           console.log('[CastReceiver] 控制指令回执:', msg.payload)
         }

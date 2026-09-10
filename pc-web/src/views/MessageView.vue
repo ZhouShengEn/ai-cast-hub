@@ -33,10 +33,21 @@
         <span class="text-4xl mb-3"></span>
         <p>暂无消息</p>
         <p class="text-xs mt-1">等待连接或主动发起连接</p>
-        <button v-if="pairedDevices.length > 0 && !store.isConnected && !store.isConnecting"
+        <!--
+          连接按钮统一走 useDeviceConnect：
+          不再用 v-if 隐藏（状态卡住时按钮消失 = 用户以为点了没反应），
+          改为常驻 + 连接中/已连接置灰禁用，状态始终可见。
+        -->
+        <button
           @click="connectToApp"
-          class="mt-4 px-4 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600 transition-colors">
-          主动连接 App 端
+          :disabled="!canConnect"
+          :class="[
+            'mt-4 px-4 py-2 text-white text-sm rounded-lg transition-colors',
+            canConnect
+              ? 'bg-blue-500 hover:bg-blue-600'
+              : 'bg-gray-300 cursor-not-allowed'
+          ]">
+          {{ connectButtonText }}
         </button>
       </div>
 
@@ -142,21 +153,20 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useMessageStore } from '../stores/message'
-import { useDeviceStore } from '../stores/device'
 import { useMessageTransfer } from '../composables/useMessageTransfer'
+import { useDeviceConnect } from '../composables/useDeviceConnect'
 
 const store = useMessageStore()
-const deviceStore = useDeviceStore()
 const {
-  sendText, pickAndSendFile, cancelTransfer, disconnect, downloadFile, createRoom,
+  sendText, pickAndSendFile, cancelTransfer, disconnect, downloadFile,
 } = useMessageTransfer()
+// 连接相关状态与动作统一由 useDeviceConnect 提供，本页不再各自维护
+const { startConnectDevice, canConnect, connectButtonText } = useDeviceConnect()
 
 const textInput = ref('')
 const msgList = ref(null)
-
-const pairedDevices = computed(() => deviceStore.pairedDevices)
 
 function sendTextMsg() {
   const t = textInput.value.trim()
@@ -169,21 +179,14 @@ function disconnectChannel() {
   disconnect()
 }
 
+// 所有连接入口统一走 startConnectDevice（状态守卫 + 重置 + 日志 + toast + 异常捕获）
 async function connectToApp() {
-  if (!pairedDevices.value.length) return
-  const targetDevice = pairedDevices.value[0]
-  console.log('[MessageView] 主动连接 App:', targetDevice.deviceName, targetDevice.deviceUuid)
-  store.error = null
-  try {
-    await createRoom(targetDevice.deviceUuid)
-  } catch (e) {
-    console.error('[MessageView] 连接失败:', e)
-  }
+  await startConnectDevice()
 }
 
+// 「重连 / 重试」允许强制重置进行中的流程，否则卡在 isConnecting 时永远重连不了
 function retryConnect() {
-  store.error = null
-  connectToApp()
+  startConnectDevice({ force: true })
 }
 
 function removeFileMsg(id) {
