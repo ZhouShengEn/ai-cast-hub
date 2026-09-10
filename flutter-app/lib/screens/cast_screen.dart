@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../providers/cast_provider.dart';
 import '../providers/device_provider.dart';
@@ -176,37 +177,52 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                   return;
                 }
 
-                final rcEnabled = await RemoteControlService().checkServiceEnabled();
-                if (!rcEnabled) {
-                  final confirmed = await showDialog<bool>(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('需要开启无障碍服务'),
-                      content: const Text('为了实现PC端远程控制手机功能，需要开启无障碍服务。请在设置中允许"AI Cast Hub"的无障碍权限。开启后请返回本应用继续。'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          child: const Text('取消'),
+                final isCameraMode = castState.captureMode == 'camera';
+
+                // 权限校验严格分流：摄像模式与投屏模式不再共用一套判断。
+                if (isCameraMode) {
+                  // ---- 传输摄像：完全不依赖无障碍服务，只校验摄像头权限 ----
+                  final granted = await _ensureCameraPermission();
+                  if (!granted) return;
+                } else {
+                  // ---- 开始投屏：远程触控依赖无障碍服务，必须先确保可用 ----
+                  // 用 checkServiceConnected 而非宽松的 checkServiceEnabled：
+                  // 后者「设置里开着」也会返回 true，但实例未绑定时手势根本派发不出去。
+                  final connected = await RemoteControlService().checkServiceConnected();
+                  if (!connected) {
+                    final settingsOn = await RemoteControlService().isEnabledInSettings();
+                    final goSettings = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('需要开启无障碍服务'),
+                        content: Text(
+                          settingsOn
+                              ? '无障碍服务已在设置中开启，但尚未生效（常见于服务被系统回收或配置更新后）。'
+                                '请前往「设置 → 无障碍」把 AI Cast Hub 关闭再重新打开一次。'
+                              : '投屏的远程控制功能需要无障碍服务。请前往「设置 → 无障碍」开启 AI Cast Hub 的无障碍权限。',
                         ),
-                        FilledButton(
-                          onPressed: () {
-                            RemoteControlService().openAccessibilitySettings();
-                            Navigator.pop(context, true);
-                          },
-                          child: const Text('去开启'),
-                        ),
-                      ],
-                    ),
-                  );
-                  if (confirmed != true) return;
-                  await Future.delayed(const Duration(seconds: 5));
-                  final stillNotEnabled = !(await RemoteControlService().checkServiceEnabled());
-                  if (stillNotEnabled) {
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('取消'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('去设置'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (goSettings != true) return;
+                    await RemoteControlService().openAccessibilitySettings();
+                    // 从设置返回后【不自动启动投屏】—— 需用户手动再点一次「开始投屏」，
+                    // 避免用户在系统设置页时 App 已在后台偷偷拉起 MediaProjection 授权。
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('无障碍服务未开启，投屏将无法使用远程控制功能')),
+                        const SnackBar(content: Text('请在开启无障碍服务后，再次点击「开始投屏」')),
                       );
                     }
+                    return;
                   }
                 }
 
@@ -237,5 +253,36 @@ class _CastScreenState extends ConsumerState<CastScreen> {
         ),
       ],
     );
+  }
+
+  /// 传输摄像专用权限校验：只管摄像头，完全不涉及无障碍服务。
+  ///
+  /// 与「开始投屏」的权限逻辑彻底分离——摄像采集推流依赖 MediaProjection/相机，
+  /// 不需要 AccessibilityService，若沿用投屏那套检测会误导用户去开一个用不上的权限。
+  ///
+  /// 返回 true 表示已获授权可继续；false 表示被拒绝且已给出引导。
+  Future<bool> _ensureCameraPermission() async {
+    final status = await Permission.camera.status;
+    if (status.isGranted) return true;
+
+    final requested = await Permission.camera.request();
+    if (requested.isGranted) return true;
+
+    if (!mounted) return false;
+    final permanentlyDenied = requested.isPermanentlyDenied;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          permanentlyDenied
+              ? '摄像头权限被永久拒绝，请在系统设置中开启后重试'
+              : '需要摄像头权限才能传输摄像',
+        ),
+      ),
+    );
+    // 永久拒绝时系统不再弹框，只能引导用户去设置页手动开启
+    if (permanentlyDenied) {
+      await openAppSettings();
+    }
+    return false;
   }
 }

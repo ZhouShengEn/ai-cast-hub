@@ -340,6 +340,12 @@ class RemoteControlService {
     return diag['connected'] == true;
   }
 
+  /// 仅在系统设置中已启用本服务（不代表实例已绑定、也不代表能派发手势）
+  Future<bool> isEnabledInSettings() async {
+    final diag = await getControlDiagnostics();
+    return diag['settingsEnabled'] == true;
+  }
+
   /// 采集一份状态快照，供上层通过 DataChannel 上报给 Web 端做 UI 提示
   ///
   /// 关键：`accessibilityEnabled` 取「服务实例已绑定(connected)」而非宽松的
