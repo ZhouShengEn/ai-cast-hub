@@ -57,7 +57,11 @@ if [ -n "$DIRTY" ]; then
   echo "$DIRTY" | head -20 | sed 's/^/         /'
 fi
 git fetch --all --prune || die "git fetch 失败（检查网络 / GitHub 可达性）"
-git checkout -B "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1 \
+# 以远端为准强制覆盖本地改动（上次 npm install 可能改脏 package-lock.json 等，
+# 普通 checkout -B 会因工作区不干净而失败）。reset --hard 干净丢弃本地改动，
+# 与「部署机以远端为唯一真相源」的设计一致。
+git checkout "$BRANCH" 2>/dev/null || true
+git reset --hard "origin/$BRANCH" >/dev/null 2>&1 \
   || die "切换到 origin/$BRANCH 失败"
 COMMIT_AFTER="$(git rev-parse --short HEAD)"
 ok "代码已更新: $COMMIT_BEFORE -> $COMMIT_AFTER  $(git log -1 --pretty=%s)"
