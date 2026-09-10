@@ -83,7 +83,10 @@ else
 
   if [ ! -d "$REMOTE_DIR/pc-web/node_modules" ] || [ "$WEB_FP_BEFORE" != "$WEB_FP_AFTER" ]; then
     log "pc-web 依赖有变化，npm install ..."
-    (cd "$REMOTE_DIR/pc-web" && npm install --no-audit --no-fund) || die "pc-web 依赖安装失败"
+    # 必须包含 devDependencies：vite / @vitejs/plugin-vue 等是构建所需；
+    # 脚本顶部导出了 NODE_ENV=production 会让 npm 默认跳过 dev，故这里显式 --include=dev，
+    # 否则 vite 不会被安装，后续 npm run build 直接报 vite: not found。
+    (cd "$REMOTE_DIR/pc-web" && npm install --include=dev --no-audit --no-fund) || die "pc-web 依赖安装失败"
   else
     log "pc-web 依赖无变化，跳过"
   fi
