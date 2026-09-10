@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../providers/cast_provider.dart';
 import '../providers/device_provider.dart';
@@ -189,50 +190,71 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                   //
                   // 关键区分：**投屏本身不依赖无障碍服务**，MediaProjection 采集与推流
                   // 跟 AccessibilityService 毫无关系；只有「Web 端远程触控」依赖它。
-                  // 因此：
-                  //   · 设置里【从未开启】→ 阻断并引导去开启（远程触控完全没有，必须先开）
-                  //   · 已开启但实例未绑定 → **放行投屏**，只给非阻断提示
                   //
-                  // 之前这里用严格的 checkServiceConnected() 拦截，导致「明明已经开了」
-                  // 的用户被永久卡住、完全无法投屏 —— 那是把「远程触控不可用」
-                  // 错误地放大成了「投屏不可用」。
-                  final settingsOn = await RemoteControlService().isEnabledInSettings();
-                  if (!settingsOn) {
-                    final goSettings = await showDialog<bool>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('需要开启无障碍服务'),
-                        content: const Text(
-                          '投屏的远程控制功能需要无障碍服务。'
-                          '请前往「设置 → 无障碍」开启 AI Cast Hub 的无障碍权限。',
+                  // 检测改用「或」判定：服务实例已绑定(connected) 或 设置里已开启(settingsEnabled)。
+                  // 取「或」而非「仅 settingsEnabled」的原因：部分国行 ROM（小米/OPPO/华为等）
+                  // 的 getEnabledAccessibilityServiceList 不可靠、Settings.Secure 也无读取权限，
+                  // 导致 settingsEnabled 恒为 false；但只要服务真的启用，系统必会绑定实例，
+                  // 用 instance != null 判定最稳。之前只用 settingsEnabled 拦截，正是「明明开了
+                  // 却一直提示去开启」的根因。
+                  //
+                  // 兜底策略：两者都检测不到时，只引导一次（SharedPreferences 记忆），
+                  // 之后不再反复阻断，直接开始投屏（远程触控可能不可用，仅给非阻断提示）。
+                  final remote = RemoteControlService();
+                  final serviceUsable = await remote.checkServiceEnabled();
+                  final connected = await remote.checkServiceConnected();
+
+                  if (!serviceUsable) {
+                    final guidedBefore = await _accessibilityGuidedOnce();
+                    if (!guidedBefore) {
+                      // 记录「已引导过」，保证以后即使仍检测不到也只放行进、不再弹窗
+                      await _markAccessibilityGuided();
+                      final goSettings = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('需要开启无障碍服务'),
+                          content: const Text(
+                            '投屏的远程控制功能需要无障碍服务。'
+                            '请前往「设置 → 无障碍」开启 AI Cast Hub 的无障碍权限。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('取消'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('去设置'),
+                            ),
+                          ],
                         ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('取消'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('去设置'),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (goSettings != true) return;
-                    await RemoteControlService().openAccessibilitySettings();
-                    // 从设置返回后【不自动启动投屏】—— 需用户手动再点一次，
-                    // 避免用户还在系统设置页时 App 已在后台偷偷拉起 MediaProjection 授权。
+                      );
+                      if (goSettings != true) return;
+                      await remote.openAccessibilitySettings();
+                      // 从设置返回后【不自动启动投屏】—— 需用户手动再点一次，
+                      // 避免用户还在系统设置页时 App 已在后台偷偷拉起 MediaProjection 授权。
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('请在开启无障碍服务后，再次点击「开始投屏」')),
+                        );
+                      }
+                      return;
+                    }
+
+                    // 兜底：已引导过仍检测不到 → 直接投屏，不再反复引导
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('请在开启无障碍服务后，再次点击「开始投屏」')),
+                        const SnackBar(
+                          content: Text(
+                            '未能确认无障碍服务状态：本次仍可直接投屏，'
+                            '但 Web 端远程触控可能不可用。',
+                          ),
+                          duration: Duration(seconds: 5),
+                        ),
                       );
                     }
-                    return;
-                  }
-
-                  // 已开启但服务实例尚未绑定到本进程：不阻断投屏，仅提示远程触控可能无效
-                  final connected = await RemoteControlService().checkServiceConnected();
-                  if (!connected && mounted) {
+                  } else if (!connected && mounted) {
+                    // 设置里已开启但实例尚未绑定到本进程：不阻断投屏，仅提示远程触控可能无效
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text(
@@ -304,5 +326,29 @@ class _CastScreenState extends ConsumerState<CastScreen> {
       await openAppSettings();
     }
     return false;
+  }
+
+  /// 无障碍服务引导是否「已经引导过一次」。
+  ///
+  /// 用于兜底：检测不到无障碍服务时只弹一次引导窗，之后即便仍检测不到也直接放行投屏，
+  /// 不再反复打断用户（部分国行 ROM 检测接口不可靠，但投屏本身不需要它）。
+  static const String _kAccessibilityGuided = 'accessibility_guided_once';
+  Future<bool> _accessibilityGuidedOnce() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_kAccessibilityGuided) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 记录「已引导过一次」，下次检测不到时不再弹窗。
+  Future<void> _markAccessibilityGuided() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kAccessibilityGuided, true);
+    } catch (_) {
+      // 持久化失败不影响本次投屏，仅失去「只引导一次」的记忆
+    }
   }
 }
