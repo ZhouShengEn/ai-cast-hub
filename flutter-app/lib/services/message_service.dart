@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
@@ -90,6 +91,18 @@ class MessageService {
   /// resume_state 响应超时：10 秒
   static const Duration _resumeStateTimeout = Duration(seconds: 10);
 
+  // ---- 并行分片传输（新协议 file_meta / file_chunk / file_resume_request / file_complete）----
+  /// 分片大小 64KB（旧实现 16KB + 每片 sleep 5ms，吞吐被压到 ~3MB/s）
+  static const int _chunkSize = 64 * 1024;
+  static const int _fileChannelCount = 3;
+  static const List<String> _fileChannelLabels = ['file-0', 'file-1', 'file-2'];
+  /// 并行分片通道：label -> RTCDataChannel（只承载 file_chunk）
+  final Map<String, webrtc.RTCDataChannel> _fileChannels = {};
+  /// 接收态：fileId -> { fileName, fileSize, fileMimeType, fileHash, chunkSize, totalChunks, buffer, received }
+  final Map<String, Map<String, dynamic>> _chunkRecv = {};
+  /// 发送态（断点续传时补发缺失分片用）
+  final Map<String, _PendingSend> _chunkSends = {};
+
   /// 启动监听（被动接收PC端连接邀请）
   Future<void> startListening() async {
     if (_ws.connectionState != WsConnectionState.connected) {
@@ -164,6 +177,10 @@ class MessageService {
     _dcOpenCompleter = Completer<void>();
     final dc = await _webrtc.createDataChannel('message');
     dc.onMessage = (webrtc.RTCDataChannelMessage msg) => _onDC(msg);
+
+    // 并行分片通道：必须在 createOffer() 之前创建，
+    // 否则 SDP 不含这些通道的 m=application，对端收不到。
+    await _createFileChannels();
     dc.onDataChannelState = (webrtc.RTCDataChannelState state) {
       _msgLog('DC 状态: $state');
       if (state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
@@ -309,6 +326,26 @@ class MessageService {
       _dcOpenCompleter = Completer<void>();
       _webrtc.onRemoteDataChannel.listen((channel) {
         _msgLog('收到远端DataChannel: ${channel.label}，设置监听');
+        // 并行分片通道只收 file_chunk，不参与连接态判定
+        if (_fileChannelLabels.contains(channel.label)) {
+          _fileChannels[channel.label!] = channel;
+          channel.onMessage = (webrtc.RTCDataChannelMessage msg) {
+            if (msg.isBinary) return;
+            try {
+              final data = jsonDecode(msg.text) as Map<String, dynamic>;
+              if (data['type'] == 'file_chunk') _handleFileChunkNew(data);
+            } catch (e) {
+              _msgLog('分片通道消息解析失败: $e', level: LogLevel.warn);
+            }
+          };
+          channel.onDataChannelState = (webrtc.RTCDataChannelState state) {
+            if (state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+              // 分片通道就绪后，为未收完的文件请求续传
+              _requestResumeForIncoming();
+            }
+          };
+          return;
+        }
         channel.onMessage = (webrtc.RTCDataChannelMessage msg) => _onDC(msg);
         channel.onDataChannelState = (webrtc.RTCDataChannelState state) {
           _msgLog('远端DC状态: $state');
@@ -320,6 +357,8 @@ class MessageService {
             if (_pendingSends.isNotEmpty || _fileMetas.isNotEmpty) {
               _onReconnected();
             }
+            // 新协议：为未收完的文件发 file_resume_request（内部为空时 no-op）
+            _requestResumeForIncoming();
           } else if (state == webrtc.RTCDataChannelState.RTCDataChannelClosed) {
             _msgLog('远端DC已关闭，断开连接');
             _connected = false;
@@ -438,8 +477,21 @@ class MessageService {
           _handleFileStart(data);
           break;
         case 'file_chunk':
-          // 兼容旧协议（JSON/base64），新协议用二进制通道
-          _handleChunk(data);
+          // 新协议用 fileId/chunkIndex；旧二进制兼容协议用 id/seq
+          if (data.containsKey('fileId')) _handleFileChunkNew(data);
+          else _handleChunk(data);
+          break;
+        case 'file_meta':
+          _handleFileMetaNew(data);
+          break;
+        case 'file_resume_request':
+          _handleFileResumeRequest(data);
+          break;
+        case 'file_complete':
+          // 对端已发完；若本地也收满则收尾（正常路径已由收满触发，此处仅兜底）
+          if (_chunkRecv.containsKey(data['fileId'])) {
+            _finalizeIncomingFile(data['fileId'] as String);
+          }
           break;
         case 'file_end':
           _handleFileEnd(data);
@@ -545,6 +597,226 @@ class MessageService {
 
   /// 发送文件（流控：二进制 DataChannel + 动态流控）
   /// 支持断点续传：中断后保留文件数据，重连后可恢复
+  // ==================== 并行分片传输（新协议）====================
+
+  /// 创建 N 条并行分片通道（只承载 file_chunk，不接管主控制通道）
+  Future<void> _createFileChannels() async {
+    for (final label in _fileChannelLabels) {
+      if (_fileChannels.containsKey(label)) continue;
+      try {
+        final ch = await _webrtc.createAuxDataChannel(label);
+        _fileChannels[label] = ch;
+        ch.onMessage = (webrtc.RTCDataChannelMessage msg) {
+          if (msg.isBinary) return;
+          try {
+            final data = jsonDecode(msg.text) as Map<String, dynamic>;
+            if (data['type'] == 'file_chunk') _handleFileChunkNew(data);
+          } catch (e) {
+            _msgLog('分片通道消息解析失败: $e', level: LogLevel.warn);
+          }
+        };
+        _msgLog('分片通道已创建: $label');
+      } catch (e) {
+        _msgLog('创建分片通道失败: $label $e', level: LogLevel.warn);
+      }
+    }
+  }
+
+  /// 关闭并清理全部并行分片通道（会话结束时必须调用）
+  Future<void> _closeFileChannels() async {
+    for (final label in _fileChannels.keys.toList()) {
+      final ch = _fileChannels.remove(label);
+      try { await ch?.close(); } catch (_) {}
+    }
+  }
+
+  /// 已 open 的并行分片通道；一条都没有时降级走主控制通道
+  List<webrtc.RTCDataChannel> _openFileChannels(webrtc.RTCDataChannel? fallback) {
+    final list = _fileChannelLabels
+        .map((l) => _fileChannels[l])
+        .where((c) => c != null && c.state == webrtc.RTCDataChannelState.RTCDataChannelOpen)
+        .cast<webrtc.RTCDataChannel>()
+        .toList();
+    if (list.isEmpty && fallback != null) list.add(fallback);
+    return list;
+  }
+
+  /// 等待通道发送缓冲降到阈值以下（防止灌爆 SCTP 导致连接断开）
+  Future<bool> _waitDrain(webrtc.RTCDataChannel ch, int limit) async {
+    for (var i = 0; i < 500; i++) {
+      if (ch.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) return false;
+      if ((ch.bufferedAmount ?? 0) <= limit) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    return ch.state == webrtc.RTCDataChannelState.RTCDataChannelOpen;
+  }
+
+  /// 把分片轮询分摊到多条并行通道，只发 skip 之外的分片（即断点续传补发）
+  Future<void> _sendChunksParallel(
+    String fileId,
+    _PendingSend state,
+    webrtc.RTCDataChannel ctrl, {
+    Set<int> skip = const <int>{},
+  }) async {
+    final channels = _openFileChannels(ctrl);
+    var next = 0;
+    var sent = skip.length;
+
+    Future<void> worker(webrtc.RTCDataChannel ch) async {
+      while (true) {
+        final i = next++;
+        if (i >= state.totalChunks) return;
+        if (skip.contains(i)) continue;
+        final ok = await _waitDrain(ch, 1024 * 1024);
+        if (!ok) { next--; return; }
+        final s = i * _chunkSize;
+        if (s >= state.bytes.length) continue;
+        final e = (s + _chunkSize).clamp(0, state.bytes.length);
+        ch.send(webrtc.RTCDataChannelMessage(jsonEncode(<String, dynamic>{
+          'type': 'file_chunk', 'fileId': fileId,
+          'chunkIndex': i, 'isLast': i == state.totalChunks - 1,
+          'data': base64Encode(state.bytes.sublist(s, e)),
+        })));
+        sent++;
+        _progressCtl.add(<String, dynamic>{
+          'id': fileId, 'progress': (sent / state.totalChunks).clamp(0.0, 1.0),
+        });
+      }
+    }
+
+    await Future.wait(channels.map(worker));
+
+    if (ctrl.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+      ctrl.send(webrtc.RTCDataChannelMessage(
+        jsonEncode(<String, dynamic>{'type': 'file_complete', 'fileId': fileId}),
+      ));
+    }
+    _progressCtl.add(<String, dynamic>{'id': fileId, 'progress': 1.0, 'sent': true});
+    _chunkSends.remove(fileId);
+    _cancelFileTimer(fileId);
+    _msgLog('SEND 文件发送完成: ${state.fileName} 分片=${state.totalChunks}');
+  }
+
+  /// 收到 file_meta：建立接收缓冲
+  void _handleFileMetaNew(Map<String, dynamic> d) {
+    final fileId = d['fileId'] as String?;
+    final total = d['totalChunks'] as int?;
+    if (fileId == null || total == null) return;
+    _chunkRecv[fileId] = <String, dynamic>{
+      'fileName': d['fileName'] as String? ?? 'file',
+      'fileSize': d['fileSize'] as int? ?? 0,
+      'fileMimeType': d['fileMimeType'] as String? ?? 'application/octet-stream',
+      'fileHash': d['fileHash'] as String? ?? '',
+      'chunkSize': d['chunkSize'] as int? ?? _chunkSize,
+      'totalChunks': total,
+      'buffer': List<Uint8List?>.filled(total, null),
+      'received': 0,
+    };
+    _startFileTimer(fileId);
+    _incomingCtl.add(ChatMessage(
+      id: fileId, roomId: _roomId ?? '', type: MessageType.file,
+      status: MessageStatus.receiving,
+      fileName: d['fileName'] as String? ?? 'file',
+      fileSize: d['fileSize'] as int? ?? 0,
+      fileMimeType: d['fileMimeType'] as String? ?? 'application/octet-stream',
+      isFromMe: false, timestamp: DateTime.now(),
+    ));
+    _progressCtl.add(<String, dynamic>{'id': fileId, 'progress': 0.0, 'start': true});
+    _msgLog('RECV file_meta: ${d['fileName']} chunks=$total');
+  }
+
+  /// 收到一个分片（可能来自任意一条并行通道）
+  void _handleFileChunkNew(Map<String, dynamic> d) {
+    final fileId = d['fileId'] as String?;
+    if (fileId == null) return;
+    final rec = _chunkRecv[fileId];
+    if (rec == null) {
+      _msgLog('RECV ⚠ 未知名分片 fileId=${_safeId(fileId)}', level: LogLevel.warn);
+      return;
+    }
+    final buf = rec['buffer'] as List<Uint8List?>;
+    final idx = d['chunkIndex'] as int;
+    if (buf[idx] != null) return; // 去重
+    buf[idx] = base64Decode(d['data'] as String);
+    rec['received'] = (rec['received'] as int) + 1;
+    _startFileTimer(fileId);
+    final total = rec['totalChunks'] as int;
+    _progressCtl.add(<String, dynamic>{
+      'id': fileId, 'progress': (rec['received'] as int) / total,
+    });
+    if ((rec['received'] as int) >= total) _finalizeIncomingFile(fileId);
+  }
+
+  /// 组装 + MD5 校验 + 交给上层（上层负责写入私有沙盒临时文件）
+  void _finalizeIncomingFile(String fileId) {
+    final rec = _chunkRecv.remove(fileId);
+    if (rec == null) return;
+    _cancelFileTimer(fileId);
+    final buf = rec['buffer'] as List<Uint8List?>;
+    var totalBytes = 0;
+    for (final c in buf) { if (c != null) totalBytes += c.length; }
+    final merged = Uint8List(totalBytes);
+    var off = 0;
+    for (final c in buf) { if (c != null) { merged.setRange(off, off + c.length, c); off += c.length; } }
+
+    final want = rec['fileHash'] as String;
+    final got = md5.convert(merged).toString();
+    final sizeOk = (rec['fileSize'] as int) == 0 || merged.length == (rec['fileSize'] as int);
+    if ((want.isNotEmpty && got != want) || !sizeOk) {
+      _msgLog('RECV ❌ 文件校验失败: ${rec['fileName']} got=$got want=$want sizeOk=$sizeOk',
+          level: LogLevel.error);
+      _progressCtl.add(<String, dynamic>{
+        'id': fileId, 'progress': 1.0, 'failed': true,
+        'error': !sizeOk ? '文件大小不一致，传输可能损坏' : 'MD5 校验不一致，文件已损坏',
+      });
+      return;
+    }
+    _msgLog('RECV ✅ 文件接收完成并通过 MD5 校验: ${rec['fileName']} (${merged.length}B)');
+    _progressCtl.add(<String, dynamic>{
+      'id': fileId, 'progress': 1.0, 'completed': true,
+      'bytes': merged,
+      'fileName': rec['fileName'] as String,
+      'mimeType': rec['fileMimeType'] as String,
+    });
+  }
+
+  /// 处理对端续传请求：只补发它缺失的分片
+  void _handleFileResumeRequest(Map<String, dynamic> d) {
+    final fileId = d['fileId'] as String?;
+    if (fileId == null) return;
+    final state = _chunkSends[fileId];
+    final ctrl = _webrtc.dataChannel;
+    if (state == null || ctrl == null) {
+      _msgLog('RECV 续传请求但无待发数据: ${_safeId(fileId)}', level: LogLevel.warn);
+      return;
+    }
+    final received = (d['receivedChunks'] as List<dynamic>? ?? <dynamic>[])
+        .map((e) => e as int)
+        .toSet();
+    _msgLog('RECV 断点续传: ${state.fileName} 已收 ${received.length}/${state.totalChunks}，补发剩余');
+    _progressCtl.add(<String, dynamic>{
+      'id': fileId, 'progress': received.length / state.totalChunks,
+    });
+    unawaited(_sendChunksParallel(fileId, state, ctrl, skip: received));
+  }
+
+  /// 重连后为未收完的文件向发送方请求续传
+  void _requestResumeForIncoming() {
+    final ctrl = _webrtc.dataChannel;
+    if (ctrl == null || ctrl.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) return;
+    for (final entry in _chunkRecv.entries) {
+      final rec = entry.value;
+      final buf = rec['buffer'] as List<Uint8List?>;
+      final received = <int>[];
+      for (var i = 0; i < buf.length; i++) { if (buf[i] != null) received.add(i); }
+      ctrl.send(webrtc.RTCDataChannelMessage(jsonEncode(<String, dynamic>{
+        'type': 'file_resume_request', 'fileId': entry.key, 'receivedChunks': received,
+      })));
+      _startFileTimer(entry.key);
+      _msgLog('RECV 请求续传: ${rec['fileName']} ${received.length}/${rec['totalChunks']}');
+    }
+  }
+
   Future<ChatMessage?> sendFile() async {
     final pick = await FilePicker.platform.pickFiles(allowMultiple: false, withData: true);
     if (pick == null || pick.files.isEmpty) return null;
@@ -564,15 +836,24 @@ class MessageService {
       fileMimeType: _mime(f.name), timestamp: DateTime.now(),
     );
 
-    const cs = 16384; // 16KB per chunk
-    final total = (bytes.length + cs - 1) ~/ cs;
+    // 新协议：64KB 分片 + MD5 校验 + 3 条并行通道
+    final total = (bytes.length + _chunkSize - 1) ~/ _chunkSize;
+    final hash = md5.convert(bytes).toString();
 
     // 创建待发送记录（用于断点续传）
-    _pendingSends[msg.id] = _PendingSend(
+    _chunkSends[msg.id] = _PendingSend(
       id: msg.id, fileName: f.name, fileSize: f.size,
       fileMimeType: _mime(f.name), totalChunks: total, bytes: bytes,
     );
     _startFileTimer(msg.id);
+
+    // 先发元信息（走控制通道，保证顺序先于分片到达）
+    dc.send(webrtc.RTCDataChannelMessage(jsonEncode(<String, dynamic>{
+      'type': 'file_meta', 'fileId': msg.id,
+      'fileName': f.name, 'fileSize': f.size,
+      'fileMimeType': msg.fileMimeType, 'fileHash': hash,
+      'chunkSize': _chunkSize, 'totalChunks': total,
+    })));
 
     // 立即通知 UI：文件消息已创建，开始发送
     _progressCtl.add({
@@ -581,7 +862,9 @@ class MessageService {
       'fileMimeType': _mime(f.name), 'isFromMe': true,
     });
 
-    return _startSendingFile(msg, bytes, total, dc);
+    // 并行分片发送（内部会在完成后发 file_complete 并置 sent）
+    await _sendChunksParallel(msg.id, _chunkSends[msg.id]!, dc);
+    return msg.copyWith(status: MessageStatus.sent, progress: 1.0);
   }
 
   /// 执行文件发送（chunk 循环）
@@ -1018,6 +1301,9 @@ class MessageService {
   }
 
   void disconnect() {
+    // 先关并行分片通道：WebrtcService.close() 只关它持有的主通道，
+    // aux 通道不显式关闭会留下引用
+    unawaited(_closeFileChannels());
     if (_roomId != null) _ws.send({'type': 'close_room', 'roomId': _roomId!});
     // 取消未完成的 completer
     if (_roomCreatedCompleter != null && !_roomCreatedCompleter!.isCompleted) {

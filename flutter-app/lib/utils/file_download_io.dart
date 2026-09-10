@@ -13,6 +13,65 @@ const String _receiveFolderName = 'ai-cast-hub';
 /// 与原生约定的文件通道（获取内部存储根目录）
 const MethodChannel _fileChannel = MethodChannel('ai_cast_hub/file');
 
+/// 接收完成后暂存用的私有沙盒子目录名（文件管理器不可见，卸载即删）
+const String _tempFolderName = 'ai-cast-hub-tmp';
+
+/// 接收完成后先写入 App 私有沙盒（临时文件）。
+///
+/// 这样即使文件很大也不会在用户未确认前就占用公共空间；
+/// 用户点【保存】后再由 [copyToPublicDir] 复制到 ai-cast-hub 公共目录。
+Future<String?> saveToTempSandbox(Uint8List bytes, String fileName) async {
+  try {
+    final docs = await getApplicationDocumentsDirectory();
+    final dir = Directory(path.join(docs.path, _tempFolderName));
+    await dir.create(recursive: true);
+    final file = File(_uniquePath(dir.path, _safeName(fileName)));
+    await file.writeAsBytes(bytes);
+    debugPrint('[File] 已写入私有沙盒: ${file.path}');
+    return file.path;
+  } catch (e) {
+    debugPrint('[File] 写入私有沙盒失败: $e');
+    return null;
+  }
+}
+
+/// 把私有沙盒中的临时文件复制到 ai-cast-hub 公共目录。
+///
+/// 公共目录优先取内部存储根目录（需 MANAGE_EXTERNAL_STORAGE），
+/// 失败则回退应用专属外部存储目录。复制成功后文件管理器与其他 App 均可访问，
+/// 且卸载 App 不会删除它。
+///
+/// 注意：复制完成后沙盒内仍保留一份副本（可按需清理），因此会存在双倍占用。
+Future<String?> copyToPublicDir(String tempPath, String fileName) async {
+  try {
+    final src = File(tempPath);
+    if (!await src.exists()) {
+      debugPrint('[File] 临时文件不存在: $tempPath');
+      return null;
+    }
+    final dir = await _preferredReceiveDir();
+    if (dir == null) return null;
+    await dir.create(recursive: true);
+    final dst = File(_uniquePath(dir.path, _safeName(fileName)));
+    await dst.writeAsBytes(await src.readAsBytes());
+    debugPrint('[File] 已保存到公共目录: ${dst.path}');
+    return dst.path;
+  } catch (e) {
+    debugPrint('[File] 复制到公共目录失败: $e');
+    return null;
+  }
+}
+
+/// 规范化文件名，避免路径穿越与非法名
+String _safeName(String fileName) {
+  final normalized = fileName.replaceAll('\\', '/');
+  var name = path.basename(normalized).trim();
+  if (name.isEmpty || name == '.' || name == '..') {
+    name = 'download_${DateTime.now().millisecondsSinceEpoch}';
+  }
+  return name;
+}
+
 /// 首启时确保接收目录已创建。
 ///
 /// 优先级：已授予「所有文件访问」权限 → 内部存储根目录 `/ai-cast-hub`（文件管理器可见）；

@@ -84,7 +84,10 @@
                     <div class="h-full rounded-full transition-all" :class="msg.isFromMe ? 'bg-white' : 'bg-blue-400'"
                       :style="{ width: ((msg.progress || 0) * 100) + '%' }"></div>
                   </div>
-                  <p class="text-xs mt-0.5">{{ Math.round((msg.progress || 0) * 100) }}%</p>
+                  <p class="text-xs mt-0.5">
+                    {{ Math.round((msg.progress || 0) * 100) }}%
+                    <span v-if="msg.totalChunks">（{{ msg.receivedChunks || 0 }}/{{ msg.totalChunks }} 片）</span>
+                  </p>
                   <button v-if="msg.status === 'sending'" @click.stop="cancelTransfer(msg.id)"
                     class="text-xs mt-1 underline opacity-70 hover:opacity-100">取消</button>
                 </div>
@@ -108,6 +111,10 @@
                 </div>
                 <p v-if="msg.status === 'sent'" class="text-xs text-green-600 mt-0.5">已发送 ✓</p>
                 <p v-if="msg.status === 'cancelled'" class="text-xs text-red-400 mt-0.5">已取消</p>
+                <!-- 校验失败（MD5 不一致 / 大小不符）必须明示，不能静默给残缺文件 -->
+                <p v-if="msg.status === 'failed'" class="text-xs text-red-500 mt-0.5">
+                  ✗ {{ msg.error || '传输失败' }}
+                </p>
               </div>
             </div>
 
