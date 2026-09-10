@@ -60,18 +60,18 @@
               <span class="text-2xl">{{ device.platform === 'ios' ? '🍎' : '📱' }}</span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium text-gray-800 truncate">{{ device.name || '未知设备' }}</p>
-                <p class="text-xs" :class="device.isOnline ? 'text-green-500' : 'text-orange-500'">
-                  {{ device.platform || 'android' }} · {{ device.isOnline ? '在线' : '已绑定设备下线 — ' + formatTime(device.lastSeen) }}
+                <p class="text-xs" :class="isDeviceOnline(device) ? 'text-green-500' : 'text-orange-500'">
+                  {{ device.platform || 'android' }} · {{ isDeviceOnline(device) ? '在线' : '已绑定设备下线 — ' + formatTime(device.lastSeen) }}
                 </p>
               </div>
               <span
                 class="w-2 h-2 rounded-full shrink-0"
-                :class="device.isOnline ? 'bg-green-400' : 'bg-gray-300'"
-                :title="device.isOnline ? '在线' : '离线'"
+                :class="isDeviceOnline(device) ? 'bg-green-400' : 'bg-gray-300'"
+                :title="isDeviceOnline(device) ? '在线' : '离线'"
               ></span>
               <!-- 离线时：尝试连接按钮 -->
               <button
-                v-if="!device.isOnline"
+                v-if="!isDeviceOnline(device)"
                 @click.stop="tryConnect(device)"
                 class="ml-2 px-2 py-1 text-xs text-blue-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
                 title="尝试连接 App"
@@ -89,6 +89,9 @@
             </li>
           </ul>
         </div>
+
+        <!-- 设备防盗与定位 -->
+        <AntiTheftPanel />
       </div>
 
       <!-- 错误提示 -->
@@ -104,12 +107,20 @@ import { onMounted, onUnmounted, inject, ref } from 'vue'
 import { useDeviceStore } from '../stores/device'
 import { useMessageTransfer } from '../composables/useMessageTransfer'
 import DevicePairCode from '../components/cast/DevicePairCode.vue'
+import AntiTheftPanel from '../components/cast/AntiTheftPanel.vue'
 import Spinner from '../components/common/Spinner.vue'
 
 const deviceStore = useDeviceStore()
 const { createRoom } = useMessageTransfer()
 const showToast = inject('showToast', () => {})
 let refreshTimer = null
+
+/**
+ * 时间刻度：每 20 秒自增一次，用于驱动 isDeviceOnline 的「lastSeen 超时」判定重算。
+ * 不依赖它的话，仅靠 60 秒一次的服务端轮询，离线感知仍会滞后近一分钟。
+ */
+const nowTick = ref(Date.now())
+let tickTimer = null
 
 /** 刷新连接码 */
 async function refreshPairCode() {
@@ -126,9 +137,17 @@ onMounted(async () => {
   refreshTimer = setInterval(() => {
     deviceStore.fetchDeviceList()
   }, 60000)
+  // 每 20 秒推进一次时间刻度，让离线判定及时生效
+  tickTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 20000)
 })
 
 onUnmounted(() => {
+  if (tickTimer) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
   if (refreshTimer) {
     clearInterval(refreshTimer)
     refreshTimer = null
@@ -136,6 +155,28 @@ onUnmounted(() => {
 })
 
 /** 格式化时间 */
+/**
+ * 设备是否在线（前端兜底判定）。
+ *
+ * 服务端的 isOnline 基于 last_seen_at 有 5 分钟宽限，且 device_status 广播
+ * 依赖 PC 端 WS 在线——两者都可能滞后，导致「App 明明已经关了，首页还显示在线」。
+ * 这里再加一层：只要 lastSeen 超过心跳周期的合理上限（90 秒）没刷新，
+ * 即使服务端仍报 isOnline=true，也按离线显示。
+ * 心跳为 30 秒，在线时 lastSeen 不会超过 ~60 秒，故 90 秒阈值不会误判。
+ */
+const OFFLINE_STALE_MS = 90 * 1000
+
+function isDeviceOnline(device) {
+  void nowTick.value // 依赖时间刻度，保证超时后能自动重算并重渲染
+  if (!device) return false
+  if (!device.isOnline) return false
+  const last = device.lastSeen || device.lastSeenAt
+  if (!last) return true
+  const t = new Date(last).getTime()
+  if (!t || Number.isNaN(t)) return true
+  return Date.now() - t <= OFFLINE_STALE_MS
+}
+
 function formatTime(dateStr) {
   if (!dateStr) return '未知'
   const diff = Date.now() - new Date(dateStr).getTime()

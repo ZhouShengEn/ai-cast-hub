@@ -216,17 +216,24 @@ async function getPairedDevices(uuid) {
 }
 
 /**
- * 检查设备是否在线（5分钟内有活动）
+ * 检查设备是否在线（2分钟内有活动）
+ *
+ * 阈值从 5 分钟收紧到 2 分钟：心跳间隔 30 秒、心跳超时 60 秒，
+ * 因此真正在线的设备 last_seen_at 不会落后超过 ~60 秒，2 分钟足够安全。
+ * 原值 5 分钟过于宽松，直接导致「App 已经关了，Web 首页却还显示在线」。
+ *
+ * 注意：这里只影响 /device/list 返回的 isOnline 字段；
+ * 自动解绑另有 10 分钟阈值（AUTO_UNBIND_THRESHOLD_MS），不受影响。
+ *
  * @param {string} lastSeenAt - 最后在线时间
  * @returns {boolean}
  */
 function isOnline(lastSeenAt) {
   if (!lastSeenAt) return false;
-  
+
   const diff = Date.now() - new Date(lastSeenAt).getTime();
-  const minutes = Math.floor(diff / 60000);
-  
-  return minutes < 5; // 5分钟内视为在线
+
+  return diff < 2 * 60 * 1000; // 2分钟内视为在线
 }
 
 /**
