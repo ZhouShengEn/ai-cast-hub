@@ -97,6 +97,12 @@ log "[3/6] 构建 pc-web ..."
 if [ "$SKIP_BUILD" = "1" ]; then
   warn "已跳过前端构建 (SKIP_BUILD=1)"
 else
+  # 自愈守卫：NODE_ENV=production 下 dev 依赖可能被剪掉（vite 等），
+  # 若 vite 不存在则先补装 dev 依赖，避免 npm run build 直接报 vite: not found。
+  if [ ! -x "$REMOTE_DIR/pc-web/node_modules/.bin/vite" ]; then
+    warn "未检测到 vite，补装 pc-web dev 依赖 ..."
+    (cd "$REMOTE_DIR/pc-web" && npm install --include=dev --no-audit --no-fund) || die "pc-web 依赖安装失败"
+  fi
   (cd "$REMOTE_DIR/pc-web" && npm run build) || die "pc-web 构建失败"
   [ -f "$REMOTE_DIR/pc-web/dist/index.html" ] || die "构建产物缺失: pc-web/dist/index.html"
   ok "前端构建完成"
