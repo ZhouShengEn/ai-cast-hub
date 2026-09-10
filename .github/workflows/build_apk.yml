@@ -23,21 +23,31 @@ jobs:
         uses: android-actions/setup-android@v3
 
       # 缓存依赖，加速重复打包
+      #
+      # 注意：key 里的 v2 是「缓存源版本」标记。
+      # 早期构建曾用 PUB_HOSTED_URL=pub.flutter-io.cn 填充过该缓存，
+      # 混用不同 pub 源会导致 content-hash 校验失败（pub 报
+      # "This indicates a problem on the package repository"）。
+      # 一旦更换 pub 源，必须同步改这里的前缀以丢弃旧缓存。
       - name: Cache Flutter & Gradle deps
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.pub-cache
             ~/.gradle
             flutter-app/.dart_tool
             flutter-app/build
-          key: flutter-${{ hashFiles('flutter-app/pubspec.yaml') }}
+          key: flutter-v2-${{ hashFiles('flutter-app/pubspec.yaml') }}
+          restore-keys: |
+            flutter-v2-
 
-      # 切换flutter-app目录，通过环境变量指定国内pub源（无报错方案）
+      # 解析依赖
+      #
+      # 这里【不要】设置 PUB_HOSTED_URL 指向国内镜像：GitHub Actions runner 在海外，
+      # pub.dev 直连更快更稳；镜像一旦同步滞后或内容哈希不一致，就会让 pub get 直接失败。
+      # 国内本地开发如需加速，请在自己机器上 export PUB_HOSTED_URL=https://pub.flutter-io.cn。
       - name: Install dependencies
         working-directory: ./flutter-app
-        env:
-          PUB_HOSTED_URL: https://pub.flutter-io.cn
         run: flutter pub get
 
       # 编译Debug测试APK
