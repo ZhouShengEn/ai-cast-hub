@@ -118,8 +118,8 @@ class MessageNotifier extends StateNotifier<MessageState> {
         final fileName = d['fileName'] as String? ?? 'download';
         debugPrint('[Msg PROV] 收到 completed 事件: file=$fileName bytes=${bytes?.length}');
         if (bytes != null) {
-          savedPath = await _downloadFile(bytes, fileName);
-          debugPrint('[Msg PROV] 下载完成: path=$savedPath');
+          savedPath = await _saveToSandbox(bytes, fileName);
+          debugPrint('[Msg PROV] 已写入沙盒: path=$savedPath');
         } else {
           debugPrint('[Msg PROV] ⚠ bytes 为空，无法下载');
         }
@@ -171,11 +171,45 @@ class MessageNotifier extends StateNotifier<MessageState> {
     }
   }
 
-  Future<String?> _downloadFile(Uint8List bytes, String fileName) async {
-    debugPrint('[Msg PROV] 开始下载文件: $fileName (${bytes.length} bytes)');
-    final result = await downloadFile(bytes, fileName);
-    debugPrint('[Msg PROV] downloadFile 返回: $result');
+  /// 接收完成后先写入 App 私有沙盒（临时文件），等用户点【保存】再进公共目录。
+  ///
+  /// 这样用户不保存就不会占用公共空间，也避免未确认的文件散落在「我的手机」里。
+  Future<String?> _saveToSandbox(Uint8List bytes, String fileName) async {
+    debugPrint('[Msg PROV] 写入私有沙盒: $fileName (${bytes.length} bytes)');
+    final result = await saveToTempSandbox(bytes, fileName);
+    debugPrint('[Msg PROV] saveToTempSandbox 返回: $result');
     return result;
+  }
+
+  /// 把已接收的临时文件保存到 ai-cast-hub 公共目录（文件管理器与其他 App 可访问）。
+  ///
+  /// 返回是否成功；失败时可在 UI 上提示用户（多为未授予「所有文件访问」权限）。
+  Future<bool> saveFile(String id) async {
+    final idx = state.messages.indexWhere((m) => m.id == id);
+    if (idx < 0) return false;
+    final msg = state.messages[idx];
+    final tempPath = msg.filePath;
+    if (tempPath == null || tempPath.isEmpty) {
+      debugPrint('[Msg PROV] saveFile: 无临时文件，id=$id');
+      return false;
+    }
+    if (msg.saved) return true;
+
+    final public = await copyToPublicDir(tempPath, msg.fileName ?? 'download');
+    if (public == null) {
+      debugPrint('[Msg PROV] saveFile 失败: ${msg.fileName}');
+      return false;
+    }
+    final list = [...state.messages];
+    list[idx] = list[idx].copyWith(publicPath: public, saved: true);
+    state = MessageState(
+      messages: list,
+      isConnected: state.isConnected,
+      isConnecting: state.isConnecting,
+      error: state.error,
+    );
+    debugPrint('[Msg PROV] 已保存到公共目录: $public');
+    return true;
   }
 
   void _handleReadReceipt(ChatMessage receiptMsg) {

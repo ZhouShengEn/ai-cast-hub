@@ -20,7 +20,9 @@ class ChatMessage {
   final String? fileName;          // 文件名（文件消息）
   final int? fileSize;             // 文件大小（bytes）
   final String? fileMimeType;      // 文件 MIME 类型
-  final String? filePath;           // 下载后本地文件路径
+  final String? filePath;           // 落盘路径：未保存前是私有沙盒临时文件，保存后是公共目录文件
+  final String? publicPath;         // 已保存到 ai-cast-hub 公共目录的路径（文件管理器可见）
+  final bool saved;                 // 是否已由用户点【保存】复制到公共目录
   final double progress;            // 传输进度 0.0-1.0
   final bool isFromMe;              // 是否自己发送的
   final DateTime timestamp;
@@ -36,6 +38,8 @@ class ChatMessage {
     this.fileSize,
     this.fileMimeType,
     this.filePath,
+    this.publicPath,
+    this.saved = false,
     this.progress = 0.0,
     this.isFromMe = true,
     required this.timestamp,
@@ -80,6 +84,8 @@ class ChatMessage {
     int? fileSize,
     String? fileMimeType,
     String? filePath,
+    String? publicPath,
+    bool? saved,
     double? progress,
     bool? isFromMe,
     DateTime? timestamp,
@@ -95,6 +101,8 @@ class ChatMessage {
       fileSize: fileSize ?? this.fileSize,
       fileMimeType: fileMimeType ?? this.fileMimeType,
       filePath: filePath ?? this.filePath,
+      publicPath: publicPath ?? this.publicPath,
+      saved: saved ?? this.saved,
       progress: progress ?? this.progress,
       isFromMe: isFromMe ?? this.isFromMe,
       timestamp: timestamp ?? this.timestamp,

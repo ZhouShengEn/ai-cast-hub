@@ -501,8 +501,12 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
   }
 
   Widget _fileCard(ChatMessage m, MessageNotifier n, bool me) {
-    final canOpen =
-        !me && m.isCompleted && m.filePath != null && m.filePath!.isNotEmpty;
+  // 只有已保存到公共目录的文件才能被其他 App 打开；私有沙盒文件打开会失败
+  final canOpen = !me &&
+      m.isCompleted &&
+      m.saved &&
+      m.publicPath != null &&
+      m.publicPath!.isNotEmpty;
 
     return Semantics(
       button: canOpen,
@@ -547,7 +551,22 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
             const Text('✓ 已接收',
                 style: TextStyle(fontSize: 12, color: Colors.green)),
             if (!me) ...[
-              if (m.filePath != null) ...[
+              // 未保存：只给【保存】按钮，由用户决定何时放入公共目录
+              if (!m.saved) ...[
+                const SizedBox(height: 4),
+                TextButton.icon(
+                  onPressed: () => _saveFile(m, n),
+                  icon: const Icon(Icons.save_alt, size: 14),
+                  label: const Text('保存到 ai-cast-hub',
+                      style: TextStyle(fontSize: 12)),
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                ),
+              ],
+              if (m.saved && m.publicPath != null) ...[
                 const SizedBox(height: 4),
                 Container(
                   padding:
@@ -560,7 +579,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
                         size: 14, color: Colors.black54),
                     const SizedBox(width: 4),
                     Flexible(
-                        child: Text(m.filePath!,
+                        child: Text(m.publicPath!,
                             style: const TextStyle(
                                 fontSize: 10, color: Colors.black54),
                             maxLines: 1,
@@ -584,7 +603,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
                   // 复制路径按钮
                   TextButton.icon(
                     onPressed: () {
-                      Clipboard.setData(ClipboardData(text: m.filePath!));
+                      Clipboard.setData(
+                          ClipboardData(text: m.publicPath ?? m.filePath!));
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                             content: Text('路径已复制'),
@@ -602,7 +622,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
                   ),
                 ]),
               ] else ...[
-                // filePath 为空（如 Web 平台下载），显示简要提示
+                // 尚未保存到公共目录：提示用户当前只是暂存
                 const SizedBox(height: 4),
                 Container(
                   padding:
@@ -611,10 +631,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
                       color: Colors.grey.shade100,
                       borderRadius: BorderRadius.circular(4)),
                   child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.check_circle_outline,
+                    Icon(Icons.hourglass_empty,
                         size: 14, color: Colors.black54),
                     SizedBox(width: 4),
-                    Text('文件已保存',
+                    Text('暂存在 App 私有目录，点击上方保存后可对外访问',
                         style: TextStyle(fontSize: 10, color: Colors.black54)),
                   ]),
                 ),
@@ -626,8 +646,24 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
     );
   }
 
+  /// 点【保存】：把私有沙盒中的临时文件复制到 ai-cast-hub 公共目录
+  Future<void> _saveFile(ChatMessage m, MessageNotifier n) async {
+    final ok = await n.saveFile(m.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok
+            ? '已保存到 ai-cast-hub 目录'
+            : '保存失败，请确认已授予「所有文件访问」权限'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   Future<void> _openReceivedFile(ChatMessage message) async {
-    final filePath = message.filePath;
+    // 只有保存到公共目录的文件才对外可访问（私有沙盒无法被其他 App 打开）
+    final filePath = message.publicPath ?? message.filePath;
     if (filePath == null || filePath.isEmpty) {
       return;
     }
