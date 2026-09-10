@@ -451,8 +451,16 @@ class CastService {
         _webrtc.handleAnswer(payload['sdp'] as String);
         _updateSessionStatus('connected');
         _castLog('✅ 投屏连接已建立!', level: LogLevel.info);
-        // 投屏建立后自动开启系统音频采集（用户仍需在手机上确认授权弹窗）
-        unawaited(_autoStartSystemAudio());
+        // 投屏建立后自动开启系统音频采集（用户仍需在手机上确认授权弹窗）。
+        //
+        // 仅【屏幕投屏】模式才开：摄像头模式走的是麦克风（getUserMedia 的 audio 约束），
+        // 根本不需要 MediaProjection。之前这里无条件开启，导致开摄像头也会弹出
+        // 「录制投射屏幕」系统授权，用户授予后又在摄像头场景下启动 AudioRecord 而崩溃。
+        if (_captureMode == 'screen') {
+          unawaited(_autoStartSystemAudio());
+        } else {
+          _castLog('摄像头模式：跳过系统内录（音源为麦克风）', level: LogLevel.info);
+        }
         break;
       case 'ice_candidate':
         _castLog('收到PC的ice_candidate', level: LogLevel.debug);
@@ -668,25 +676,37 @@ class CastService {
   /// 注意：Android MediaProjection 授权弹窗无法被程序自动同意，必须由用户在手机上点按确认；
   /// Web 端 AudioContext 也需用户手势才能 resume（已在触摸/开关手势中处理）。
   Future<void> _autoStartSystemAudio() async {
+    // 双重保险：摄像头模式绝不申请 MediaProjection（会弹「录制投射屏幕」并可能崩溃）
+    if (_captureMode != 'screen') {
+      _castLog('非屏幕投屏模式，不申请系统内录', level: LogLevel.info);
+      return;
+    }
     if (_systemAudioEnabled) return;
-    if (!await _systemAudio.isSupported()) {
-      _castLog('系统音频不支持（API<29），跳过自动开启', level: LogLevel.info);
-      return;
-    }
-    if (_audioChannel == null) {
-      _castLog('音频通道未就绪，跳过自动开启系统音频', level: LogLevel.warn);
-      return;
-    }
-    final ok = await _systemAudio.start();
-    if (ok) {
-      _systemAudioEnabled = true;
-      _pcmErrorLogged = false;
-      _pcmSubscription = _systemAudio.pcmStream.listen(_forwardPcm);
-      _castLog('投屏建立后已自动开启系统音频', level: LogLevel.info);
-      _reportSystemAudioState(enabled: true);
-    } else {
-      _castLog('自动开启系统音频失败（可能需用户在手机上授权）',
-          level: LogLevel.warn);
+
+    try {
+      if (!await _systemAudio.isSupported()) {
+        _castLog('系统音频不支持（API<29），跳过自动开启', level: LogLevel.info);
+        return;
+      }
+      if (_audioChannel == null) {
+        _castLog('音频通道未就绪，跳过自动开启系统音频', level: LogLevel.warn);
+        return;
+      }
+      final ok = await _systemAudio.start();
+      if (ok) {
+        _systemAudioEnabled = true;
+        _pcmErrorLogged = false;
+        _pcmSubscription = _systemAudio.pcmStream.listen(_forwardPcm);
+        _castLog('投屏建立后已自动开启系统音频', level: LogLevel.info);
+        _reportSystemAudioState(enabled: true);
+      } else {
+        _castLog('自动开启系统音频失败（可能需用户在手机上授权）',
+            level: LogLevel.warn);
+      }
+    } catch (e) {
+      // 内录属于「锦上添花」，任何异常都不能让它冒泡中断投屏或导致崩溃
+      _castLog('自动开启系统音频异常（已忽略，不影响投屏）: $e',
+          level: LogLevel.error);
     }
   }
 

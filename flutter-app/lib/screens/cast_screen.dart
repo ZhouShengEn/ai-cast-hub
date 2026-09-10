@@ -185,21 +185,26 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                   final granted = await _ensureCameraPermission();
                   if (!granted) return;
                 } else {
-                  // ---- 开始投屏：远程触控依赖无障碍服务，必须先确保可用 ----
-                  // 用 checkServiceConnected 而非宽松的 checkServiceEnabled：
-                  // 后者「设置里开着」也会返回 true，但实例未绑定时手势根本派发不出去。
-                  final connected = await RemoteControlService().checkServiceConnected();
-                  if (!connected) {
-                    final settingsOn = await RemoteControlService().isEnabledInSettings();
+                  // ---- 开始投屏 ----
+                  //
+                  // 关键区分：**投屏本身不依赖无障碍服务**，MediaProjection 采集与推流
+                  // 跟 AccessibilityService 毫无关系；只有「Web 端远程触控」依赖它。
+                  // 因此：
+                  //   · 设置里【从未开启】→ 阻断并引导去开启（远程触控完全没有，必须先开）
+                  //   · 已开启但实例未绑定 → **放行投屏**，只给非阻断提示
+                  //
+                  // 之前这里用严格的 checkServiceConnected() 拦截，导致「明明已经开了」
+                  // 的用户被永久卡住、完全无法投屏 —— 那是把「远程触控不可用」
+                  // 错误地放大成了「投屏不可用」。
+                  final settingsOn = await RemoteControlService().isEnabledInSettings();
+                  if (!settingsOn) {
                     final goSettings = await showDialog<bool>(
                       context: context,
                       builder: (context) => AlertDialog(
                         title: const Text('需要开启无障碍服务'),
-                        content: Text(
-                          settingsOn
-                              ? '无障碍服务已在设置中开启，但尚未生效（常见于服务被系统回收或配置更新后）。'
-                                '请前往「设置 → 无障碍」把 AI Cast Hub 关闭再重新打开一次。'
-                              : '投屏的远程控制功能需要无障碍服务。请前往「设置 → 无障碍」开启 AI Cast Hub 的无障碍权限。',
+                        content: const Text(
+                          '投屏的远程控制功能需要无障碍服务。'
+                          '请前往「设置 → 无障碍」开启 AI Cast Hub 的无障碍权限。',
                         ),
                         actions: [
                           TextButton(
@@ -215,14 +220,29 @@ class _CastScreenState extends ConsumerState<CastScreen> {
                     );
                     if (goSettings != true) return;
                     await RemoteControlService().openAccessibilitySettings();
-                    // 从设置返回后【不自动启动投屏】—— 需用户手动再点一次「开始投屏」，
-                    // 避免用户在系统设置页时 App 已在后台偷偷拉起 MediaProjection 授权。
+                    // 从设置返回后【不自动启动投屏】—— 需用户手动再点一次，
+                    // 避免用户还在系统设置页时 App 已在后台偷偷拉起 MediaProjection 授权。
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('请在开启无障碍服务后，再次点击「开始投屏」')),
                       );
                     }
                     return;
+                  }
+
+                  // 已开启但服务实例尚未绑定到本进程：不阻断投屏，仅提示远程触控可能无效
+                  final connected = await RemoteControlService().checkServiceConnected();
+                  if (!connected && mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          '无障碍服务已开启但尚未生效：本次可以正常投屏，'
+                          '但 Web 端远程触控可能无效。如需使用，请到「设置 → 无障碍」'
+                          '把 AI Cast Hub 关闭再重新打开一次。',
+                        ),
+                        duration: Duration(seconds: 5),
+                      ),
+                    );
                   }
                 }
 

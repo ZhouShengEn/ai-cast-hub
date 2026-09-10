@@ -86,7 +86,9 @@
                   </div>
                   <p class="text-xs mt-0.5">
                     {{ Math.round((msg.progress || 0) * 100) }}%
-                    <span v-if="msg.totalChunks">（{{ msg.receivedChunks || 0 }}/{{ msg.totalChunks }} 片）</span>
+                    <span v-if="msg.speed" class="font-medium" style="color: #2563eb">
+                      · {{ formatSpeed(msg.speed) }}
+                    </span>
                   </p>
                   <button v-if="msg.status === 'sending'" @click.stop="cancelTransfer(msg.id)"
                     class="text-xs mt-1 underline opacity-70 hover:opacity-100">取消</button>
@@ -111,10 +113,6 @@
                 </div>
                 <p v-if="msg.status === 'sent'" class="text-xs text-green-600 mt-0.5">已发送 ✓</p>
                 <p v-if="msg.status === 'cancelled'" class="text-xs text-red-400 mt-0.5">已取消</p>
-                <!-- 校验失败（MD5 不一致 / 大小不符）必须明示，不能静默给残缺文件 -->
-                <p v-if="msg.status === 'failed'" class="text-xs text-red-500 mt-0.5">
-                  ✗ {{ msg.error || '传输失败' }}
-                </p>
               </div>
             </div>
 
@@ -209,6 +207,14 @@ function scrollBottom() {
   nextTick(() => {
     if (msgList.value) msgList.value.scrollTop = msgList.value.scrollHeight
   })
+}
+
+/** 传输速率（字节/秒）格式化为可读文本，如 "3.4 MB/s" */
+function formatSpeed(bytesPerSec) {
+  if (!bytesPerSec || bytesPerSec <= 0) return ''
+  if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + ' B/s'
+  if (bytesPerSec < 1048576) return (bytesPerSec / 1024).toFixed(1) + ' KB/s'
+  return (bytesPerSec / 1048576).toFixed(1) + ' MB/s'
 }
 
 function formatSize(bytes) {

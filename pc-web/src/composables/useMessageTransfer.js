@@ -2,7 +2,6 @@ import { ref, shallowRef } from 'vue'
 import { useWebSocket } from './useWebSocket'
 import { useWebRTC } from './useWebRTC'
 import { useMessageStore } from '../stores/message'
-import { md5 } from '../utils/md5'
 
 /**
  * 消息传输 Composable（单例）
@@ -41,29 +40,26 @@ export function useMessageTransfer() {
   /** 暂存早到的 chunk（file_start 尚未到达时） */
   let _pendingChunks = {}
 
-  // ---- 并行分片传输（新协议：file_meta / file_chunk / file_resume_request / file_complete）----
+  // ---- 文件分片参数（必须与 Flutter 端完全一致，否则分片会错位）----
   /**
    * 分片大小 64KB。
-   * 原来是 16KB 且每片强制 sleep(5ms)，吞吐被人为压到 ~3MB/s；
-   * 64KB 兼顾「单条消息不超过各浏览器 256KB 上限」与「包数量减少 4 倍」。
+   *
+   * 原来是 16KB 且每片强制 sleep(5ms) —— 16KB/5ms 把吞吐硬锁在 ~3.2MB/s。
+   * 这里保留旧的「二进制包 + file_start/file_end」协议（无 base64 开销），
+   * 只把分片放大到 64KB 并去掉固定 sleep，速度可提升一个数量级。
    */
   const CHUNK_SIZE = 64 * 1024
-  /** 并行 DataChannel 条数（只跑 file_chunk；控制消息仍走 message 通道，避免互相阻塞） */
-  const FILE_CHANNEL_COUNT = 3
-  const FILE_CHANNEL_LABELS = Array.from({ length: FILE_CHANNEL_COUNT }, (_, i) => `file-${i}`)
-  /** 分片通道：label -> RTCDataChannel */
-  const _fileChannels = {}
+  /** 发送缓冲水位上限（2MB）：只有超过才等待，不再每片固定休眠 */
+  const CHUNK_BACKLOG_LIMIT = 2 * 1024 * 1024
+  /** 速率采样间隔：太频繁会淹没 UI 更新 */
+  const SPEED_SAMPLE_MS = 300
   /**
-   * 新协议接收态
-   * { [fileId]: { fileName, fileSize, fileMimeType, fileHash, chunkSize, totalChunks,
-   *               buffer: Array<Uint8Array|undefined>, received: number } }
+   * 已接收分片计数：{ [fileId]: number }
+   * 避免在 _handleFileChunkData 里对缓冲区做 filter(Boolean) 造成 O(n²)。
    */
-  const _chunkRecv = {}
-  /**
-   * 新协议发送态（用于断点续传：重连后只补发对端缺失的分片）
-   * { [fileId]: { fileName, fileSize, fileMimeType, fileHash, chunkSize, totalChunks, fullData: Uint8Array } }
-   */
-  const _chunkSends = {}
+  const _fileReceivedCount = {}
+  /** 接收速率采样：{ [fileId]: { at, bytes } } */
+  const _fileSpeedSample = {}
 
   // 回调引用
   let _invitationHandler = null
@@ -149,10 +145,6 @@ export function useMessageTransfer() {
     // 创建 DataChannel（PC 作为主动方创建）
     _dataChannel = createDataChannel('message')
     _setupDataChannel(_dataChannel)
-
-    // 并行分片通道：必须在 createOffer() 之前创建，
-    // 否则 SDP 里不包含这些通道的 m=application，对端根本收不到。
-    _createFileChannels()
 
     // 监听信令
     _signalHandler = async (signalMsg) => {
@@ -324,12 +316,6 @@ export function useMessageTransfer() {
     // 监听远端 DataChannel（消息通道）
     _dataChannelCb = (channel) => {
       console.log('[Message] 收到远端 DataChannel:', channel.label, 'readyState=', channel.readyState)
-      // 按 label 分流：file-N 是并行分片通道，不参与连接态判定
-      if (FILE_CHANNEL_LABELS.includes(channel.label)) {
-        _fileChannels[channel.label] = channel
-        _setupFileChannel(channel)
-        return
-      }
       _dataChannel = channel
       _setupDataChannel(channel)
       store.setConnected(true)
@@ -375,12 +361,10 @@ export function useMessageTransfer() {
       _clearConnectionTimeout()
       store.setConnected(true)
       store.error = null
-    // 重连后恢复中断的传输
-    if (Object.keys(_pendingSends).length > 0 || Object.keys(_fileMetas).length > 0) {
-      _onReconnected()
-    }
-    // 新协议：为未收完的文件向对端发 file_resume_request（内部为空时直接 no-op）
-    _requestResumeForIncoming()
+      // 重连后恢复中断的传输
+      if (Object.keys(_pendingSends).length > 0 || Object.keys(_fileMetas).length > 0) {
+        _onReconnected()
+      }
     }
     channel.onmessage = (event) => {
       if (typeof event.data === 'string') {
@@ -435,19 +419,7 @@ export function useMessageTransfer() {
         _handleFileStart(data)
         break
       case 'file_chunk':
-        // 新协议带 fileId/chunkIndex；老二进制协议走的是 id/seq，据此分流
-        if (data.fileId !== undefined) _handleFileChunkNew(data)
-        else _handleFileChunkData(data)
-        break
-      case 'file_meta':
-        _handleFileMeta(data)
-        break
-      case 'file_resume_request':
-        _handleFileResumeRequest(data)
-        break
-      case 'file_complete':
-        // 对端已发完全部分片；若本地也已收满则收尾（正常路径已由收满触发，这里只兜底）
-        if (_chunkRecv[data.fileId]) _finalizeIncomingFile(data.fileId)
+        _handleFileChunkData(data)
         break
       case 'file_end':
         _handleFileEnd(data)
@@ -500,6 +472,9 @@ export function useMessageTransfer() {
     // 缓冲区总是创建（chunk 会通过 DC 持续到达）
     _fileMetas[data.id] = data
     _fileBuffers[data.id] = new Array(data.totalChunks)
+    // 已收分片计数与速率采样初始化
+    _fileReceivedCount[data.id] = 0
+    _fileSpeedSample[data.id] = { at: performance.now(), bytes: 0 }
     _resetFileTransferTimer(data.id)
 
     console.log('[Message] file_start: id=', data.id, 'fileName=', data.fileName, 'totalChunks=', data.totalChunks)
@@ -597,8 +572,24 @@ export function useMessageTransfer() {
     _resetFileTransferTimer(data.id)
 
     const total = data.total
-    const received = buf.filter(Boolean).length
-    const progress = received / total
+    // 用计数器维护已收片数。
+    // 原实现用 buf.filter(Boolean).length —— 每收一片就要遍历整个缓冲区，
+    // 是 O(n²)：2GB 文件(3 万+ 片)时仅统计进度就要上亿次遍历，接收被拖到极慢。
+    _fileReceivedCount[data.id] = (_fileReceivedCount[data.id] || 0) + 1
+    const received = _fileReceivedCount[data.id]
+    const progress = total > 0 ? received / total : 0
+
+    // 速率采样
+    const now = performance.now()
+    const sample = _fileSpeedSample[data.id] || { at: now, bytes: 0 }
+    sample.bytes += bytes.length
+    if (now - sample.at >= SPEED_SAMPLE_MS) {
+      const speed = sample.bytes / ((now - sample.at) / 1000)
+      sample.at = now
+      sample.bytes = 0
+      store.updateMessage(data.id, { speed })
+    }
+    _fileSpeedSample[data.id] = sample
 
     // 每 10 个 chunk 或接近完成时打日志
     if (data.seq % 10 === 0 || received >= total - 1) {
@@ -673,17 +664,22 @@ export function useMessageTransfer() {
     }))
 
     const idEncoded = new TextEncoder().encode(fileId)
-    const chunkSize = 16384
+    const chunkSize = CHUNK_SIZE
     let sentCount = receivedChunks.length
+    // 速率统计
+    const startedAt = performance.now()
+    let lastSampleAt = startedAt
+    let lastSampleBytes = receivedChunks.length * chunkSize
 
     for (let i = 0; i < pending.totalChunks; i++) {
       if (receivedSet.has(i)) continue
 
+      // 只在缓冲区水位过高时才等待（原实现每片固定 sleep 5ms，速度被锁死）
       let retryCount = 0
-      while (_dataChannel && _dataChannel.bufferedAmount > chunkSize * 8) {
-        await new Promise(r => setTimeout(r, 10))
+      while (_dataChannel && _dataChannel.bufferedAmount > CHUNK_BACKLOG_LIMIT) {
+        await new Promise(r => setTimeout(r, 2))
         retryCount++
-        if (retryCount > 500 || !_dataChannel || _dataChannel.readyState !== 'open') {
+        if (retryCount > 1500 || !_dataChannel || _dataChannel.readyState !== 'open') {
           console.warn('[Message] 续传中断 at chunk', i)
           store.updateMessage(fileId, { status: 'interrupted', progress: sentCount / pending.totalChunks })
           return
@@ -705,9 +701,15 @@ export function useMessageTransfer() {
 
       _dataChannel.send(packet.buffer)
       sentCount++
-      store.updateMessage(fileId, { progress: Math.min(1, sentCount / pending.totalChunks) })
 
-      await new Promise(r => setTimeout(r, 5))
+      const now = performance.now()
+      if (now - lastSampleAt >= SPEED_SAMPLE_MS) {
+        const speed = ((sentCount * chunkSize) - lastSampleBytes) / ((now - lastSampleAt) / 1000)
+        lastSampleAt = now
+        lastSampleBytes = sentCount * chunkSize
+        store.updateMessage(fileId, { speed })
+      }
+      store.updateMessage(fileId, { progress: Math.min(1, sentCount / pending.totalChunks) })
     }
 
     if (_dataChannel && _dataChannel.readyState === 'open') {
@@ -854,286 +856,7 @@ export function useMessageTransfer() {
     return true
   }
 
-  // ==================== 并行分片传输（新协议）====================
-
-  /**
-   * 创建 3 条并行分片通道。
-   *
-   * 必须在 createOffer() 之前调用：DataChannel 建在 offer 之后，SDP 中不会包含
-   * 对应的 m=application，对端就拿不到这些通道。
-   */
-  function _createFileChannels() {
-    for (const label of FILE_CHANNEL_LABELS) {
-      if (_fileChannels[label]) continue
-      try {
-        const ch = createDataChannel(label)
-        _fileChannels[label] = ch
-        _setupFileChannel(ch)
-        console.log('[Message] 分片通道已创建:', label)
-      } catch (e) {
-        console.warn('[Message] 创建分片通道失败:', label, e)
-      }
-    }
-  }
-
-  /**
-   * 分片通道只负责 file_chunk，不参与连接态判定。
-   * 不能复用 _setupDataChannel —— 后者每条通道 open 都会触发 _onReconnected()，
-   * 3 条通道会重复触发续传。
-   */
-  function _setupFileChannel(channel) {
-    channel.onmessage = (event) => {
-      if (typeof event.data !== 'string') return
-      try {
-        const data = JSON.parse(event.data)
-        if (data.type === 'file_chunk') _handleFileChunkNew(data)
-      } catch (e) {
-        console.error('[Message] 分片通道消息解析失败:', e)
-      }
-    }
-    // 分片通道打开后，若本地有未收完的文件，立即向对端请求续传
-    channel.onopen = () => {
-      console.log('[Message] 分片通道已打开:', channel.label)
-      _requestResumeForIncoming()
-    }
-    channel.onerror = (e) => console.warn('[Message] 分片通道错误:', channel.label, e)
-  }
-
-  /** 关闭并清理所有并行分片通道（会话结束时必须调用，否则闭包引用泄漏） */
-  function _closeFileChannels() {
-    for (const label of Object.keys(_fileChannels)) {
-      const ch = _fileChannels[label]
-      try { if (ch && ch.readyState !== 'closed') ch.close() } catch (_) {}
-      delete _fileChannels[label]
-    }
-  }
-
-  /** 当前可用的分片通道（已 open 的 file-N） */
-  function _openFileChannels() {
-    return FILE_CHANNEL_LABELS
-      .map((l) => _fileChannels[l])
-      .filter((c) => c && c.readyState === 'open')
-  }
-
-  /** base64 编码一段字节（分片协议要求 JSON 可序列化） */
-  function _toBase64(bytes) {
-    let binary = ''
-    const CH = 0x8000
-    for (let i = 0; i < bytes.length; i += CH) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CH))
-    }
-    return btoa(binary)
-  }
-
-  /** base64 解码为 Uint8Array */
-  function _fromBase64(b64) {
-    const binary = atob(b64)
-    const out = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
-    return out
-  }
-
-  /** 等待某条通道的发送缓冲降到阈值以下（事件驱动 + 轮询兜底） */
-  function _waitDrain(channel, limit) {
-    return new Promise((resolve) => {
-      if (!channel || channel.readyState !== 'open') return resolve(false)
-      if ((channel.bufferedAmount || 0) <= limit) return resolve(true)
-
-      const done = (ok) => {
-        channel.onbufferedamountlow = null
-        clearTimeout(timer)
-        resolve(ok)
-      }
-      // 低水位阈值：降到 256KB 以下就继续发
-      try {
-        channel.bufferedAmountLowThreshold = Math.min(256 * 1024, limit)
-        channel.onbufferedamountlow = () => done(true)
-      } catch (_) { /* 部分浏览器不支持时走轮询兜底 */ }
-
-      // 兜底：最多等 10 秒，避免永久挂起（这正是旧实现连接卡死的成因）
-      const timer = setTimeout(() => done(channel.readyState === 'open'), 10000)
-      const poll = setInterval(() => {
-        if (!channel || channel.readyState !== 'open') { clearInterval(poll); done(false); return }
-        if ((channel.bufferedAmount || 0) <= limit) { clearInterval(poll); done(true) }
-      }, 20)
-    })
-  }
-
-  /**
-   * 把分片按「轮询」分摊到 3 条并行通道上发送。
-   * 只发 skip（对端已收）之外的分片 —— 这就是断点续传的补发逻辑。
-   */
-  async function _sendChunksParallel(fileId, sendState, skipSet = new Set()) {
-    const { fullData, chunkSize, totalChunks } = sendState
-    const channels = _openFileChannels()
-    if (channels.length === 0) {
-      console.warn('[Message] 无可用分片通道，降级为控制通道发送')
-      channels.push(_dataChannel)
-    }
-
-    let next = 0
-    let sent = skipSet.size
-
-    /** 单条通道的发送协程：不断从 next 取下一个待发分片 */
-    async function worker(channel, lane) {
-      for (;;) {
-        const i = next++
-        if (i >= totalChunks) return
-        if (skipSet.has(i)) continue
-
-        const ok = await _waitDrain(channel, 1024 * 1024)
-        if (!ok) { next-- ; return }   // 通道已断，把序号还回去交给别的 worker 或下次续传
-
-        const s = i * chunkSize
-        const e = Math.min(s + chunkSize, fullData.length)
-        const chunk = fullData.subarray(s, e)
-
-        channel.send(JSON.stringify({
-          type: 'file_chunk',
-          fileId,
-          chunkIndex: i,
-          isLast: i === totalChunks - 1,
-          data: _toBase64(chunk),
-        }))
-
-        sent++
-        store.updateMessage(fileId, {
-          progress: Math.min(1, sent / totalChunks),
-          receivedChunks: sent,
-        })
-      }
-    }
-
-    await Promise.all(channels.map((c, lane) => worker(c, lane)))
-
-    // 全部发完 → 通知对端可以校验了
-    if (_dataChannel && _dataChannel.readyState === 'open') {
-      _dataChannel.send(JSON.stringify({ type: 'file_complete', fileId }))
-    }
-    store.updateMessage(fileId, { status: 'sent', progress: 1 })
-    delete _chunkSends[fileId]
-    _clearFileTransferTimer(fileId)
-    console.log('[Message] 文件发送完成:', sendState.fileName, '分片数:', totalChunks)
-  }
-
-  /** 处理对端的续传请求：只补发它缺失的分片 */
-  function _handleFileResumeRequest(data) {
-    const fileId = data.fileId
-    const state = _chunkSends[fileId]
-    if (!state) {
-      console.warn('[Message] 收到续传请求但无待发数据: fileId=', fileId)
-      return
-    }
-    const skip = new Set(Array.isArray(data.receivedChunks) ? data.receivedChunks : [])
-    console.log('[Message] 断点续传：已收', skip.size, '/', state.totalChunks, '，补发剩余分片')
-    store.updateMessage(fileId, {
-      status: 'sending',
-      progress: skip.size / state.totalChunks,
-      receivedChunks: skip.size,
-    })
-    _sendChunksParallel(fileId, state, skip)
-  }
-
-  /** 收到 file_meta：建立接收缓冲 */
-  function _handleFileMeta(data) {
-    const { fileId, fileName, fileSize, fileHash, totalChunks, chunkSize, fileMimeType } = data
-    if (!fileId || !totalChunks) return
-    _chunkRecv[fileId] = {
-      fileName: fileName || 'file',
-      fileSize: fileSize || 0,
-      fileMimeType: fileMimeType || 'application/octet-stream',
-      fileHash: fileHash || '',
-      chunkSize: chunkSize || CHUNK_SIZE,
-      totalChunks,
-      buffer: new Array(totalChunks),
-      received: 0,
-    }
-    _resetFileTransferTimer(fileId)
-    store.addMessage({
-      id: fileId, type: 'file', status: 'receiving',
-      fileName: fileName || 'file', fileSize: fileSize || 0,
-      fileMimeType: fileMimeType || 'application/octet-stream',
-      progress: 0, totalChunks, receivedChunks: 0,
-      isFromMe: false,
-      readStatus: store.isViewing ? 'read' : 'unread',
-      timestamp: new Date().toLocaleTimeString(),
-    })
-    console.log('[Message] file_meta:', fileName, (fileSize / 1024).toFixed(1) + 'KB', '分片:', totalChunks)
-  }
-
-  /** 收到一个分片（可能来自任意一条并行通道） */
-  function _handleFileChunkNew(data) {
-    const rec = _chunkRecv[data.fileId]
-    if (!rec) {
-      console.warn('[Message] 收到未知名分片 fileId=', data.fileId)
-      return
-    }
-    const idx = data.chunkIndex
-    if (rec.buffer[idx]) return          // 去重
-    rec.buffer[idx] = _fromBase64(data.data)
-    rec.received++
-    _resetFileTransferTimer(data.fileId)
-    store.updateMessage(data.fileId, {
-      receivedChunks: rec.received,
-      progress: rec.received / rec.totalChunks,
-    })
-    // 收满即校验（不等 file_complete，避免对端丢包时卡住）
-    if (rec.received >= rec.totalChunks) _finalizeIncomingFile(data.fileId)
-  }
-
-  /** 组装 + MD5 校验 + 触发浏览器下载 */
-  function _finalizeIncomingFile(fileId) {
-    const rec = _chunkRecv[fileId]
-    if (!rec) return
-    let total = 0
-    for (const c of rec.buffer) if (c) total += c.length
-
-    const merged = new Uint8Array(total)
-    let off = 0
-    for (const c of rec.buffer) { if (c) { merged.set(c, off); off += c.length } }
-
-    // 完整性校验：长度不符或 MD5 不一致都判为损坏，绝不静默给出残缺文件
-    const hash = md5(merged)
-    const hashOk = !rec.fileHash || hash === rec.fileHash
-    const sizeOk = rec.fileSize === 0 || merged.length === rec.fileSize
-
-    if (!hashOk || !sizeOk) {
-      console.error('[Message] ❌ 文件校验失败:', rec.fileName, { hashOk, sizeOk, got: hash, want: rec.fileHash })
-      store.updateMessage(fileId, {
-        status: 'failed',
-        error: !sizeOk ? '文件大小不一致，传输可能损坏' : 'MD5 校验不一致，文件已损坏',
-      })
-      delete _chunkRecv[fileId]
-      _clearFileTransferTimer(fileId)
-      return
-    }
-
-    const blob = new Blob([merged], { type: rec.fileMimeType })
-    const url = URL.createObjectURL(blob)
-    store.updateMessage(fileId, { status: 'received', progress: 1, blob, blobUrl: url })
-    delete _chunkRecv[fileId]
-    _clearFileTransferTimer(fileId)
-    console.log('[Message] ✅ 文件接收完成并通过 MD5 校验:', rec.fileName)
-    downloadFile(fileId)   // Web 端无需目录保存，直接触发浏览器下载
-  }
-
-  /** 重连后：为所有未收完的文件向发送方请求续传 */
-  function _requestResumeForIncoming() {
-    for (const fileId of Object.keys(_chunkRecv)) {
-      const rec = _chunkRecv[fileId]
-      const received = []
-      rec.buffer.forEach((c, i) => { if (c) received.push(i) })
-      if (_dataChannel && _dataChannel.readyState === 'open') {
-        console.log('[Message] 请求续传:', rec.fileName, received.length, '/', rec.totalChunks)
-        _dataChannel.send(JSON.stringify({
-          type: 'file_resume_request', fileId, receivedChunks: received,
-        }))
-        _resetFileTransferTimer(fileId)
-      }
-    }
-  }
-
-  /** 选择并发送文件（新协议：MD5 + 64KB 分片 + 3 通道并行） */
+  /** 选择并发送文件（带流控） */
   function pickAndSendFile() {
     if (!_dataChannel || _dataChannel.readyState !== 'open') {
       console.warn('[Message] DataChannel 未就绪，无法发送文件')
@@ -1144,57 +867,59 @@ export function useMessageTransfer() {
     input.onchange = async () => {
       const file = input.files[0]
       if (!file || !_dataChannel) return
-      const fileId = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
-      const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE))
+      const msgId = 'file_' + Date.now()
+      const chunkSize = CHUNK_SIZE
+      const totalChunks = Math.ceil(file.size / chunkSize)
 
-      // 整文件读入内存计算 MD5（后续可改为流式，当前优先保证校验正确）
-      const fullData = new Uint8Array(await file.arrayBuffer())
-      const fileHash = md5(fullData)
-
-      const state = {
-        fileName: file.name,
-        fileSize: file.size,
-        fileMimeType: file.type || 'application/octet-stream',
-        fileHash,
-        chunkSize: CHUNK_SIZE,
-        totalChunks,
-        fullData,
-      }
-      _chunkSends[fileId] = state
-      _resetFileTransferTimer(fileId)
-
-      // 先发元信息（走控制通道，保证顺序先于分片到达）
+      // 发送 file_start
       _dataChannel.send(JSON.stringify({
-        type: 'file_meta', fileId,
-        fileName: file.name, fileSize: file.size,
-        fileMimeType: state.fileMimeType,
-        fileHash, chunkSize: CHUNK_SIZE, totalChunks,
+        type: 'file_start', id: msgId, fileName: file.name,
+        fileSize: file.size, fileMimeType: file.type,
+        totalChunks,
       }))
       store.addMessage({
-        id: fileId, type: 'file', status: 'sending',
-        fileName: file.name, fileSize: file.size,
-        fileMimeType: state.fileMimeType,
-        progress: 0, totalChunks, receivedChunks: 0,
+        id: msgId, type: 'file', status: 'sending',
+        fileName: file.name, fileSize: file.size, progress: 0,
         isFromMe: true, readStatus: 'unread',
         timestamp: new Date().toLocaleTimeString(),
       })
 
-      await _sendChunksParallel(fileId, state)
+      // 流控发送每个 chunk（二进制格式）
+      const arrayBuffer = await file.arrayBuffer()
+      const fullData = new Uint8Array(arrayBuffer)
+
+      // 保存待发送数据（用于断点续传）
+      _pendingSends[msgId] = {
+        id: msgId, fileName: file.name, fileSize: file.size,
+        fileMimeType: file.type, totalChunks, fullData,
+      }
+      _resetFileTransferTimer(msgId)
+
+      // 预先编码 file_id
+      const idEncoded = new TextEncoder().encode(msgId)
+
+      await _sendFileChunks(msgId, fullData, totalChunks, chunkSize, idEncoded)
     }
     input.click()
   }
 
   /** 发送文件分片（支持全新发送和续传） */
   async function _sendFileChunks(msgId, fullData, totalChunks, chunkSize, idEncoded, receivedSet = new Set()) {
+    // 速率统计：只按采样间隔回写 UI，避免每片更新把主线程打满
+    const startedAt = performance.now()
+    let lastSampleAt = startedAt
+    let lastSampleBytes = 0
+
     for (let i = 0; i < totalChunks; i++) {
       if (receivedSet.has(i)) continue // 跳过已收到的
 
-      // 动态等待缓冲区释放（防止溢出断开）
+      // 动态等待缓冲区释放（防止溢出断开）。
+      // 注意：这里绝不能再「每片固定 sleep」—— 那正是旧实现吞吐只有 ~3MB/s 的原因。
       let retryCount = 0
-      while (_dataChannel && _dataChannel.bufferedAmount > chunkSize * 8) {
-        await new Promise(r => setTimeout(r, 10))
+      while (_dataChannel && _dataChannel.bufferedAmount > CHUNK_BACKLOG_LIMIT) {
+        await new Promise(r => setTimeout(r, 2))
         retryCount++
-        if (retryCount > 500) {
+        if (retryCount > 1500) {
           console.error('[Message] 文件传输超时：DC 缓冲区持续满载')
           store.updateMessage(msgId, { status: 'interrupted' })
           return
@@ -1221,9 +946,15 @@ export function useMessageTransfer() {
       packet.set(chunk, headerSize)
 
       _dataChannel.send(packet.buffer)
-      store.updateMessage(msgId, { progress: Math.min(1, (i + 1) / totalChunks) })
 
-      await new Promise(r => setTimeout(r, 5))
+      const now = performance.now()
+      if (now - lastSampleAt >= SPEED_SAMPLE_MS) {
+        const speed = ((i + 1) * chunkSize - lastSampleBytes) / ((now - lastSampleAt) / 1000)
+        lastSampleAt = now
+        lastSampleBytes = (i + 1) * chunkSize
+        store.updateMessage(msgId, { speed })
+      }
+      store.updateMessage(msgId, { progress: Math.min(1, (i + 1) / totalChunks) })
     }
 
     if (_dataChannel && _dataChannel.readyState === 'open') {
@@ -1251,9 +982,6 @@ export function useMessageTransfer() {
   function disconnect() {
     console.log('[Message] 断开消息通道（保持文件状态以便续传）')
     _clearConnectionTimeout()
-    // 先逐条关闭并行分片通道：useWebRTC 的 resetPC 只关它记录的最后一条，
-    // 不主动关会留下 channel 闭包引用
-    _closeFileChannels()
     if (_currentRoomId) send({ type: 'close_room', roomId: _currentRoomId })
     // 只清理当前会话的 handlers，不清理 invitation/room_closed（保持可重连）
     if (_signalHandler) {
