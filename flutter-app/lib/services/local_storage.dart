@@ -137,6 +137,21 @@ class LocalStorage {
   Future<bool> saveRecentModels(List<String> models) =>
       _prefs.setStringList('recent_models', models);
 
+  // ============ 设备防盗操作日志 ============
+
+  /// 获取防盗操作日志（用户可见：记录每次远程指令的动作、时间与来源设备）
+  ///
+  /// 每条结构：{id, action, sourceDeviceUuid, timestamp, note}
+  List<Map<String, dynamic>> getAntiTheftLogs() {
+    final raw = _prefs.getString('anti_theft_logs');
+    if (raw == null) return [];
+    return (jsonDecode(raw) as List<dynamic>).cast<Map<String, dynamic>>();
+  }
+
+  /// 保存防盗操作日志
+  Future<bool> saveAntiTheftLogs(List<Map<String, dynamic>> logs) =>
+      _prefs.setString('anti_theft_logs', jsonEncode(logs));
+
   /// 获取 API Key 列表 [{provider, key}]
   List<Map<String, String>> getApiKeys() {
     final raw = _prefs.getString('api_keys');

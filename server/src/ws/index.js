@@ -224,7 +224,7 @@ function initWebSocket(server) {
     handleDeviceConnected(deviceUuid);
 
     // 消息处理
-    ws.on('message', (data) => {
+    ws.on('message', async (data) => {
       try {
         const message = JSON.parse(data.toString());
 
@@ -232,7 +232,8 @@ function initWebSocket(server) {
           return deviceConnections.get(targetDeviceUuid);
         };
 
-        const response = handleMessage(ws, deviceUuid, message, getWsByDeviceUuid);
+        // handleMessage 为 async（防盗指令需异步校验配对关系）
+        const response = await handleMessage(ws, deviceUuid, message, getWsByDeviceUuid);
 
         if (response) {
           ws.send(JSON.stringify(response));

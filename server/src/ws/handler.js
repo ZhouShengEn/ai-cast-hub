@@ -9,6 +9,7 @@
  */
 
 const roomManager = require('./roomManager');
+const DeviceModel = require('../models/Device');
 const signaling = require('../services/webrtc/signaling');
 const sessionManager = require('../services/webrtc/sessionManager');
 const logger = require('../utils/logger');
@@ -27,14 +28,32 @@ function sendToDevice(deviceUuid, message, getWsByDeviceUuid) {
 }
 
 /**
+ * 校验两个设备是否已配对（所有权校验）
+ *
+ * 防盗类敏感指令只允许在已配对设备之间互发，避免任意设备对他人设备下发指令。
+ * @param {string} deviceUuid - 指令发起方
+ * @param {string} targetUuid - 目标设备
+ * @returns {Promise<boolean>}
+ */
+async function isPaired(deviceUuid, targetUuid) {
+  try {
+    const paired = await DeviceModel.getPairedDevices(deviceUuid);
+    return paired.some((p) => p.device_uuid === targetUuid);
+  } catch (e) {
+    logger.error(`[WS Handler] 配对校验失败: ${e.message}`);
+    return false;
+  }
+}
+
+/**
  * 处理 WebSocket 消息
  * @param {import('ws').WebSocket} ws - WebSocket 连接
  * @param {string} deviceUuid - 设备 UUID
  * @param {object} message - 解析后的 JSON 消息
  * @param {function} getWsByDeviceUuid - 根据设备 UUID 获取 WS 连接
- * @returns {object|undefined} 直接返回的响应消息（可选）
+ * @returns {Promise<object|undefined>} 直接返回的响应消息（可选）
  */
-function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
+async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
   // 必须有 type 字段
   if (!message.type || typeof message.type !== 'string') {
     return {
@@ -160,6 +179,115 @@ function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
       roomManager.removeRoom(roomId);
 
       return { type: 'room_closed', roomId, payload: { reason: 'user_close' } };
+    }
+
+    // ---- 设备防盗指令（Web → 手机）：仅已配对设备可下发（所有权校验）----
+    case 'anti_theft_command': {
+      const targetDevice =
+        message.targetDeviceUuid || message.payload?.targetDeviceUuid;
+      const action = message.payload?.action;
+
+      if (!targetDevice) {
+        return {
+          type: 'error',
+          roomId: null,
+          payload: { message: '缺少目标设备 UUID' },
+        };
+      }
+      if (!action) {
+        return {
+          type: 'error',
+          roomId: null,
+          payload: { message: '缺少指令 action' },
+        };
+      }
+
+      const allowed = await isPaired(deviceUuid, targetDevice);
+      if (!allowed) {
+        logger.warn(
+          `[WS Handler] 防盗指令被拒: ${deviceUuid} 与 ${targetDevice} 未配对`,
+        );
+        return {
+          type: 'error',
+          roomId: null,
+          payload: { message: '目标设备未与本设备配对，拒绝下发防盗指令' },
+        };
+      }
+
+      const sent = sendToDevice(
+        targetDevice,
+        {
+          type: 'anti_theft_command',
+          fromDeviceUuid: deviceUuid, // 指令来源，供手机记录日志与回执
+          payload: { action },
+        },
+        getWsByDeviceUuid,
+      );
+
+      logger.info(
+        `[WS Handler] 防盗指令下发: ${deviceUuid} -> ${targetDevice} action=${action} ${sent ? '成功' : '失败(离线)'}`,
+      );
+
+      return {
+        type: 'anti_theft_command_sent',
+        roomId: null,
+        payload: { success: sent, action },
+      };
+    }
+
+    // ---- 手机回传坐标（手机 → 已配对 PC）----
+    case 'device_location_update': {
+      const targetDevice = message.targetDeviceUuid;
+      if (!targetDevice) {
+        return {
+          type: 'error',
+          roomId: null,
+          payload: { message: '缺少目标设备 UUID' },
+        };
+      }
+
+      const allowed = await isPaired(deviceUuid, targetDevice);
+      if (!allowed) {
+        logger.warn(
+          `[WS Handler] 坐标上报被拒: ${deviceUuid} 与 ${targetDevice} 未配对`,
+        );
+        return {
+          type: 'error',
+          roomId: null,
+          payload: { message: '未与目标设备配对' },
+        };
+      }
+
+      sendToDevice(
+        targetDevice,
+        {
+          type: 'device_location_update',
+          fromDeviceUuid: deviceUuid,
+          payload: message.payload || {},
+        },
+        getWsByDeviceUuid,
+      );
+      return null; // 坐标流无需回执
+    }
+
+    // ---- 手机执行回执（手机 → 发起方 PC）----
+    case 'anti_theft_ack': {
+      const targetDevice = message.targetDeviceUuid;
+      if (!targetDevice) return null;
+
+      const allowed = await isPaired(deviceUuid, targetDevice);
+      if (!allowed) return null;
+
+      sendToDevice(
+        targetDevice,
+        {
+          type: 'anti_theft_ack',
+          fromDeviceUuid: deviceUuid,
+          payload: message.payload || {},
+        },
+        getWsByDeviceUuid,
+      );
+      return null;
     }
 
     // ---- 心跳 ----

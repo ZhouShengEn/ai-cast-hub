@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'providers/anti_theft_provider.dart';
 import 'screens/home_screen.dart';
 import 'screens/scan_screen.dart';
 import 'screens/chat_screen.dart';
@@ -8,8 +10,10 @@ import 'screens/message_screen.dart';
 import 'screens/file_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/network_tools_screen.dart';
+import 'screens/anti_theft_screen.dart';
 import 'services/local_storage.dart';
 import 'services/debug_service.dart';
+import 'utils/navigator_key.dart';
 import 'widgets/common/debug_ball.dart';
 
 /// 全局路由观察者
@@ -77,6 +81,7 @@ class _MyAppState extends State<MyApp> {
                   ? ThemeMode.dark
                   : ThemeMode.light, // 护眼基于浅色
           initialRoute: '/',
+          navigatorKey: navigatorKey,
           navigatorObservers: [routeObserver],
           routes: {
             '/': (context) => const HomeScreen(),
@@ -87,15 +92,27 @@ class _MyAppState extends State<MyApp> {
             '/file': (context) => const FileScreen(),
             '/settings': (context) => const SettingsScreen(),
             '/network-tools': (context) => const NetworkToolsScreen(),
+            '/anti-theft': (context) => const AntiTheftScreen(),
           },
           builder: (context, child) {
-            return ValueListenableBuilder<bool>(
-              valueListenable: debugService.enabled,
-              builder: (context, enabled, _) {
+            // 丢失模式：全屏锁定提示（App 级，用户始终知情并可自行解除）
+            return Consumer(
+              builder: (context, ref, _) {
+                final lostMode = ref.watch(antiTheftProvider).lostMode;
                 return Stack(
                   children: [
-                    child ?? const SizedBox.shrink(),
-                    if (enabled) const DebugBall(),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: debugService.enabled,
+                      builder: (context, enabled, _) {
+                        return Stack(
+                          children: [
+                            child ?? const SizedBox.shrink(),
+                            if (enabled) const DebugBall(),
+                          ],
+                        );
+                      },
+                    ),
+                    if (lostMode) const LostModeOverlay(),
                   ],
                 );
               },

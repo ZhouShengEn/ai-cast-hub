@@ -56,6 +56,42 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     super.dispose();
   }
 
+  /// 设备防盗入口卡片
+  ///
+  /// 合规说明：仅已配对 PC 可下发响铃/定位指令，且手机端会常驻通知、
+  /// 页面可见、随时可停；定位需在系统设置中授予「位置」权限。
+  Widget _buildAntiTheftCard(ThemeData theme) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('设备防盗', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            const Text(
+              '开启后，已配对的 PC 可请求本设备响铃或共享位置。'
+              '所有远程行为都会通过通知与页面对你可见，并可随时停止。',
+              style: TextStyle(fontSize: 12.5, color: Colors.black54, height: 1.4),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.shield_outlined),
+              title: const Text('查看状态与操作日志'),
+              subtitle: const Text(
+                '位置共享需在系统设置中授予「位置」权限',
+                style: TextStyle(fontSize: 11),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.pushNamed(context, '/anti-theft'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -100,6 +136,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ),
           ),
+
+          const SizedBox(height: 16),
+
+          // 设备防盗（合规：远程行为均可见可停止，此处提供权限引导）
+          _buildAntiTheftCard(theme),
 
           const SizedBox(height: 16),
 

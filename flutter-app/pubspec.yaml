@@ -25,6 +25,7 @@ dependencies:
   network_info_plus: ^6.0.0
   uuid: ^4.0.0
   url_launcher: ^6.2.0
+  geolocator: ^11.0.0
 
 dev_dependencies:
   flutter_test:

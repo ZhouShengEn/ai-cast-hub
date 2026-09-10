@@ -36,6 +36,7 @@ class MainActivity : FlutterActivity() {
     private val FILE_CHANNEL = "ai_cast_hub/file"
     private val AUDIO_CHANNEL = "ai_cast_hub/system_audio"
     private val AUDIO_PCM_EVENT = "ai_cast_hub/system_audio/pcm"
+    private val ANTI_THEFT_CHANNEL = "ai_cast_hub/anti_theft"
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /** 独立申请屏幕采集授权的请求码（取 MediaProjection 令牌用于系统内录） */
@@ -210,6 +211,36 @@ class MainActivity : FlutterActivity() {
                 }
             }
         )
+
+        // 设备防盗（合规版）：响铃与位置共享均对用户可见且可随时停止。
+        // 仅已配对设备经服务端校验后才可下发指令。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ANTI_THEFT_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "startAlarm" -> {
+                    AntiTheftService.startAlarm(this)
+                    result.success(true)
+                }
+                "stopAlarm" -> {
+                    AntiTheftService.stopAlarm(this)
+                    result.success(true)
+                }
+                "startLocationSharing" -> {
+                    AntiTheftService.startLocationSharing(this)
+                    result.success(true)
+                }
+                "stopLocationSharing" -> {
+                    AntiTheftService.stopLocationSharing(this)
+                    result.success(true)
+                }
+                "stopAll" -> {
+                    AntiTheftService.stopAll(this)
+                    result.success(true)
+                }
+                "isAlarmRunning" -> result.success(AntiTheftService.alarmRunning)
+                "isLocationSharing" -> result.success(AntiTheftService.locationSharing)
+                else -> result.notImplemented()
+            }
+        }
     }
 
     companion object {
