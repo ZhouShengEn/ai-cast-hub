@@ -56,6 +56,9 @@ class AntiTheftService {
 
   static const MethodChannel _channel = MethodChannel('ai_cast_hub/anti_theft');
 
+  /// 用于把 App 从后台唤醒到前台（远程响铃/定位时，让用户立刻看到界面并停止）
+  static const MethodChannel _appChannel = MethodChannel('ai_cast_hub/app');
+
   /// 位置上报间隔
   static const Duration locationReportInterval = Duration(seconds: 30);
 
@@ -106,12 +109,15 @@ class AntiTheftService {
 
     switch (action) {
       case 'start_alarm':
+        // 远程响铃：先把 App 唤醒到前台，用户可立即看到界面并停止
+        await _bringToFront();
         await startAlarm(sourceUuid: fromUuid);
         break;
       case 'stop_alarm':
         await stopAlarm(sourceUuid: fromUuid);
         break;
       case 'start_location_track':
+        await _bringToFront();
         await startLocationTrack(sourceUuid: fromUuid);
         break;
       case 'stop_location_track':
@@ -251,6 +257,20 @@ class AntiTheftService {
   void _emit(AntiTheftStatus next) {
     _status = next;
     if (!_statusController.isClosed) _statusController.add(next);
+  }
+
+  /// 收到远程指令时把 App 从后台唤醒到前台（仅 Android）
+  ///
+  /// 即便 App 处于后台，原生前台服务仍会响铃/定位；但把界面也拉到前台，
+  /// 用户能立刻看到「设备防盗」页并手动停止，体验更直观。
+  Future<void> _bringToFront() async {
+    if (kIsWeb) return;
+    if (!Platform.isAndroid) return;
+    try {
+      await _appChannel.invokeMethod('bringToFront');
+    } catch (e) {
+      DebugService().warn('[AntiTheft] 唤醒前台失败: $e');
+    }
   }
 
   /// 调用 Android 原生能力；非 Android 平台直接返回 false

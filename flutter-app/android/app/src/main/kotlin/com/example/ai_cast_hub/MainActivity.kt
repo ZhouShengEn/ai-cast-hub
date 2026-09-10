@@ -37,6 +37,7 @@ class MainActivity : FlutterActivity() {
     private val AUDIO_CHANNEL = "ai_cast_hub/system_audio"
     private val AUDIO_PCM_EVENT = "ai_cast_hub/system_audio/pcm"
     private val ANTI_THEFT_CHANNEL = "ai_cast_hub/anti_theft"
+    private val APP_CHANNEL = "ai_cast_hub/app"
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /** 独立申请屏幕采集授权的请求码（取 MediaProjection 令牌用于系统内录） */
@@ -240,6 +241,37 @@ class MainActivity : FlutterActivity() {
                 "isLocationSharing" -> result.success(AntiTheftService.locationSharing)
                 else -> result.notImplemented()
             }
+        }
+
+        // App 生命周期控制：远程指令到达时把 App 从后台唤醒到前台
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APP_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "bringToFront" -> {
+                    bringToFront()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    /**
+     * 把 App 从后台唤醒到前台。
+     *
+     * 远程响铃/定位时调用：即便 App 在后台，原生前台服务已能响铃/共享位置，
+     * 但把 Activity 拉回前台可让用户立即看到界面并手动停止。
+     */
+    private fun bringToFront() {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            intent?.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK
+                        or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            )
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "bringToFront 失败: ${e.message}")
         }
     }
 

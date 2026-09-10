@@ -60,13 +60,21 @@
           <div class="text-xs text-gray-400 mt-1">
             精度 ±{{ accuracyText }} m · 上报于 {{ timeText }}
           </div>
+
+          <!-- 嵌入式地图：实时显示手机位置（Leaflet + OSM，无需 Key） -->
+          <div
+            ref="mapEl"
+            class="mt-2 rounded-lg overflow-hidden border border-gray-100"
+            style="height: 220px"
+          ></div>
+
           <a
             :href="mapUrl"
             target="_blank"
             rel="noopener"
             class="inline-block mt-2 text-xs text-primary-600 hover:underline"
           >
-            在地图中查看 →
+            在高德地图中查看 →
           </a>
         </template>
         <div v-else class="text-sm text-gray-400 py-2">
@@ -87,7 +95,9 @@
 </template>
 
 <script setup>
-import { computed, inject } from 'vue'
+import { computed, inject, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 import { useDeviceStore } from '../../stores/device'
 import { useAntiTheft } from '../../composables/useAntiTheft'
 
@@ -117,9 +127,59 @@ const timeText = computed(() => {
   if (!t) return '—'
   return new Date(t).toLocaleTimeString('zh-CN')
 })
+// 高德地图 marker 链接（国内可达，无需 Key）；position 为 经度,纬度
 const mapUrl = computed(
-  () => `https://www.google.com/maps?q=${lat.value},${lng.value}`,
+  () =>
+    `https://uri.amap.com/marker?position=${lng.value},${lat.value}` +
+    `&name=${encodeURIComponent('手机位置')}&src=ai-cast-hub&coordinate=gaode&callnative=0`,
 )
+
+// ---- Leaflet 地图 ----
+const mapEl = ref(null)
+let map = null
+let marker = null
+
+function ensureMap() {
+  if (!mapEl.value) return
+  if (!map) {
+    map = L.map(mapEl.value, { zoomControl: true }).setView([lat.value, lng.value], 15)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap',
+    }).addTo(map)
+    // 用 circleMarker 避免默认图标资源在打包后 404 的问题
+    marker = L.circleMarker([lat.value, lng.value], {
+      radius: 8,
+      color: '#ef4444',
+      fillColor: '#ef4444',
+      fillOpacity: 1,
+      weight: 2,
+    }).addTo(map)
+    nextTick(() => map && map.invalidateSize())
+  } else {
+    map.setView([lat.value, lng.value], 15)
+    marker.setLatLng([lat.value, lng.value])
+  }
+}
+
+watch(
+  () => latestLocation.value,
+  (loc) => {
+    if (loc && typeof loc.latitude === 'number') nextTick(ensureMap)
+  },
+)
+
+onMounted(() => {
+  if (hasLocation.value) nextTick(ensureMap)
+})
+
+onBeforeUnmount(() => {
+  if (map) {
+    map.remove()
+    map = null
+    marker = null
+  }
+})
 
 function onStartAlarm() {
   startAlarm(targetUuid.value)

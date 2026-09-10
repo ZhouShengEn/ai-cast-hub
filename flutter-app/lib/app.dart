@@ -13,6 +13,7 @@ import 'screens/network_tools_screen.dart';
 import 'screens/anti_theft_screen.dart';
 import 'services/local_storage.dart';
 import 'services/debug_service.dart';
+import 'services/websocket_service.dart';
 import 'utils/navigator_key.dart';
 import 'widgets/common/debug_ball.dart';
 
@@ -61,6 +62,27 @@ class _MyAppState extends State<MyApp> {
     super.initState();
     final saved = LocalStorage.instance.getBackgroundStyle();
     backgroundStyleNotifier.value = _parseStyle(saved);
+    // 启动即建立并保持 WebSocket 长连接。
+    // 关键修复：此前 WS 仅在消息/投屏/文件屏才 connect，导致手机回到首页或
+    // 后台待机时连接断开，服务端转发防盗指令（响铃/定位）因找不到在线连接而
+    // 被「离线丢弃」，表现为 Web 端下发指令后手机毫无反应。
+    // 现在 App 启动即常驻连接，配合 BackgroundConnectionService 的 WakeLock，
+    // 即使 App 在后台也能收到并响应远程指令。connect() 自带去重，与各业务屏
+    // 的 connect() 调用不冲突。
+    _ensureWsConnected();
+  }
+
+  /// 启动级 WebSocket 连接（设备已注册才连，未注册则等配对流程触发）
+  void _ensureWsConnected() {
+    final uuid = LocalStorage.instance.getDeviceUuid();
+    final key = LocalStorage.instance.getTransferKey();
+    if (uuid == null || uuid.isEmpty || key == null || key.isEmpty) {
+      DebugService().info('[App] 设备尚未注册，暂缓启动 WS 连接');
+      return;
+    }
+    WebSocketService.instance.connect().catchError((e) {
+      DebugService().warn('[App] 启动 WS 连接失败（将自动重连）: $e');
+    });
   }
 
   @override
