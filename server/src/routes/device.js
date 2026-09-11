@@ -253,6 +253,24 @@ router.post('/bind', async (req, res, next) => {
       });
     }
 
+    // 校验目标 UUID 格式，避免畸形/注入值（P0-2 防护）
+    if (!/^[0-9a-fA-F-]{8,64}$/.test(targetUuid)) {
+      return res.status(400).json({
+        code: 400,
+        data: null,
+        message: '目标设备 UUID 格式无效',
+      });
+    }
+
+    // 禁止自身绑定
+    if (targetUuid === myDeviceUuid) {
+      return res.status(400).json({
+        code: 400,
+        data: null,
+        message: '不能绑定自身设备',
+      });
+    }
+
     if (!myDeviceUuid) {
       return res.status(400).json({
         code: 400,

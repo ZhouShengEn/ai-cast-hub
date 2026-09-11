@@ -448,18 +448,26 @@ class CastService {
     switch (signalType) {
       case 'answer':
         _castLog('收到PC的answer，设置远程SDP', level: LogLevel.info);
-        _webrtc.handleAnswer(payload['sdp'] as String);
-        _updateSessionStatus('connected');
-        _castLog('✅ 投屏连接已建立!', level: LogLevel.info);
-        // 投屏建立后自动开启系统音频采集（用户仍需在手机上确认授权弹窗）。
-        //
-        // 仅【屏幕投屏】模式才开：摄像头模式走的是麦克风（getUserMedia 的 audio 约束），
-        // 根本不需要 MediaProjection。之前这里无条件开启，导致开摄像头也会弹出
-        // 「录制投射屏幕」系统授权，用户授予后又在摄像头场景下启动 AudioRecord 而崩溃。
-        if (_captureMode == 'screen') {
-          unawaited(_autoStartSystemAudio());
-        } else {
-          _castLog('摄像头模式：跳过系统内录（音源为麦克风）', level: LogLevel.info);
+        // 必须先 await setRemoteDescription 成功再标记已连接：
+        // 否则 SDP 不匹配/会话已被并发清理时，会在「没建连」的状态卡死且无法自愈。
+        try {
+          await _webrtc.handleAnswer(payload['sdp'] as String);
+          _updateSessionStatus('connected');
+          _castLog('✅ 投屏连接已建立!', level: LogLevel.info);
+          // 投屏建立后自动开启系统音频采集（用户仍需在手机上确认授权弹窗）。
+          //
+          // 仅【屏幕投屏】模式才开：摄像头模式走的是麦克风（getUserMedia 的 audio 约束），
+          // 根本不需要 MediaProjection。之前这里无条件开启，导致开摄像头也会弹出
+          // 「录制投射屏幕」系统授权，用户授予后又在摄像头场景下启动 AudioRecord 而崩溃。
+          if (_captureMode == 'screen') {
+            unawaited(_autoStartSystemAudio());
+          } else {
+            _castLog('摄像头模式：跳过系统内录（音源为麦克风）', level: LogLevel.info);
+          }
+        } catch (e) {
+          _castLog('设置远端 SDP 失败: $e', level: LogLevel.error);
+          _updateSessionStatus('disconnected');
+          unawaited(_cleanupResources());
         }
         break;
       case 'ice_candidate':

@@ -127,6 +127,13 @@ class AntiTheftService : Service() {
         locationSharing = false
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "AntiTheftService onTaskRemoved，停止响铃（恢复音量）与位置共享")
+        stopAlarmInternal()
+        locationSharing = false
+        stopSelf()
+    }
+
     // ---- 响铃 ----
 
     private fun startAlarmInternal() {

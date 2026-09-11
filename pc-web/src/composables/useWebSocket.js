@@ -101,6 +101,7 @@ function connect() {
     // 认证失败（4000-4003）不重连
     if (event.code >= 4000 && event.code <= 4003) {
       console.warn('[WS] 认证失败，停止重连:', event.code, event.reason)
+      reconnectDelay = 1000
       return
     }
     scheduleReconnect()

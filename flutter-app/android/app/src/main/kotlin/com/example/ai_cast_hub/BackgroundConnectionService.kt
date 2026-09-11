@@ -54,6 +54,12 @@ class BackgroundConnectionService : Service() {
         releaseWakeLock()
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "BackgroundConnectionService onTaskRemoved，释放 WakeLock")
+        releaseWakeLock()
+        stopSelf()
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(

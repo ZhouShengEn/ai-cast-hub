@@ -6,6 +6,8 @@ dist/
 Thumbs.db
 .idea/
 server/sqlite-data/
+# 监控模块运行时生成的配置/审计/状态数据（非源码）
+server/data/
 deploy/mysql/data/
 deploy/nginx/ssl/*.pem
 deploy/nginx/ssl/*.key

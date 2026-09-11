@@ -14,8 +14,36 @@ const _bindings = new Map();
 /** @type {Map<string, {deviceUuid: string, expiresAt: number}>} 连接码: code -> {deviceUuid, expiresAt} */
 const _pairCodes = new Map();
 
+/** @type {Set<string>} 当前真实处于 WS 连接状态的设备 UUID（连接真相，供 isOnline 优先判定） */
+const _liveConnections = new Set();
+
 /** 连接码有效期：5 分钟 */
 const PAIR_CODE_TTL = 5 * 60 * 1000;
+
+/**
+ * 标记设备当前有活跃 WS 连接（由 ws 层在认证通过/重连时调用）
+ * @param {string} uuid
+ */
+function markConnected(uuid) {
+  _liveConnections.add(uuid);
+}
+
+/**
+ * 标记设备 WS 连接已全部断开（由 ws 层在连接关闭且无可替代连接时调用）
+ * @param {string} uuid
+ */
+function markDisconnected(uuid) {
+  _liveConnections.delete(uuid);
+}
+
+/**
+ * 设备是否当前真实在线（有活跃 WS 连接）
+ * @param {string} uuid
+ * @returns {boolean}
+ */
+function isLive(uuid) {
+  return _liveConnections.has(uuid);
+}
 
 /**
  * 生成 6 位数字连接码并关联到设备 UUID
@@ -75,15 +103,17 @@ function consumePairCode(code) {
  */
 async function register(uuid, name, platform, transferKey) {
   const now = new Date().toISOString();
+  const existing = _devices.get(uuid);
   
   const device = {
     device_uuid: uuid,
     device_name: name,
     platform,
-    transfer_key: transferKey,
-    created_at: _devices.has(uuid) ? _devices.get(uuid).created_at : now,
+    // 已注册设备重复 register 时保留原 transfer_key，避免轮换导致已签发密钥失效（P2-1）
+    transfer_key: existing ? existing.transfer_key : transferKey,
+    created_at: existing ? existing.created_at : now,
     updated_at: now,
-    last_seen_at: now,
+    last_seen_at: existing ? existing.last_seen_at : now,
   };
   
   _devices.set(uuid, device);
@@ -204,7 +234,7 @@ async function getPairedDevices(uuid) {
     if (device) {
       pairedDevices.push({
         ...device,
-        isOnline: isOnline(device.last_seen_at), // 5分钟内视为在线
+        isOnline: isOnline(device.last_seen_at, device.device_uuid), // 优先以真实连接状态为准
       });
     }
   }
@@ -228,7 +258,10 @@ async function getPairedDevices(uuid) {
  * @param {string} lastSeenAt - 最后在线时间
  * @returns {boolean}
  */
-function isOnline(lastSeenAt) {
+function isOnline(lastSeenAt, uuid) {
+  // 优先以真实 WS 连接状态为准，避免「推送已离线、列表仍在线」的口径不一致（P2-3）
+  if (typeof uuid === 'string' && _liveConnections.has(uuid)) return true;
+
   if (!lastSeenAt) return false;
 
   const diff = Date.now() - new Date(lastSeenAt).getTime();
@@ -275,4 +308,7 @@ module.exports = {
   generatePairCode,
   resolvePairCode,
   consumePairCode,
+  markConnected,
+  markDisconnected,
+  isLive,
 };

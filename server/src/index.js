@@ -48,9 +48,10 @@ const authWhitelist = [
   '/api/v1/health',
   '/api/v1/server/info',
   '/api/v1/device/register',
-  '/api/v1/device/bind',
   '/api/v1/device/bind-by-code',
   '/api/v1/device/pair-code',
+  // 注意：/api/v1/device/bind 已从白名单移除，必须经由 deviceAuth 校验调用方身份，
+  // 避免任意客户端伪造 X-Device-UUID 头与任意目标设备建立绑定（P0-2）。
 ];
 
 app.use((req, res, next) => {
@@ -95,6 +96,12 @@ const server = http.createServer(app);
 // 初始化 WebSocket 服务
 // ============================================================
 const wss = initWebSocket(server);
+
+// ============================================================
+// 初始化服务器运维监控模块（独立 WS：/ws/monitor，完全解耦原有业务）
+// ============================================================
+const monitorModule = require('./modules/server-monitor');
+monitorModule.initMonitor(server);
 
 // ============================================================
 // 服务启动

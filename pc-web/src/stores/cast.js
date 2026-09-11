@@ -2,6 +2,9 @@ import { defineStore } from 'pinia'
 
 const LOG = '[CastStore]'
 
+/** 断开去抖定时器：WebRTC 'disconnected' 是可恢复状态，避免瞬断立即切到 connecting 遮罩（P2-7） */
+let _disconnectTimer = null
+
 /**
  * 投屏连接阶段。
  *
@@ -139,13 +142,22 @@ export const useCastStore = defineStore('cast', {
 
       // 链路恢复：只要 PC 回到 connected，就清除失败态并置为投屏成功
       if (state === 'connected') {
+        if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null }
         this.setConnectionState(CastStage.CONNECTED, 'PeerConnection 已连接')
       } else if (state === 'failed' || state === 'closed') {
+        if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null }
         this.setError(`WebRTC 连接${state === 'failed' ? '失败' : '已关闭'}`)
       } else if (state === 'disconnected') {
-        // disconnected 在 WebRTC 里是可恢复状态，只降级不判死
+        // disconnected 在 WebRTC 里是可恢复状态，只降级不判死。
+        // 去抖：仅在持续断开超过 1.5s 仍未恢复时才切到 connecting 并显示遮罩，避免瞬断闪屏（P2-7）
         if (this.connectionState === CastStage.CONNECTED) {
-          this.setConnectionState(CastStage.CONNECTING, 'PeerConnection 断开，等待恢复')
+          if (_disconnectTimer) clearTimeout(_disconnectTimer)
+          _disconnectTimer = setTimeout(() => {
+            if (this.peerState === 'disconnected' && this.connectionState === CastStage.CONNECTED) {
+              this.setConnectionState(CastStage.CONNECTING, 'PeerConnection 断开，等待恢复')
+            }
+            _disconnectTimer = null
+          }, 1500)
         }
       }
     },

@@ -61,12 +61,6 @@ const config = {
     certPath: process.env.SSL_CERT_PATH || '/etc/nginx/ssl/cert.pem',
     keyPath: process.env.SSL_KEY_PATH || '/etc/nginx/ssl/key.pem',
   },
-
-  /** 设备认证白名单路由（不需要 X-Device-UUID 头） */
-  authWhitelist: [
-    '/api/v1/health',
-    '/api/v1/device/bind',
-  ],
 };
 
 /**

@@ -85,6 +85,9 @@ class AntiTheftService {
   /// 位置共享 / 回执的目标设备（已配对 PC 的 UUID）
   String? _targetDeviceUuid;
 
+  /// 当前正在处理的指令 cmdId（服务端下发，用于 ACK 关联，P1-10）
+  String? _pendingCmdId;
+
   void _initWsListener() {
     _wsSubscription =
         WebSocketService.instance.messages.listen(_onWsMessage);
@@ -100,6 +103,8 @@ class AntiTheftService {
     final action = payload['action'] as String?;
     final fromUuid =
         (msg['fromDeviceUuid'] ?? payload['fromDeviceUuid']) as String?;
+    // 记录 cmdId 用于回执关联（P1-10）
+    _pendingCmdId = payload['cmdId'] as String?;
 
     if (action == null) return;
     DebugService().info('[AntiTheft] 收到指令: $action (from=$fromUuid)');
@@ -172,7 +177,13 @@ class AntiTheftService {
       return;
     }
 
-    await _platformInvoke('startLocationSharing');
+    final started = await _platformInvoke('startLocationSharing');
+    if (!started) {
+      _emit(_status.copyWith(lastError: '位置共享启动失败（原生返回失败）'));
+      _sendAck('start_location_track', false, '位置共享启动失败');
+      await _log('start_location_track', sourceUuid, '启动失败');
+      return;
+    }
     _emit(_status.copyWith(locationSharing: true, lastError: null));
     _sendAck('start_location_track', true, '位置共享已开启');
 
@@ -298,6 +309,7 @@ class AntiTheftService {
         'action': action,
         'success': success,
         'message': message,
+        if (_pendingCmdId != null) 'cmdId': _pendingCmdId,
         'timestamp': DateTime.now().toIso8601String(),
       },
     });

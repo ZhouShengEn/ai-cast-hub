@@ -18,6 +18,8 @@ const chatRoutes = require('./chat');
 const modelRoutes = require('./model');
 const fileRoutes = require('./file');
 const statsRoutes = require('./stats');
+// 独立运维监控模块（全新解耦，不改动原有业务）
+const monitorModule = require('./modules/server-monitor');
 
 const router = Router();
 
@@ -95,5 +97,8 @@ router.use('/chat', chatRoutes);
 router.use('/model', modelRoutes);
 router.use('/file', fileRoutes);
 router.use('/stats', statsRoutes);
+
+// ---- 服务器运维监控模块（独立路由，复用全局设备认证） ----
+router.use('/server-monitor', monitorModule.router);
 
 module.exports = router;

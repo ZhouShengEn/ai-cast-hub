@@ -8,11 +8,67 @@
  * - ping          → 回复 pong
  */
 
+const crypto = require('crypto');
 const roomManager = require('./roomManager');
 const DeviceModel = require('../models/Device');
 const signaling = require('../services/webrtc/signaling');
 const sessionManager = require('../services/webrtc/sessionManager');
 const logger = require('../utils/logger');
+
+/**
+ * 防盗指令待确认表：cmdId -> { timer, targetDevice, fromDevice, action, getWsByDeviceUuid }
+ * 用于关联手机端回执（ACK），超时未回执则清理并通知发起方；设备上线时补投离线指令。
+ */
+const pendingCommands = new Map();
+
+/** 防盗指令 ACK 超时（毫秒） */
+const ANTI_THEFT_ACK_TIMEOUT_MS = 15000;
+
+/**
+ * 登记一条待确认防盗指令，启动 ACK 超时定时器
+ * @param {string} cmdId
+ * @param {string} targetDevice - 指令目标设备（手机）
+ * @param {string} fromDevice - 指令发起方（PC）
+ * @param {string} action
+ * @param {function} getWsByDeviceUuid
+ */
+function trackCommand(cmdId, targetDevice, fromDevice, action, getWsByDeviceUuid) {
+  if (pendingCommands.has(cmdId)) {
+    const old = pendingCommands.get(cmdId);
+    if (old.timer) clearTimeout(old.timer);
+  }
+  const timer = setTimeout(() => {
+    if (!pendingCommands.has(cmdId)) return;
+    pendingCommands.delete(cmdId);
+    logger.warn(
+      `[WS Handler] 防盗指令超时未回执: cmdId=${cmdId} target=${targetDevice} action=${action}`,
+    );
+    // 尽力通知发起方指令超时
+    sendToDevice(fromDevice, {
+      type: 'anti_theft_command_result',
+      payload: { cmdId, success: false, reason: 'timeout', action },
+    }, getWsByDeviceUuid);
+  }, ANTI_THEFT_ACK_TIMEOUT_MS);
+  pendingCommands.set(cmdId, { timer, targetDevice, fromDevice, action, getWsByDeviceUuid });
+}
+
+/**
+ * 设备上线后补投离线期间未 ACK 的防盗指令（P1-10）
+ * @param {string} deviceUuid
+ * @param {function} sendFn - (targetUuid, msg) => void
+ */
+function resendPendingCommands(deviceUuid, sendFn) {
+  for (const [cmdId, entry] of pendingCommands) {
+    if (entry.targetDevice === deviceUuid) {
+      logger.info(`[WS Handler] 设备上线，补投离线指令: cmdId=${cmdId} action=${entry.action}`);
+      sendFn(deviceUuid, {
+        type: 'anti_theft_command',
+        fromDeviceUuid: entry.fromDevice,
+        payload: { action: entry.action, cmdId },
+      });
+    }
+  }
+}
 
 /**
  * 发送消息给指定设备
@@ -21,9 +77,16 @@ const logger = require('../utils/logger');
  * @param {function} getWsByDeviceUuid - 根据设备 UUID 获取 WS 连接的回调
  */
 function sendToDevice(deviceUuid, message, getWsByDeviceUuid) {
-  const ws = getWsByDeviceUuid(deviceUuid);
-  if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify(message));
+  const conns = getWsByDeviceUuid(deviceUuid);
+  if (!conns) return;
+  for (const ws of conns) {
+    if (ws && ws.readyState === 1) {
+      try {
+        ws.send(JSON.stringify(message));
+      } catch (_) {
+        // 单条失败不影响其它连接
+      }
+    }
   }
 }
 
@@ -72,8 +135,19 @@ async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
         return { type: 'error', roomId: null, payload: { message: 'signal 消息需要 roomId' } };
       }
 
-      const signalPayload = message.payload || {};
+      const signalPayload = message.payload;
+      if (!signalPayload || typeof signalPayload !== 'object') {
+        return { type: 'error', roomId, payload: { message: 'signal 消息 payload 非法' } };
+      }
       const signalType = signalPayload.signalType;
+      if (typeof signalType !== 'string') {
+        return { type: 'error', roomId, payload: { message: 'signalType 非法' } };
+      }
+      // offer/answer 必须携带 sdp 字符串（P2-5 字段校验）
+      if ((signalType === 'offer' || signalType === 'answer')
+        && typeof signalPayload.sdp !== 'string') {
+        return { type: 'error', roomId, payload: { message: 'sdp 非法' } };
+      }
 
       if (signalType === 'offer') {
         signaling.handleOffer(roomId, deviceUuid, signalPayload.sdp, (peer, msg) => {
@@ -214,24 +288,43 @@ async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
         };
       }
 
+      // action 白名单校验，避免任意字符串下发到手机端执行（P1-10 / P2-5）
+      const ALLOWED_ACTIONS = [
+        'start_alarm', 'stop_alarm',
+        'start_location_track', 'stop_location_track',
+        'lock_device', 'unlock_device',
+      ];
+      if (!ALLOWED_ACTIONS.includes(action)) {
+        return {
+          type: 'error',
+          roomId: null,
+          payload: { message: `不支持的防盗指令: ${action}` },
+        };
+      }
+
+      // 生成 cmdId 用于 ACK 关联与离线补投（P1-10）
+      const cmdId = crypto.randomUUID();
       const sent = sendToDevice(
         targetDevice,
         {
           type: 'anti_theft_command',
           fromDeviceUuid: deviceUuid, // 指令来源，供手机记录日志与回执
-          payload: { action },
+          payload: { action, cmdId },
         },
         getWsByDeviceUuid,
       );
 
+      // 登记待确认指令：在线则等待 ACK；离线则待设备上线由 resendPendingCommands 补投
+      trackCommand(cmdId, targetDevice, deviceUuid, action, getWsByDeviceUuid);
+
       logger.info(
-        `[WS Handler] 防盗指令下发: ${deviceUuid} -> ${targetDevice} action=${action} ${sent ? '成功' : '失败(离线)'}`,
+        `[WS Handler] 防盗指令下发: ${deviceUuid} -> ${targetDevice} action=${action} cmdId=${cmdId} ${sent ? '成功' : '失败(离线,待上线补投)'}`,
       );
 
       return {
         type: 'anti_theft_command_sent',
         roomId: null,
-        payload: { success: sent, action },
+        payload: { success: sent, action, cmdId },
       };
     }
 
@@ -278,12 +371,31 @@ async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
       const allowed = await isPaired(deviceUuid, targetDevice);
       if (!allowed) return null;
 
+      const ackPayload = message.payload || {};
+      const cmdId = ackPayload.cmdId;
+      // 按 cmdId 清除待确认指令并通知发起方执行结果（P1-10）
+      if (cmdId && pendingCommands.has(cmdId)) {
+        const entry = pendingCommands.get(cmdId);
+        if (entry.timer) clearTimeout(entry.timer);
+        pendingCommands.delete(cmdId);
+        sendToDevice(entry.fromDevice, {
+          type: 'anti_theft_command_result',
+          payload: {
+            cmdId,
+            success: ackPayload.success !== false,
+            action: entry.action,
+            message: ackPayload.message,
+          },
+        }, getWsByDeviceUuid);
+        logger.info(`[WS Handler] 防盗指令已回执: cmdId=${cmdId} action=${entry.action}`);
+      }
+
       sendToDevice(
         targetDevice,
         {
           type: 'anti_theft_ack',
           fromDeviceUuid: deviceUuid,
-          payload: message.payload || {},
+          payload: ackPayload,
         },
         getWsByDeviceUuid,
       );
@@ -299,4 +411,4 @@ async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
   }
 }
 
-module.exports = { handleMessage };
+module.exports = { handleMessage, resendPendingCommands };

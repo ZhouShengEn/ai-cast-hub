@@ -14,10 +14,14 @@ const DeviceModel = require('../models/Device');
 const roomManager = require('./roomManager');
 const signaling = require('../services/webrtc/signaling');
 const sessionManager = require('../services/webrtc/sessionManager');
-const { handleMessage } = require('./handler');
+const { handleMessage, resendPendingCommands } = require('./handler');
 const logger = require('../utils/logger');
 
-/** deviceUuid → ws 映射（用于查找连接） */
+/**
+ * deviceUuid → Set<ws> 映射（用于查找连接）。
+ * 一个设备可对应多个 WebSocket 连接，以支持 PC 多标签页 / 多端同时在线，
+ * 解决「A 端标记离线、B 端状态不同步」与「重连后陈旧 ws 引用」问题（P1-8 / P1-9）。
+ */
 const deviceConnections = new Map();
 
 /** 心跳参数 */
@@ -65,7 +69,14 @@ function handleDeviceConnected(deviceUuid) {
     clearTimeout(offlineGraceTimers.get(deviceUuid));
     offlineGraceTimers.delete(deviceUuid);
   }
+  DeviceModel.markConnected(deviceUuid);
   broadcastDeviceStatus(deviceUuid, 'online');
+  // 设备上线后补投离线期间未 ACK 的防盗指令（P1-10）
+  try {
+    resendPendingCommands(deviceUuid, (uuid, msg) => sendToDevice(uuid, msg));
+  } catch (e) {
+    logger.warn(`[WS] 补投离线指令失败: ${e.message}`);
+  }
 }
 
 /**
@@ -79,8 +90,9 @@ function scheduleOfflineBroadcast(deviceUuid) {
   }
   const timer = setTimeout(() => {
     offlineGraceTimers.delete(deviceUuid);
-    // 重连成功则不广播离线
+    // 重连成功（仍有活跃连接）则不广播离线
     if (deviceConnections.has(deviceUuid)) return;
+    DeviceModel.markDisconnected(deviceUuid);
     broadcastDeviceStatus(deviceUuid, 'offline');
     logger.info(`[WS] 设备离线(已确认): ${deviceUuid}`);
   }, OFFLINE_GRACE_MS);
@@ -203,8 +215,13 @@ function initWebSocket(server) {
       return;
     }
 
-    // 认证通过 → 注册连接
-    deviceConnections.set(deviceUuid, ws);
+    // 认证通过 → 注册连接（一个 uuid 可对应多个 ws，支持多标签页 / 多端）
+    let connSet = deviceConnections.get(deviceUuid);
+    if (!connSet) {
+      connSet = new Set();
+      deviceConnections.set(deviceUuid, connSet);
+    }
+    connSet.add(ws);
     ws._deviceUuid = deviceUuid;
     ws._isAlive = true;
 
@@ -257,59 +274,70 @@ function initWebSocket(server) {
 
     // 连接关闭
     ws.on('close', (code, reason) => {
-      // 身份守卫：若该 deviceUuid 的活跃连接已不是本 ws（已发生重连 / 多连接并存），
-      // 不要清理房间、也不要删连接表，否则会拆掉新连接正在使用的房间。
-      if (deviceConnections.get(deviceUuid) !== ws) {
-        logger.info(`[WS] 旧连接关闭(已被新连接取代): ${deviceUuid} code=${code}`);
-        return;
+      // 从本设备的连接集合中移除本 ws
+      const connSet = deviceConnections.get(deviceUuid);
+      if (connSet) {
+        connSet.delete(ws);
+        if (connSet.size === 0) deviceConnections.delete(deviceUuid);
       }
 
-      const rooms = roomManager.getDeviceRooms(deviceUuid);
-      const notify = (device, msg) => {
-        const clientWs = deviceConnections.get(device);
-        if (clientWs && clientWs.readyState === 1) {
-          try { clientWs.send(JSON.stringify(msg)); } catch (_) {}
+      // 仅当该设备已无任何活跃连接时才清理房间与广播离线，
+      // 避免多标签页场景下单个标签关闭误拆其它标签正在使用的房间。
+      if (!deviceConnections.has(deviceUuid)) {
+        const rooms = roomManager.getDeviceRooms(deviceUuid);
+        const notify = (device, msg) => {
+          const clients = deviceConnections.get(device);
+          if (clients) {
+            for (const c of clients) {
+              if (c.readyState === 1) {
+                try { c.send(JSON.stringify(msg)); } catch (_) {}
+              }
+            }
+          }
+        };
+
+        for (const roomId of rooms) {
+          signaling.closeRoom(roomId, notify);
+          roomManager.removeRoom(roomId);
         }
-      };
 
-      for (const roomId of rooms) {
-        signaling.closeRoom(roomId, notify);
-        roomManager.removeRoom(roomId);
+        logger.info(`[WS] 设备断开: ${deviceUuid} code=${code} (当前设备数: ${deviceConnections.size})`);
+
+        // 延迟广播 offline（宽限期容忍网络抖动，重连会取消）
+        scheduleOfflineBroadcast(deviceUuid);
+      } else {
+        logger.info(`[WS] 设备某连接关闭(仍有其它活跃连接): ${deviceUuid} code=${code}`);
       }
-
-      deviceConnections.delete(deviceUuid);
-      logger.info(`[WS] 设备断开: ${deviceUuid} code=${code} (当前连接数: ${deviceConnections.size})`);
-
-      // 延迟广播 offline（宽限期容忍网络抖动，重连会取消）
-      scheduleOfflineBroadcast(deviceUuid);
     });
 
     // 连接错误
     ws.on('error', (err) => {
       logger.error(`[WS] 连接错误: ${deviceUuid} - ${err.message}`);
-      // 仅当本 ws 仍是当前记录的活跃连接时才移除，避免旧 socket 的 error 误删新连接
-      if (deviceConnections.get(deviceUuid) === ws) {
-        deviceConnections.delete(deviceUuid);
+      // 从设备连接集合中移除本 ws（出错即视为该连接不可用）
+      const connSet = deviceConnections.get(deviceUuid);
+      if (connSet) {
+        connSet.delete(ws);
+        if (connSet.size === 0) deviceConnections.delete(deviceUuid);
       }
     });
   });
 
   // 心跳检测定时器
   const heartbeatTimer = setInterval(() => {
-    for (const [deviceUuid, ws] of deviceConnections) {
-      if (ws._isAlive === false) {
-        logger.warn(`[WS] 心跳超时，断开: ${deviceUuid}`);
-        // 不要在此预清理房间/移除连接表：直接 terminate，由下方 close 事件统一处理房间清理。
-        // 否则 deviceConnections 已移除，close 处理会因找不到房间而漏发 room_closed、
-        // 且 sessionManager 房间记录会泄漏。
-        ws.terminate();
-        // 延迟广播 offline（宽限期容忍网络抖动，重连会取消）
-        scheduleOfflineBroadcast(deviceUuid);
-        continue;
-      }
+    for (const [deviceUuid, connSet] of deviceConnections) {
+      for (const ws of connSet) {
+        if (ws._isAlive === false) {
+          logger.warn(`[WS] 心跳超时，断开: ${deviceUuid}`);
+          // 直接 terminate，由 close 事件统一处理房间清理与离线广播
+          try { ws.terminate(); } catch (_) {}
+          // 延迟广播 offline（宽限期容忍网络抖动，重连会取消）
+          scheduleOfflineBroadcast(deviceUuid);
+          continue;
+        }
 
-      ws._isAlive = false;
-      ws.ping();
+        ws._isAlive = false;
+        try { ws.ping(); } catch (_) {}
+      }
     }
   }, HEARTBEAT_INTERVAL);
 
@@ -353,12 +381,20 @@ function getConnectionCount() {
  * @returns {boolean} 是否发送成功（设备在线且连接打开）
  */
 function sendToDevice(deviceUuid, message) {
-  const ws = deviceConnections.get(deviceUuid);
-  if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify(message));
-    return true;
+  const connSet = deviceConnections.get(deviceUuid);
+  if (!connSet) return false;
+  let sent = false;
+  for (const ws of connSet) {
+    if (ws.readyState === 1) {
+      try {
+        ws.send(JSON.stringify(message));
+        sent = true;
+      } catch (_) {
+        // 单条发送失败不影响其它连接
+      }
+    }
   }
-  return false;
+  return sent;
 }
 
 module.exports = { initWebSocket, getConnectionCount, sendToDevice };

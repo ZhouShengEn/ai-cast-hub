@@ -237,8 +237,11 @@ class MessageService {
         _connected = true;
         _msgLog('DC 已打开，标记已连接');
       } else {
-        _connected = true;
-        _msgLog('标记已连接（DC 可能未完全打开，sendText 会重试）');
+        // 超时且 DC 未真正打开：绝不能谎报已连接，否则会陷入「假连接」永久不可用。
+        // 显式置 false 并抛出，交由上层重试 / 提示失败。
+        _connected = false;
+        _msgLog('DC 未在超时内打开，连接失败');
+        throw Exception('DataChannel 未在超时内打开: $e');
       }
     }
   }

@@ -143,8 +143,12 @@ export function useMessageTransfer() {
     onIceCandidate(_iceCandidateCb)
 
     // 创建 DataChannel（PC 作为主动方创建）
-    _dataChannel = createDataChannel('message')
-    _setupDataChannel(_dataChannel)
+    // 注意 createDataChannel 已改为 async（内部 await ensurePC 等待 ICE 配置），
+    // 故用 .then 接收返回的通道实例。
+    createDataChannel('message').then((ch) => {
+      _dataChannel = ch
+      if (ch) _setupDataChannel(ch)
+    })
 
     // 监听信令
     _signalHandler = async (signalMsg) => {
@@ -741,7 +745,8 @@ export function useMessageTransfer() {
           console.log('[Message] resume_state 响应超时，从头发送: id=', id)
           const pending = _pendingSends[id]
           const idEncoded = new TextEncoder().encode(id)
-          _sendFileChunks(id, pending.fullData, pending.totalChunks, 16384, idEncoded)
+          // 注意：必须与首次发送使用一致的 CHUNK_SIZE（64KB），否则分片偏移错位导致文件损坏（P1-14）
+          _sendFileChunks(id, pending.fullData, pending.totalChunks, CHUNK_SIZE, idEncoded)
         }
       }, RESUME_STATE_TIMEOUT_MS)
       resumed++

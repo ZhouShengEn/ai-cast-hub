@@ -252,6 +252,9 @@ export function useCastReceiver(externalVideoRef, options = {}) {
         // offer/answer 处理失败才是致命错误
         console.error('[CastReceiver] 投屏信令处理失败:', err)
         castStore.setError(err.message || '投屏信令处理失败')
+        // 清理当前会话资源，避免 UI 永久卡在失败态：
+        // 清理后 invitation 监听仍保留，手机端重新发起邀请即可重建会话（P1-12）
+        stopReceiving()
       }
     }
     onMessage('signal', _signalHandler)
@@ -363,6 +366,8 @@ export function useCastReceiver(externalVideoRef, options = {}) {
     systemAudioSupported.value = false
     systemAudioActive.value = false
     audioChannelReady.value = false
+    // 重置本地静音态为默认（已静音）：避免重连后沿用旧值，导致声音按钮显示与实际静音态不一致（P1-11）
+    systemAudioMuted.value = true
     stopAudio()
   }
 
@@ -462,7 +467,13 @@ export function useCastReceiver(externalVideoRef, options = {}) {
    * 因此 Web 端不再触发权限申请，只负责本地 PCM 播放的启用/禁用（静音）。
    * 必须在用户手势（点击）中调用，否则 AudioContext 无法 resume。
    */
-  const systemAudioMuted = ref(false)
+  /**
+   * 系统音频「播放/静音」开关的本地态。
+   * 初始必须为 true（已静音）：浏览器自动播放策略下 AudioContext 处于 suspended，
+   * 投屏建立后音频实际无声；用户首次点击在手势内 unlock 并切到播放（false）。
+   * 若初始为 false，则首次点击会先 unlock 再立即置回静音，导致「需点两次才出声」的失效现象。
+   */
+  const systemAudioMuted = ref(true)
   async function toggleSystemAudioPlayback() {
     // 先在当前用户手势里 resume AudioContext，兼容浏览器自动播放策略
     const unlocked = await unlockAudio()

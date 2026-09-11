@@ -5,8 +5,10 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -46,6 +48,14 @@ class MainActivity : FlutterActivity() {
     private val systemAudioCapture = SystemAudioCaptureManager()
     private var audioEventSink: EventChannel.EventSink? = null
     private var pendingProjectionResult: MethodChannel.Result? = null
+    /** 注册的 MediaProjection 生命周期回调，停止采集时反注册 */
+    private var projectionCallback: MediaProjection.Callback? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 恢复上一次投屏若因进程异常退出而未还原的媒体音量（防手机永久静音）
+        SystemAudioCaptureManager.restoreSavedMediaVolume(applicationContext)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -344,7 +354,18 @@ class MainActivity : FlutterActivity() {
             return
         }
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        SystemAudioProjectionHolder.mediaProjection = mpm.getMediaProjection(resultCode, data)
+        val mp = mpm.getMediaProjection(resultCode, data)
+        // 注册生命周期回调：用户从状态栏停止录屏或系统回收投影时，自动停止内录并释放资源
+        projectionCallback = object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.i(TAG, "系统停止了 MediaProjection（用户停止或系统回收），停止系统内录")
+                stopSystemAudioCapture()
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            mp.registerCallback(this.mainExecutor, projectionCallback!!)
+        }
+        SystemAudioProjectionHolder.mediaProjection = mp
         Log.i(TAG, "已获取独立 MediaProjection 令牌，系统内录可用")
         pending?.success(true)
     }
@@ -360,21 +381,34 @@ class MainActivity : FlutterActivity() {
             result.success(false)
             return
         }
-        val started = systemAudioCapture.start(projection) { pcm ->
-            // EventChannel 必须在主线程回调
-            mainHandler.post { audioEventSink?.success(pcm) }
-        }
+        val started = systemAudioCapture.start(
+            this,
+            projection,
+            { pcm ->
+                // EventChannel 必须在主线程回调
+                mainHandler.post { audioEventSink?.success(pcm) }
+            },
+            { err ->
+                // 采集致命错误：通知 Dart 层（经调试日志），状态已由 manager 复位
+                Log.e(TAG, "系统内录错误回调: $err")
+            }
+        )
         Log.i(TAG, "startSystemAudioCapture -> $started")
         result.success(started)
     }
 
     private fun stopSystemAudioCapture() {
+        // 反注册投影生命周期回调，避免持有 Activity 引用造成泄漏
+        projectionCallback?.let { cb ->
+            SystemAudioProjectionHolder.mediaProjection?.unregisterCallback(cb)
+            projectionCallback = null
+        }
         systemAudioCapture.stop()
         audioEventSink = null
     }
 
     override fun onDestroy() {
-        // 兜底释放：避免 Activity 销毁后仍在后台采集音频
+        // 兜底释放：避免 Activity 销毁后仍在后台采集音频 / 残留投影 / 错乱音量
         stopSystemAudioCapture()
         SystemAudioProjectionHolder.mediaProjection = null
         super.onDestroy()

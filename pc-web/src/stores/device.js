@@ -87,7 +87,15 @@ export const useDeviceStore = defineStore('device', {
     async fetchDeviceList() {
       try {
         const data = await deviceApi.getDeviceList()
-        this.pairedDevices = Array.isArray(data) ? data : []
+        const incoming = Array.isArray(data) ? data : []
+        // 周期性全量刷新时保留 WS 实时推送的在线状态，避免实时态被整体覆盖（P2-6）
+        const prevOnline = new Map(
+          this.pairedDevices.map((d) => [d.uuid || d.id || d.deviceUuid, d.isOnline]),
+        )
+        this.pairedDevices = incoming.map((d) => {
+          const uuid = d.uuid || d.id || d.deviceUuid
+          return prevOnline.has(uuid) ? { ...d, isOnline: prevOnline.get(uuid) } : d
+        })
         this.isConnected = this.pairedDevices.length > 0
         return data
       } catch (err) {

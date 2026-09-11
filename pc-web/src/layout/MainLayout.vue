@@ -98,26 +98,37 @@
         <!-- 导航菜单 -->
         <nav class="flex-1 py-4 overflow-y-auto">
           <ul class="space-y-1 px-3">
-            <li v-for="item in navItems" :key="item.path">
-              <router-link
-                :to="item.path"
-                class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors relative"
-                :class="isActive(item.path)
-                  ? 'bg-primary-600 text-white'
-                  : 'text-gray-300 hover:bg-white/10 hover:text-white'"
-                @click="onNavClick"
+          <li v-for="item in navItems" :key="item.path">
+            <router-link
+              :to="item.path"
+              class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors relative"
+              :class="isActive(item.path)
+                ? 'bg-primary-600 text-white'
+                : 'text-gray-300 hover:bg-white/10 hover:text-white'"
+              @click="onNavClick"
+            >
+              <span class="text-lg">{{ item.icon }}</span>
+              <span class="truncate">{{ item.label }}</span>
+              <!-- 消息未读红点 -->
+              <span
+                v-if="item.hasBadge && messageStore.unreadCount > 0"
+                class="absolute top-1 right-2 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center"
               >
-                <span class="text-lg">{{ item.icon }}</span>
-                <span class="truncate">{{ item.label }}</span>
-                <!-- 消息未读红点 -->
-                <span
-                  v-if="item.hasBadge && messageStore.unreadCount > 0"
-                  class="absolute top-1 right-2 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center"
-                >
-                  {{ messageStore.unreadCount > 99 ? '99+' : messageStore.unreadCount }}
-                </span>
-              </router-link>
-            </li>
+                {{ messageStore.unreadCount > 99 ? '99+' : messageStore.unreadCount }}
+              </span>
+              <!-- 监控 WS 连接状态点 -->
+              <span
+                v-if="item.monitor && monitorStore.connected"
+                class="absolute top-2 right-2 w-2 h-2 rounded-full bg-green-400"
+                title="监控实时连接已建立"
+              ></span>
+              <span
+                v-if="item.monitor && !monitorStore.connected"
+                class="absolute top-2 right-2 w-2 h-2 rounded-full bg-yellow-400 animate-pulse"
+                title="监控连接中/断开"
+              ></span>
+            </router-link>
+          </li>
           </ul>
         </nav>
 
@@ -170,20 +181,23 @@ import { computed, inject, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUiStore } from '../stores/ui'
 import { useMessageStore } from '../stores/message'
+import { useMonitorStore } from '../stores/monitor'
 
 const route = useRoute()
 const ui = useUiStore()
 const messageStore = useMessageStore()
+const monitorStore = useMonitorStore()
 
 /** 设备连接状态由 App.vue 通过 provide 注入，保持原有逻辑不变 */
 const deviceConnected = inject('deviceConnected', ref(false))
 
-/** 导航菜单项（与改造前完全一致） */
+/** 导航菜单项（与改造前一致 + 新增独立「服务监控」模块入口） */
 const navItems = [
   { path: '/', label: '首页', icon: '🏠' },
   { path: '/chat', label: 'AI 对话', icon: '💬' },
   { path: '/cast', label: '投屏接收', icon: '📺' },
   { path: '/message', label: '消息', icon: '💬', hasBadge: true },
+  { path: '/monitor', label: '服务监控', icon: '🖥️', monitor: true },
 ]
 
 const deviceStatusClass = computed(() =>

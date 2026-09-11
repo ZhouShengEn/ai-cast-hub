@@ -98,7 +98,21 @@ class MediaProjectionService : Service() {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
+        // 兜底停止独立音频内录投影，防止划掉 App / 系统回收任务后投影令牌残留
+        SystemAudioProjectionHolder.mediaProjection?.let { mp ->
+            try { mp.stop() } catch (e: Exception) { Log.w(TAG, "停止投影失败", e) }
+        }
+        SystemAudioProjectionHolder.mediaProjection = null
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "MediaProjectionService onTaskRemoved，停止投影与会话")
+        SystemAudioProjectionHolder.mediaProjection?.let { mp ->
+            try { mp.stop() } catch (e: Exception) { Log.w(TAG, "停止投影失败", e) }
+        }
+        SystemAudioProjectionHolder.mediaProjection = null
+        stopSelf()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

@@ -1,8 +1,11 @@
 package com.example.ai_cast_hub
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.SharedPreferences
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
@@ -16,6 +19,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * flutter_webrtc 内部的 MediaProjection 授权 Intent 是其 GetUserMediaImpl 的私有字段且无 getter，
  * Dart 层拿不到，所以系统内录必须由我们自己再申请一次屏幕采集授权，并在此保存令牌。
+ *
+ * 注意：此令牌仅用于「系统音频内录」，与 flutter_webrtc 内部的屏幕采集投影是相互独立的两路。
+ * 因此停止/释放本令牌不会影响屏幕画面投屏。
  */
 object SystemAudioProjectionHolder {
     @Volatile
@@ -30,6 +36,13 @@ object SystemAudioProjectionHolder {
  *
  * 注意：必须在 MediaProjection 型前台服务运行期间采集（本项目已由 MediaProjectionService 提供），
  * 否则 Android 14+ 会拒绝采集。
+ *
+ * 资源与状态保证：
+ *  - 采集线程致命错误（ERROR_INVALID_OPERATION / ERROR_BAD_VALUE）会复位 [capturing]、
+ *    释放 AudioRecord 并停止 MediaProjection，杜绝后台残留采集。
+ *  - [stop] 会停止并释放 AudioRecord、停止 MediaProjection、恢复被静音的媒体音量。
+ *  - 媒体音量在采集开始时保存并静音，结束时恢复；并写入 SharedPreferences 以便
+ *    App 进程异常退出后下次冷启动恢复（见 [restoreSavedMediaVolume]）。
  */
 class SystemAudioCaptureManager {
 
@@ -52,19 +65,59 @@ class SystemAudioCaptureManager {
         /** 单帧字节数：44100 * 2ch * 2B * 20ms = 3528 */
         const val FRAME_BYTES = SAMPLE_RATE * CHANNEL_COUNT * 2 * FRAME_MILLIS / 1000
 
+        private const val PREFS_NAME = "ai_cast_hub_audio"
+        private const val KEY_PENDING_MEDIA_VOLUME = "pending_media_volume"
+
         /** 系统内录是否可用（Android 10 / API 29 起支持 AudioPlaybackCapture） */
         fun isSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+
+        /**
+         * 进程冷启动时尝试恢复上一次投屏因崩溃未还原的媒体音量。
+         *
+         * 场景：投屏期间 App 进程被系统/用户强杀，[stop] 未被执行，
+         * 手机会遗留被静音的媒体音量。此处读取持久化值并恢复，避免永久错乱。
+         */
+        fun restoreSavedMediaVolume(context: Context) {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val pending = prefs.getInt(KEY_PENDING_MEDIA_VOLUME, -1)
+            if (pending < 0) return
+            prefs.edit().remove(KEY_PENDING_MEDIA_VOLUME).apply()
+            try {
+                val am = context.applicationContext.getSystemService(AudioManager::class.java)
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, pending, 0)
+                Log.i(TAG, "已恢复上一次投屏遗留的媒体音量: $pending")
+            } catch (e: Exception) {
+                Log.w(TAG, "恢复遗留媒体音量失败: ${e.message}")
+            }
+        }
     }
 
     private val capturing = AtomicBoolean(false)
     private var audioRecord: AudioRecord? = null
     private var captureThread: Thread? = null
 
+    /** 本次采集使用的 MediaProjection 令牌（仅用于音频内录，独立一路） */
+    private var mediaProjectionRef: MediaProjection? = null
+
+    /** 应用上下文（applicationContext，避免内存泄漏），用于恢复音量 */
+    private var appContext: Context? = null
+
+    /** 致命错误回调，用于通知上层采集已死 */
+    private var onError: ((String) -> Unit)? = null
+
+    /** 采集开始前保存的原始媒体音量；<0 表示未保存 */
+    private var originalMediaVolume = -1
+
     val isCapturing: Boolean
         get() = capturing.get()
 
     @SuppressLint("MissingPermission")
-    fun start(mediaProjection: MediaProjection, onPcm: (ByteArray) -> Unit): Boolean {
+    fun start(
+        context: Context,
+        mediaProjection: MediaProjection,
+        onPcm: (ByteArray) -> Unit,
+        onError: ((String) -> Unit)? = null,
+    ): Boolean {
         if (!isSupported()) {
             Log.w(TAG, "当前系统不支持内录（需要 Android 10 / API 29+）")
             return false
@@ -73,11 +126,17 @@ class SystemAudioCaptureManager {
             Log.w(TAG, "已在采集中，忽略重复 start")
             return true
         }
+        this.appContext = context.applicationContext
+        this.onError = onError
+
+        // 保存原始媒体音量并静音（音量仅在录屏授权成功后改动，见 MainActivity 门控）
+        saveAndMuteMediaVolume()
 
         return try {
             val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, ENCODING)
             if (minBuffer <= 0) {
                 Log.e(TAG, "getMinBufferSize 返回非法值: $minBuffer")
+                restoreMediaVolume()
                 return false
             }
             val bufferSize = maxOf(minBuffer, FRAME_BYTES * 4)
@@ -119,9 +178,11 @@ class SystemAudioCaptureManager {
             if (record.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioRecord 初始化失败, state=${record.state}")
                 record.release()
+                restoreMediaVolume()
                 return false
             }
 
+            mediaProjectionRef = mediaProjection
             audioRecord = record
             capturing.set(true)
             record.startRecording()
@@ -136,10 +197,17 @@ class SystemAudioCaptureManager {
                         read > 0 -> onPcm(buffer.copyOf(read))
                         read == AudioRecord.ERROR_INVALID_OPERATION -> {
                             Log.e(TAG, "AudioRecord 读取返回 ERROR_INVALID_OPERATION，停止采集")
+                            handleCaptureError("ERROR_INVALID_OPERATION")
                             break
                         }
                         read == AudioRecord.ERROR_BAD_VALUE -> {
                             Log.e(TAG, "AudioRecord 读取返回 ERROR_BAD_VALUE，停止采集")
+                            handleCaptureError("ERROR_BAD_VALUE")
+                            break
+                        }
+                        read < 0 -> {
+                            Log.e(TAG, "AudioRecord 读取返回未知错误码: $read，停止采集")
+                            handleCaptureError("unknown($read)")
                             break
                         }
                     }
@@ -159,17 +227,30 @@ class SystemAudioCaptureManager {
         } catch (e: Exception) {
             Log.e(TAG, "启动系统内录失败", e)
             capturing.set(false)
-            audioRecord = null
+            // 释放已持有的投影令牌与 AudioRecord，避免半初始化状态下后台残留（P0-1）
+            releaseAudioRecordInternal()
+            restoreMediaVolume()
             false
         }
     }
 
-    /** 停止采集并彻底释放 AudioRecord，防止后台持续录音造成泄漏 */
-    fun stop() {
-        if (!capturing.get() && audioRecord == null) return
+    /** 采集线程内的致命错误处理：复位状态、释放资源、停止投影、通知上层 */
+    private fun handleCaptureError(reason: String) {
+        Log.e(TAG, "采集线程致命错误: $reason")
+        releaseAudioRecordInternal()
+        restoreMediaVolume()
+        try {
+            onError?.invoke(reason)
+        } catch (e: Exception) {
+            Log.w(TAG, "onError 回调异常: ${e.message}")
+        }
+    }
 
+    /**
+     * 仅释放 AudioRecord + 停止 MediaProjection（不 join 线程，可在采集线程内安全调用）。
+     */
+    private fun releaseAudioRecordInternal() {
         capturing.set(false)
-
         try {
             if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                 audioRecord?.stop()
@@ -177,6 +258,66 @@ class SystemAudioCaptureManager {
         } catch (e: Exception) {
             Log.w(TAG, "停止 AudioRecord 失败: ${e.message}")
         }
+        try {
+            audioRecord?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "释放 AudioRecord 失败: ${e.message}")
+        }
+        audioRecord = null
+
+        // 停止并释放本路独立 MediaProjection 令牌（不影响屏幕画面投屏）
+        try {
+            mediaProjectionRef?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "停止 MediaProjection 失败: ${e.message}")
+        }
+        mediaProjectionRef = null
+        SystemAudioProjectionHolder.mediaProjection = null
+    }
+
+    /** 保存原始媒体音量并静音（仅采集开始时调用） */
+    private fun saveAndMuteMediaVolume() {
+        val ctx = appContext ?: return
+        try {
+            val am = ctx.getSystemService(AudioManager::class.java) ?: return
+            originalMediaVolume = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+            // 持久化，供进程崩溃后冷启动恢复
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(KEY_PENDING_MEDIA_VOLUME, originalMediaVolume)
+                .apply()
+            Log.i(TAG, "已保存并静音媒体音量（原值=$originalMediaVolume）")
+        } catch (e: Exception) {
+            Log.w(TAG, "保存/静音媒体音量失败: ${e.message}")
+            originalMediaVolume = -1
+        }
+    }
+
+    /** 恢复媒体音量并清除持久化标记 */
+    private fun restoreMediaVolume() {
+        if (originalMediaVolume < 0) return
+        val value = originalMediaVolume
+        originalMediaVolume = -1
+        val ctx = appContext
+        try {
+            ctx?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                ?.edit()
+                ?.remove(KEY_PENDING_MEDIA_VOLUME)
+                ?.apply()
+            val am = ctx?.getSystemService(AudioManager::class.java)
+            am?.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
+            Log.i(TAG, "已恢复媒体音量: $value")
+        } catch (e: Exception) {
+            Log.w(TAG, "恢复媒体音量失败: ${e.message}")
+        }
+    }
+
+    /** 停止采集并彻底释放 AudioRecord 与 MediaProjection，防止后台持续录音造成泄漏 */
+    fun stop() {
+        if (!capturing.get() && audioRecord == null && mediaProjectionRef == null) return
+
+        capturing.set(false)
 
         try {
             captureThread?.join(500)
@@ -186,13 +327,9 @@ class SystemAudioCaptureManager {
             captureThread = null
         }
 
-        try {
-            audioRecord?.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "释放 AudioRecord 失败: ${e.message}")
-        }
-        audioRecord = null
+        releaseAudioRecordInternal()
+        restoreMediaVolume()
 
-        Log.i(TAG, "系统内录已停止，AudioRecord 已释放")
+        Log.i(TAG, "系统内录已停止，AudioRecord 与 MediaProjection 已释放，音量已恢复")
     }
 }

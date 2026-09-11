@@ -34,6 +34,13 @@ router.post('/send', async (req, res, next) => {
     req.setTimeout(300000);
     res.setTimeout(300000);
 
+    // 客户端中途断开（关页面/超时）时中止后续写入，避免向已关闭 socket 写入与无谓的 LLM 调用
+    let clientClosed = false;
+    req.on('close', () => {
+      clientClosed = true;
+      logger.info(`[Chat] 客户端已断开，终止 SSE 流: ${convId || '(新建)'}`);
+    });
+
     let convId = conversationId;
 
     // 如无 conversationId → 创建新对话
@@ -60,6 +67,10 @@ router.post('/send', async (req, res, next) => {
     let totalOutputTokens = 0;
     try {
       for await (const event of conversationService.sendMessage(convId, content, model)) {
+        if (clientClosed) {
+          logger.info(`[Chat] SSE 流因客户端断开提前结束`);
+          break;
+        }
         if (event.type === 'token') {
           res.write(`data: ${JSON.stringify({ token: event.token })}\n\n`);
         } else if (event.type === 'done') {

@@ -24,6 +24,8 @@ function _createInstance(ns, config) {
   const state = {
     pc: null,
     iceServers: [...DEFAULT_STUN],
+    // ICE 配置拉取 Promise：ensurePC 创建前若仍在拉取则等待，避免用默认 STUN 建连（P1-13）
+    iceServersReady: null,
     connectionState: ref('new'),
     remoteStream: shallowRef(null),
     dataChannel: shallowRef(null),
@@ -37,8 +39,14 @@ function _createInstance(ns, config) {
   const warn = (...args) => console.warn(`[WebRTC:${ns}]`, ...args)
 
   /** 初始化 RTCPeerConnection */
-  function ensurePC() {
+  async function ensurePC() {
     if (state.pc) return state.pc
+
+    // 若 ICE 配置仍在拉取，等待其完成再建 PC，否则会用默认 STUN 建连，
+    // 对称 NAT 下缺 TURN 将导致 WebRTC 连接失败（P1-13）
+    if (state.iceServersReady) {
+      try { await state.iceServersReady } catch (_) {}
+    }
 
     const mergedConfig = {
       iceServers: state.iceServers,
@@ -136,7 +144,7 @@ function _createInstance(ns, config) {
     dataChannel: state.dataChannel,
 
     async createOffer(sdpCallback) {
-      ensurePC()
+      await ensurePC()
       const offer = await state.pc.createOffer()
       await state.pc.setLocalDescription(offer)
       if (sdpCallback) sdpCallback(state.pc.localDescription)
@@ -144,7 +152,7 @@ function _createInstance(ns, config) {
     },
 
     async handleOffer(sdp, sdpCallback) {
-      ensurePC()
+      await ensurePC()
       log('处理远端 Offer (SDP 长度:', sdp.length, ')')
       await state.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }))
       setH264Preference()
@@ -156,6 +164,7 @@ function _createInstance(ns, config) {
     },
 
     async handleAnswer(sdp) {
+      await ensurePC()
       if (!state.pc) {
         warn('handleAnswer: pc 不存在')
         return
@@ -176,8 +185,8 @@ function _createInstance(ns, config) {
       }
     },
 
-    createDataChannel(label) {
-      ensurePC()
+    async createDataChannel(label) {
+      await ensurePC()
       const channel = state.pc.createDataChannel(label)
       state.dataChannel.value = channel
       log('创建 DataChannel:', label)
@@ -199,20 +208,24 @@ function _createInstance(ns, config) {
     },
 
     async fetchIceServers() {
-      try {
-        const client = (await import('../api/client.js')).default
-        // client 已配置 baseURL='/api/v1'，这里不能重复拼前缀，
-        // 否则请求会变成 /api/v1/api/v1/webrtc/config 直接 404
-        const data = await client.get('/webrtc/config')
-        if (data?.iceServers) {
-          state.iceServers = data.iceServers
-          log('fetched ICE servers:', data.iceServers.length)
-          return
+      // 缓存 Promise：ensurePC 会等待其完成，避免用默认 STUN 建连（P1-13）
+      state.iceServersReady = (async () => {
+        try {
+          const client = (await import('../api/client.js')).default
+          // client 已配置 baseURL='/api/v1'，这里不能重复拼前缀，
+          // 否则请求会变成 /api/v1/api/v1/webrtc/config 直接 404
+          const data = await client.get('/webrtc/config')
+          if (data?.iceServers) {
+            state.iceServers = data.iceServers
+            log('fetched ICE servers:', data.iceServers.length)
+            return
+          }
+        } catch (e) {
+          warn('获取 ICE 配置失败，使用默认 STUN:', e)
         }
-      } catch (e) {
-        warn('获取 ICE 配置失败，使用默认 STUN:', e)
-      }
-      state.iceServers = [...DEFAULT_STUN]
+        state.iceServers = [...DEFAULT_STUN]
+      })()
+      return state.iceServersReady
     },
 
     close() {
