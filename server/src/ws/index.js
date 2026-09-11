@@ -149,8 +149,11 @@ async function scanAutoUnbind() {
  * @param {import('http').Server} server - HTTP Server 实例
  * @returns {import('ws').WebSocketServer} wss 实例
  */
-function initWebSocket(server) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
+function initWebSocket() {
+  // 使用 noServer: 多个 WebSocketServer 共享同一 http server 时，server 选项会各自注册
+  // 不过滤 path 的 upgrade 监听器，导致同一次连接被双处理 → 帧解析错误。
+  // 统一 upgrade 路由在 src/index.js 中按 path 分发到本 server。
+  const wss = new WebSocketServer({ noServer: true });
 
   logger.info('[WS] WebSocket 服务已挂载到 /ws');
 

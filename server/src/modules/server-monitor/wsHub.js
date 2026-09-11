@@ -40,9 +40,11 @@ let _prevStatus = new Map();
  * 初始化监控 WS。
  * @param {import('http').Server} server
  */
-function initMonitorWs(server) {
+function initMonitorWs() {
   if (wss) return wss;
-  wss = new WebSocketServer({ server, path: '/ws/monitor' });
+  // 使用 noServer: 与设备 /ws 共用同一 http server，由 src/index.js 统一 upgrade
+  // 路由按 path 分发，避免两个 WebSocketServer 同时处理同一连接导致帧解析错误。
+  wss = new WebSocketServer({ noServer: true });
   logger.info('[Monitor] WebSocket 已挂载到 /ws/monitor');
 
   wss.on('connection', async (ws, req) => {

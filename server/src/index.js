@@ -93,21 +93,47 @@ app.use(errorHandler);
 const server = http.createServer(app);
 
 // ============================================================
-// 初始化 WebSocket 服务
+// 初始化 WebSocket 服务（设备通道 /ws，使用 noServer 模式）
 // ============================================================
-const wss = initWebSocket(server);
+const wss = initWebSocket();
 
 // ============================================================
 // 初始化服务器运维监控模块（独立 WS：/ws/monitor，完全解耦原有业务）
 // 包 try/catch：即便监控模块启动异常，也不影响主服务（模块降级，其余 API 正常）
+// 返回监控 WS 实例（noServer 模式），与设备 /ws 共用同一 http server。
 // ============================================================
+let monitorWss = null;
 try {
   const monitorModule = require('./modules/server-monitor');
-  monitorModule.initMonitor(server);
+  monitorWss = monitorModule.initMonitor();
   logger.info('[Monitor] 运维监控模块已挂载');
 } catch (e) {
   logger.error(`[Monitor] 运维监控模块初始化失败（已降级，不影响主服务）: ${e.stack || e.message}`);
 }
+
+// ============================================================
+// 统一 WebSocket upgrade 路由（关键修复）
+// 多个 WebSocketServer 共享同一 http server 时，若使用 server 选项会各自注册
+// 不过滤 path 的 upgrade 监听器，导致同一次连接被双处理 → 浏览器报
+// "Invalid frame header" / 客户端报 "RSV1 must be clear"。
+// 因此所有 server 均采用 noServer:true，此处按 path 唯一分发，杜绝重复处理。
+// ============================================================
+server.on('upgrade', (req, socket, head) => {
+  const pathname = req.url ? req.url.split('?')[0] : '';
+  try {
+    if (pathname === '/ws/monitor' && monitorWss) {
+      monitorWss.handleUpgrade(req, socket, head, (ws) => monitorWss.emit('connection', ws, req));
+    } else if (pathname === '/ws') {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    } else {
+      // 非本服务 WS 路径：直接关闭，避免 socket 悬挂
+      socket.destroy();
+    }
+  } catch (err) {
+    logger.error(`[WS] upgrade 路由处理失败: ${err.message}`);
+    socket.destroy();
+  }
+});
 
 // ============================================================
 // 服务启动
