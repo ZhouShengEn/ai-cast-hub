@@ -19,7 +19,7 @@ const modelRoutes = require('./model');
 const fileRoutes = require('./file');
 const statsRoutes = require('./stats');
 // 独立运维监控模块（全新解耦，不改动原有业务）
-const monitorModule = require('./modules/server-monitor');
+const monitorModule = require('../modules/server-monitor');
 
 const router = Router();
 

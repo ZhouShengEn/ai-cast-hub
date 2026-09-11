@@ -99,9 +99,15 @@ const wss = initWebSocket(server);
 
 // ============================================================
 // 初始化服务器运维监控模块（独立 WS：/ws/monitor，完全解耦原有业务）
+// 包 try/catch：即便监控模块启动异常，也不影响主服务（模块降级，其余 API 正常）
 // ============================================================
-const monitorModule = require('./modules/server-monitor');
-monitorModule.initMonitor(server);
+try {
+  const monitorModule = require('./modules/server-monitor');
+  monitorModule.initMonitor(server);
+  logger.info('[Monitor] 运维监控模块已挂载');
+} catch (e) {
+  logger.error(`[Monitor] 运维监控模块初始化失败（已降级，不影响主服务）: ${e.stack || e.message}`);
+}
 
 // ============================================================
 // 服务启动

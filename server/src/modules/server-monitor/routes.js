@@ -76,8 +76,12 @@ router.delete('/config/ignore', permission.requireAdmin, (req, res) => {
 // 服务
 // ============================================================
 router.post('/scan', (req, res) => {
-  const list = aggregator.forceRescan();
-  ok(res, { count: list.length });
+  try {
+    const list = aggregator.forceRescan();
+    ok(res, { count: list.length });
+  } catch (e) {
+    fail(res, 500, e.message);
+  }
 });
 
 router.get('/services', async (req, res) => {
