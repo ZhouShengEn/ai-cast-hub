@@ -139,6 +139,23 @@ class ScreenCaptureService {
     }
   }
 
+  /// 重启屏幕捕获（黑屏自愈用）
+  ///
+  /// 会释放旧流并重新走一次 getDisplayMedia，用于「轨道在、连接也在、
+  /// 但没有帧输出」的黑屏场景。失败时不影响现有会话（返回 null）。
+  Future<webrtc.MediaStream?> restartCapture() async {
+    DebugService().log('[ScreenCapture] 重启屏幕捕获（黑屏自愈）',
+        level: LogLevel.info);
+    try {
+      await stopCapture();
+      final stream = await startCapture();
+      return stream;
+    } catch (e) {
+      DebugService().error('[ScreenCapture] 重启捕获失败: $e');
+      return null;
+    }
+  }
+
   /// 停止屏幕捕获
   Future<void> stopCapture() async {
     final stream = _localStream;

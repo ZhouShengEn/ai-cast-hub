@@ -60,6 +60,10 @@ export function useMessageTransfer() {
   const _fileReceivedCount = {}
   /** 接收速率采样：{ [fileId]: { at, bytes } } */
   const _fileSpeedSample = {}
+  /** 已接收字节数：{ [fileId]: number } */
+  const _fileReceivedBytes = {}
+  /** 速率滑动窗口：{ [fileId]: [{ t, bytes }] }（保留最近 1 秒） */
+  const _fileRateWindow = {}
 
   // 回调引用
   let _invitationHandler = null
@@ -431,6 +435,10 @@ export function useMessageTransfer() {
       case 'cancel':
         _handleCancel(data)
         break
+      case 'cancel_ack':
+        // App 端已确认取消并完成清理（含删除不完整文件），两端状态对齐
+        _handleCancelAck(data)
+        break
       case 'resume_state':
         _handleResumeState(data)
         break
@@ -583,17 +591,31 @@ export function useMessageTransfer() {
     const received = _fileReceivedCount[data.id]
     const progress = total > 0 ? received / total : 0
 
-    // 速率采样
+    // 速率采样：基于最近 1 秒接收字节数的滑动窗口，
+    // 避免按「相邻两次采样」计算时数值大幅跳动。
     const now = performance.now()
-    const sample = _fileSpeedSample[data.id] || { at: now, bytes: 0 }
-    sample.bytes += bytes.length
-    if (now - sample.at >= SPEED_SAMPLE_MS) {
-      const speed = sample.bytes / ((now - sample.at) / 1000)
+    _fileReceivedBytes[data.id] = (_fileReceivedBytes[data.id] || 0) + bytes.length
+    const win = _fileRateWindow[data.id] || []
+    win.push({ t: now, bytes: _fileReceivedBytes[data.id] })
+    while (win.length > 2 && now - win[0].t > 1000) win.shift()
+    _fileRateWindow[data.id] = win
+
+    const sample = _fileSpeedSample[data.id] || { at: 0 }
+    if (now - sample.at >= SPEED_SAMPLE_MS && win.length >= 2) {
+      const dtSec = (win[win.length - 1].t - win[0].t) / 1000
+      const speed = dtSec > 0 ? (win[win.length - 1].bytes - win[0].bytes) / dtSec : 0
       sample.at = now
-      sample.bytes = 0
-      store.updateMessage(data.id, { speed })
+      _fileSpeedSample[data.id] = sample
+      const fileSize = Number(_fileMetas[data.id]?.fileSize) || 0
+      const remaining = Math.max(0, fileSize - _fileReceivedBytes[data.id])
+      store.updateMessage(data.id, {
+        speed,
+        transferredBytes: _fileReceivedBytes[data.id],
+        etaSeconds: speed > 0 ? remaining / speed : 0,
+      })
+    } else {
+      _fileSpeedSample[data.id] = sample
     }
-    _fileSpeedSample[data.id] = sample
 
     // 每 10 个 chunk 或接近完成时打日志
     if (data.seq % 10 === 0 || received >= total - 1) {
@@ -711,7 +733,12 @@ export function useMessageTransfer() {
         const speed = ((sentCount * chunkSize) - lastSampleBytes) / ((now - lastSampleAt) / 1000)
         lastSampleAt = now
         lastSampleBytes = sentCount * chunkSize
-        store.updateMessage(fileId, { speed })
+        const remaining = Math.max(0, pending.fullData.length - sentCount * chunkSize)
+        store.updateMessage(fileId, {
+          speed,
+          transferredBytes: Math.min(sentCount * chunkSize, pending.fullData.length),
+          etaSeconds: speed > 0 ? remaining / speed : 0,
+        })
       }
       store.updateMessage(fileId, { progress: Math.min(1, sentCount / pending.totalChunks) })
     }
@@ -811,6 +838,8 @@ export function useMessageTransfer() {
       progress: 1,
       blob,
       blobUrl: url,
+      speed: 0,
+      etaSeconds: 0,
     })
 
     console.log('[Message] 消息已更新为 received, blobUrl=', url ? '已创建' : '无')
@@ -819,6 +848,9 @@ export function useMessageTransfer() {
     _clearFileTransferTimer(fileId)
     delete _fileBuffers[fileId]
     delete _fileMetas[fileId]
+    delete _fileSpeedSample[fileId]
+    delete _fileReceivedBytes[fileId]
+    delete _fileRateWindow[fileId]
 
     // 自动触发浏览器下载（与 Flutter 端行为保持一致）
     downloadFile(fileId)
@@ -829,7 +861,28 @@ export function useMessageTransfer() {
     delete _pendingSends[data.id]
     delete _fileBuffers[data.id]
     delete _fileMetas[data.id]
-    store.updateMessage(data.id, { status: 'cancelled' })
+    delete _fileReceivedCount[data.id]
+    delete _fileSpeedSample[data.id]
+    delete _fileReceivedBytes[data.id]
+    delete _fileRateWindow[data.id]
+    delete _pendingChunks[data.id]
+    store.updateMessage(data.id, { status: 'cancelled', speed: 0, etaSeconds: 0 })
+  }
+
+  /** 对端（App）已确认取消：清理本端残留并同步 UI 状态 */
+  function _handleCancelAck(data) {
+    if (!data?.id) return
+    console.log('[Message] 收到 cancel_ack: id=', data.id)
+    _clearFileTransferTimer(data.id)
+    delete _pendingSends[data.id]
+    delete _fileBuffers[data.id]
+    delete _fileMetas[data.id]
+    delete _fileReceivedCount[data.id]
+    delete _fileSpeedSample[data.id]
+    delete _fileReceivedBytes[data.id]
+    delete _fileRateWindow[data.id]
+    delete _pendingChunks[data.id]
+    store.updateMessage(data.id, { status: 'cancelled', speed: 0, etaSeconds: 0 })
   }
 
   /** 发送文本 */
@@ -957,7 +1010,12 @@ export function useMessageTransfer() {
         const speed = ((i + 1) * chunkSize - lastSampleBytes) / ((now - lastSampleAt) / 1000)
         lastSampleAt = now
         lastSampleBytes = (i + 1) * chunkSize
-        store.updateMessage(msgId, { speed })
+        const remaining = Math.max(0, fullData.length - (i + 1) * chunkSize)
+        store.updateMessage(msgId, {
+          speed,
+          transferredBytes: Math.min((i + 1) * chunkSize, fullData.length),
+          etaSeconds: speed > 0 ? remaining / speed : 0,
+        })
       }
       store.updateMessage(msgId, { progress: Math.min(1, (i + 1) / totalChunks) })
     }
@@ -973,14 +1031,17 @@ export function useMessageTransfer() {
 
   /** 取消传输 */
   function cancelTransfer(id) {
-    if (_dataChannel) {
+    if (_dataChannel && _dataChannel.readyState === 'open') {
       _dataChannel.send(JSON.stringify({ type: 'cancel', id }))
     }
     _clearFileTransferTimer(id)
     delete _pendingSends[id]
     delete _fileBuffers[id]
     delete _fileMetas[id]
-    store.updateMessage(id, { status: 'cancelled' })
+    delete _fileReceivedCount[id]
+    delete _fileSpeedSample[id]
+    delete _pendingChunks[id]
+    store.updateMessage(id, { status: 'cancelled', speed: 0 })
   }
 
   /** 断开当前会话（保持 invitation 监听，可接受新连接） */

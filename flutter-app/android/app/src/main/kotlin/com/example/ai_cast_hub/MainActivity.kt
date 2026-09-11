@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Point
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -114,14 +115,31 @@ class MainActivity : FlutterActivity() {
                 // 去系统设置里把本服务「关闭再重新打开」，否则点了永远没反应。
                 "getControlDiagnostics" -> {
                     val service = RemoteControlService.instance
-                    val size = service?.screenSizeForDiagnostics()
+                    // 原生侧获取屏幕尺寸可能失败（无障碍 Context 未关联 Display 等），
+                    // 绝不能让异常冒泡 —— 否则 Dart 侧只会收到 PlatformException，
+                    // 表现为「诊断失败 + screenWidth/Height 恒为 0」。
+                    val size = try {
+                        service?.screenSizeForDiagnostics()
+                    } catch (e: Exception) {
+                        RemoteControlService.recordDisplayError(e)
+                        Log.w(TAG, "getControlDiagnostics 失败: ${e.message}")
+                        null
+                    }
+                    // 兜底：用 Activity 的真实窗口尺寸（Activity 必然关联 Display），
+                    // 保证上报的分辨率永远不为 0，Web 端才能按真实屏幕换算触控坐标。
+                    val fallbackSize =
+                        if (size == null || size.x <= 0 || size.y <= 0) activityScreenSize() else null
+                    val width = size?.x ?: fallbackSize?.x ?: 0
+                    val height = size?.y ?: fallbackSize?.y ?: 0
                     result.success(
                         hashMapOf<String, Any?>(
                             "connected" to (service != null),
                             "settingsEnabled" to RemoteControlService.isEnabledInSettings(this),
                             "state" to RemoteControlService.describeDispatchState(this),
-                            "screenWidth" to (size?.x ?: 0),
-                            "screenHeight" to (size?.y ?: 0),
+                            "screenWidth" to width,
+                            "screenHeight" to height,
+                            "displayId" to (service?.displayIdForDiagnostics() ?: -1),
+                            "lastError" to (RemoteControlService.lastDisplayError ?: ""),
                         )
                     )
                 }
@@ -282,6 +300,34 @@ class MainActivity : FlutterActivity() {
             startActivity(intent)
         } catch (e: Exception) {
             Log.w(TAG, "bringToFront 失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 读取 Activity 所在屏幕的真实像素尺寸（兜底用）。
+     *
+     * Activity 必然关联 Display，因此这个取值不会抛
+     * "Tried to obtain display from a Context not associated with one"，
+     * 可作为无障碍服务拿不到 Display 时的可靠兜底。
+     */
+    private fun activityScreenSize(): Point {
+        return try {
+            val size = Point()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                display?.getRealSize(size) ?: windowManager.defaultDisplay.getRealSize(size)
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay.getRealSize(size)
+            }
+            if (size.x > 0 && size.y > 0) {
+                size
+            } else {
+                val m = resources.displayMetrics
+                Point(m.widthPixels, m.heightPixels)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "读取 Activity 屏幕尺寸失败: ${e.message}")
+            Point(0, 0)
         }
     }
 

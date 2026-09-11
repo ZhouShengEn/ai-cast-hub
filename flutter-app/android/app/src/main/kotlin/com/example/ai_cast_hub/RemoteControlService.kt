@@ -6,13 +6,15 @@ import android.accessibilityservice.GestureDescription
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.media.AudioManager
-import android.graphics.Path
 import android.graphics.Point
 import android.graphics.Rect
+import android.hardware.display.DisplayManager
+import android.media.AudioManager
+import android.graphics.Path
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import android.view.Display
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
@@ -128,10 +130,44 @@ class RemoteControlService : AccessibilityService() {
             }
         }
 
+        /** 最近一次获取 Display 失败的原因（供 Dart 侧诊断上报，避免只看到空的 0x0） */
+        @Volatile
+        var lastDisplayError: String? = null
+            private set
+
+        fun recordDisplayError(e: Exception) {
+            lastDisplayError = "${e.javaClass.simpleName}: ${e.message}"
+        }
+
+        /**
+         * 打开系统无障碍设置，并尽可能直接定位到本 App 的服务开关页。
+         *
+         * 优先用 ACTION_ACCESSIBILITY_DETAILS_SETTINGS + package: data —— 多数 ROM
+         * 会直接落到「AI-Cast-Hub」的开关详情页，用户点一下即可开启；
+         * 个别 ROM 不支持该 Intent，回退到列表页（ACTION_ACCESSIBILITY_SETTINGS）。
+         */
         fun openAccessibilitySettings(context: Context) {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            context.startActivity(intent)
+            val launched = try {
+                val detail = Intent(Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    data = android.net.Uri.parse("package:${context.packageName}")
+                }
+                context.startActivity(detail)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "打开无障碍详情页失败，回退列表页: ${e.message}")
+                false
+            }
+            if (!launched) {
+                try {
+                    val list = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    }
+                    context.startActivity(list)
+                } catch (e: Exception) {
+                    Log.e(TAG, "打开无障碍设置失败: ${e.message}")
+                }
+            }
         }
     }
 
@@ -530,21 +566,116 @@ class RemoteControlService : AccessibilityService() {
         return null
     }
 
-    private fun getScreenSize(): Point {
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            this.display
-        } else {
-            @Suppress("DEPRECATION")
-            wm.defaultDisplay
+    /**
+     * 与 MediaProjection 录屏同一物理屏幕的可视化 Context。
+     *
+     * 关键：AccessibilityService 的 base context 不保证关联 Display，直接访问
+     * `Context.getDisplay()/display` 会抛
+     * `UnsupportedOperationException: Tried to obtain display from a Context not
+     * associated with one`（正是「无障碍已开启但触控/诊断全失效」的元凶）。
+     * 必须先 [Context.createDisplayContext] 出一个可视化上下文，再从它取
+     * Display / WindowManager，才能保证触控注入与录屏落在同一个 Display 上。
+     */
+    @Volatile
+    private var cachedVisualContext: Context? = null
+
+    /** 获取默认物理屏幕（不依赖当前 Context 是否已关联 Display） */
+    private fun resolveDefaultDisplay(): Display? {
+        return try {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            dm?.getDisplay(Display.DEFAULT_DISPLAY)
+        } catch (e: Exception) {
+            recordDisplayError(e)
+            Log.w(TAG, "resolveDefaultDisplay 失败: ${e.message}")
+            null
         }
-        val size = Point()
-        display?.getRealSize(size)
-        return size
     }
 
-    /** 供 Dart 侧诊断使用（getScreenSize 为私有，对外暴露只读快照） */
-    fun screenSizeForDiagnostics(): Point = getScreenSize()
+    /** 创建（并缓存）与默认屏幕绑定的可视化 Context */
+    private fun visualContext(): Context {
+        cachedVisualContext?.let { return it }
+        synchronized(this) {
+            cachedVisualContext?.let { return it }
+            val ctx = try {
+                val display = resolveDefaultDisplay()
+                if (display != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+                    val created = createDisplayContext(display)
+                    lastDisplayError = null
+                    Log.d(TAG, "已创建 display context: displayId=${display.displayId}")
+                    created
+                } else {
+                    this
+                }
+            } catch (e: Exception) {
+                recordDisplayError(e)
+                Log.e(TAG, "createDisplayContext 失败，回退 Service context: ${e.message}")
+                this
+            }
+            cachedVisualContext = ctx
+            return ctx
+        }
+    }
+
+    private fun getScreenSize(): Point {
+        // 方式1：DisplayManager 默认屏（与 MediaProjection 录屏同源，最可靠）
+        try {
+            val display = resolveDefaultDisplay()
+            if (display != null) {
+                val size = Point()
+                display.getRealSize(size)
+                if (size.x > 0 && size.y > 0) return size
+            }
+        } catch (e: Exception) {
+            recordDisplayError(e)
+            Log.w(TAG, "getScreenSize DisplayManager 方式失败: ${e.message}")
+        }
+
+        // 方式2：可视化 Context 的 WindowManager
+        try {
+            val ctx = visualContext()
+            val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            val size = Point()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                ctx.display?.getRealSize(size)
+            } else {
+                @Suppress("DEPRECATION")
+                wm?.defaultDisplay?.getRealSize(size)
+            }
+            if (size.x > 0 && size.y > 0) return size
+        } catch (e: Exception) {
+            recordDisplayError(e)
+            Log.w(TAG, "getScreenSize WindowManager 方式失败: ${e.message}")
+        }
+
+        // 方式3：系统度量兜底（宁可给个近似值，也不要 0x0 让上层误判「未生效」）
+        return try {
+            val metrics = resources.displayMetrics
+            Point(metrics.widthPixels, metrics.heightPixels)
+        } catch (e: Exception) {
+            recordDisplayError(e)
+            Point(0, 0)
+        }
+    }
+
+    /** 供 Dart 侧诊断使用：屏幕尺寸快照（内部已兜底，不会抛异常） */
+    fun screenSizeForDiagnostics(): Point {
+        return try {
+            getScreenSize()
+        } catch (e: Exception) {
+            recordDisplayError(e)
+            Point(0, 0)
+        }
+    }
+
+    /** 供 Dart 侧诊断使用：当前触控注入所用的 displayId（-1 表示拿不到） */
+    fun displayIdForDiagnostics(): Int {
+        return try {
+            resolveDefaultDisplay()?.displayId ?: -1
+        } catch (e: Exception) {
+            recordDisplayError(e)
+            -1
+        }
+    }
 
     /**
      * 把归一化坐标(0~1)换算为屏幕像素，并保证落在 [0, width-1] / [0, height-1] 内。
@@ -566,6 +697,8 @@ class RemoteControlService : AccessibilityService() {
         touchStartPoint = null
         touchMoved = false
         lastTouchAccepted = false
+        // 释放 display context 引用，避免服务重建后沿用旧的屏幕上下文
+        cachedVisualContext = null
     }
 
     /**

@@ -523,7 +523,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis),
                   Text(
-                      m.fileSizeFormatted.isNotEmpty ? m.fileSizeFormatted : '',
+                      m.isTransferring ? m.transferredLabel : m.fileSizeFormatted,
                       style:
                           const TextStyle(fontSize: 12, color: Colors.black45)),
                 ])),
@@ -546,8 +546,14 @@ class _MessageScreenState extends ConsumerState<MessageScreen> with RouteAware {
                         color: Colors.blue,
                         fontWeight: FontWeight.w500)),
               ],
+              if (m.etaLabel != null) ...[
+                const SizedBox(width: 8),
+                Text(m.etaLabel!,
+                    style: const TextStyle(fontSize: 12, color: Colors.black45)),
+              ],
             ]),
-            if (me)
+            // 发送方和接收方都可以取消进行中的传输
+            if (m.isTransferring)
               TextButton(
                   onPressed: () => n.cancelTransfer(m.id),
                   child: const Text('取消', style: TextStyle(fontSize: 12))),

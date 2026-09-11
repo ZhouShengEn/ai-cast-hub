@@ -20,6 +20,14 @@ export const useDeviceStore = defineStore('device', {
     loading: false,
     /** 错误信息 */
     error: null,
+    /**
+     * 待重连设备集合：uuid -> true
+     *
+     * 设备离线时**保留绑定关系**，仅标记为「待重连」；
+     * 设备重新上线后由服务端推送 device_rebind，自动清除该标记。
+     * 这样 App 下线再上线无需任何手动操作即可恢复配对（P1-4）。
+     */
+    pendingReconnect: {},
   }),
 
   actions: {
@@ -164,6 +172,73 @@ export const useDeviceStore = defineStore('device', {
       }
       this.pairedDevices.splice(idx, 1, updated)
       this.isConnected = this.pairedDevices.some((d) => d.isOnline)
+      // 离线 → 标记待重连（绑定关系保留）；上线 → 清除标记
+      if (online) {
+        this.clearPendingReconnect(deviceUuid)
+      } else {
+        this.markPendingReconnect(deviceUuid)
+      }
+    },
+
+    /**
+     * 标记设备为「待重连」（下线但绑定仍在）
+     * @param {string} deviceUuid
+     */
+    markPendingReconnect(deviceUuid) {
+      if (!deviceUuid) return
+      this.pendingReconnect = { ...this.pendingReconnect, [deviceUuid]: true }
+    },
+
+    /**
+     * 清除「待重连」标记（设备已重新上线并完成自动重连）
+     * @param {string} deviceUuid
+     */
+    clearPendingReconnect(deviceUuid) {
+      if (!deviceUuid || !this.pendingReconnect[deviceUuid]) return
+      const next = { ...this.pendingReconnect }
+      delete next[deviceUuid]
+      this.pendingReconnect = next
+    },
+
+    /**
+     * 服务端推送 device_rebind（设备重新上线自动恢复绑定）
+     * @param {object} payload { deviceUuid, deviceName, platform, isOnline, boundAt }
+     */
+    applyRebind(payload) {
+      if (!payload?.deviceUuid) return
+      const uuid = payload.deviceUuid
+      this.clearPendingReconnect(uuid)
+      const idx = this.pairedDevices.findIndex(
+        (d) => (d.uuid || d.id || d.deviceUuid) === uuid,
+      )
+      const merged = {
+        uuid,
+        deviceUuid: uuid,
+        id: uuid,
+        name: payload.deviceName || (idx >= 0 ? this.pairedDevices[idx].name : '设备'),
+        deviceName: payload.deviceName || (idx >= 0 ? this.pairedDevices[idx].name : '设备'),
+        platform: payload.platform || (idx >= 0 ? this.pairedDevices[idx].platform : 'android'),
+        isOnline: payload.isOnline !== false,
+        lastSeen: new Date().toISOString(),
+      }
+      if (idx >= 0) {
+        this.pairedDevices.splice(idx, 1, { ...this.pairedDevices[idx], ...merged })
+      } else {
+        // 本地列表里没有（例如刷新过页面）→ 补回，保证绑定关系不丢
+        this.pairedDevices = [merged, ...this.pairedDevices]
+      }
+      this.isConnected = this.pairedDevices.some((d) => d.isOnline)
+    },
+
+    /**
+     * 设备在线状态文本：在线 / 待重连 / 离线
+     * @param {object} device
+     */
+    deviceStatusText(device) {
+      const uuid = device?.uuid || device?.id || device?.deviceUuid
+      if (device?.isOnline) return '在线'
+      if (uuid && this.pendingReconnect[uuid]) return '待重连'
+      return '离线'
     },
   },
 })

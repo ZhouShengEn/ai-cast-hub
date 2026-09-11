@@ -60,14 +60,14 @@
               <span class="text-2xl">{{ device.platform === 'ios' ? '🍎' : '📱' }}</span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium text-gray-800 truncate">{{ device.name || '未知设备' }}</p>
-                <p class="text-xs" :class="isDeviceOnline(device) ? 'text-green-500' : 'text-orange-500'">
-                  {{ device.platform || 'android' }} · {{ isDeviceOnline(device) ? '在线' : '已绑定设备下线 — ' + formatTime(device.lastSeen) }}
+                <p class="text-xs" :class="statusClass(device)">
+                  {{ device.platform || 'android' }} · {{ statusText(device) }}
                 </p>
               </div>
               <span
                 class="w-2 h-2 rounded-full shrink-0"
-                :class="isDeviceOnline(device) ? 'bg-green-400' : 'bg-gray-300'"
-                :title="isDeviceOnline(device) ? '在线' : '离线'"
+                :class="statusDotClass(device)"
+                :title="statusText(device)"
               ></span>
               <!-- 离线时：尝试连接按钮 -->
               <button
@@ -186,6 +186,33 @@ function formatTime(dateStr) {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}小时前`
   return new Date(dateStr).toLocaleDateString('zh-CN')
+}
+
+/**
+ * 设备状态三态：在线 / 待重连 / 离线（P1-4）
+ *
+ * 「待重连」= 设备当前离线，但后端仍保留绑定关系与传输密钥，
+ * 一旦设备重新上线会自动恢复，用户无需重新扫码配对。
+ */
+function isPendingReconnect(device) {
+  const uuid = device?.uuid || device?.id || device?.deviceUuid
+  return !isDeviceOnline(device) && !!deviceStore.pendingReconnect[uuid]
+}
+
+function statusText(device) {
+  if (isDeviceOnline(device)) return '在线'
+  if (isPendingReconnect(device)) return `待重连 — ${formatTime(device.lastSeen)}上线过`
+  return `离线 — ${formatTime(device.lastSeen)}`
+}
+
+function statusClass(device) {
+  if (isDeviceOnline(device)) return 'text-green-500'
+  return isPendingReconnect(device) ? 'text-amber-500' : 'text-orange-500'
+}
+
+function statusDotClass(device) {
+  if (isDeviceOnline(device)) return 'bg-green-400'
+  return isPendingReconnect(device) ? 'bg-amber-400 animate-pulse' : 'bg-gray-300'
 }
 
 /** 确认解除绑定 */

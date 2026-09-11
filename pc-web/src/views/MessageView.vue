@@ -89,8 +89,14 @@
                     <span v-if="msg.speed" class="font-medium" style="color: #2563eb">
                       · {{ formatSpeed(msg.speed) }}
                     </span>
+                    <span v-if="msg.etaSeconds > 0" class="opacity-70">
+                      · 剩余 {{ formatEta(msg.etaSeconds) }}
+                    </span>
                   </p>
-                  <button v-if="msg.status === 'sending'" @click.stop="cancelTransfer(msg.id)"
+                  <p class="text-xs opacity-70">
+                    {{ formatSize(msg.transferredBytes || 0) }} / {{ formatSize(msg.fileSize) }}
+                  </p>
+                  <button @click.stop="cancelTransfer(msg.id)"
                     class="text-xs mt-1 underline opacity-70 hover:opacity-100">取消</button>
                 </div>
                 <!-- 已接收：下载 + 移除按钮 + 存放信息 -->
@@ -215,6 +221,16 @@ function formatSpeed(bytesPerSec) {
   if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + ' B/s'
   if (bytesPerSec < 1048576) return (bytesPerSec / 1024).toFixed(1) + ' KB/s'
   return (bytesPerSec / 1048576).toFixed(1) + ' MB/s'
+}
+
+/** 预估剩余秒数格式化，如 "12 秒" / "2:05" */
+function formatEta(seconds) {
+  if (!seconds || seconds <= 0) return ''
+  const total = Math.round(seconds)
+  if (total < 60) return total + ' 秒'
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
 }
 
 function formatSize(bytes) {

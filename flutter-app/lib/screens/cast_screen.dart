@@ -20,10 +20,16 @@ class CastScreen extends ConsumerStatefulWidget {
   ConsumerState<CastScreen> createState() => _CastScreenState();
 }
 
-class _CastScreenState extends ConsumerState<CastScreen> {
+class _CastScreenState extends ConsumerState<CastScreen>
+    with WidgetsBindingObserver {
+  /// 无障碍服务真实状态：unknown | enabled | settings_only | disabled
+  String _accessibilityState = 'unknown';
+  bool _checkingAccessibility = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // 进入页面时刷新设备列表，并重置投屏状态为非投屏中
     Future.microtask(() {
       ref.read(deviceProvider.notifier).fetchDeviceList();
@@ -32,7 +38,38 @@ class _CastScreenState extends ConsumerState<CastScreen> {
       if (castState.connectionState == 'disconnected' && castState.isCasting) {
         ref.read(castProvider.notifier).stopCasting();
       }
+      _refreshAccessibilityStatus();
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// 从系统设置页返回 App 时自动重新检测无障碍状态并刷新 UI
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshAccessibilityStatus();
+    }
+  }
+
+  /// 重新检测无障碍服务是否真正生效
+  Future<void> _refreshAccessibilityStatus() async {
+    if (_checkingAccessibility) return;
+    if (!mounted) return;
+    setState(() => _checkingAccessibility = true);
+    try {
+      final s = await RemoteControlService().accessibilityState();
+      if (!mounted) return;
+      setState(() => _accessibilityState = s);
+    } catch (_) {
+      if (mounted) setState(() => _accessibilityState = 'unknown');
+    } finally {
+      if (mounted) setState(() => _checkingAccessibility = false);
+    }
   }
 
   @override
@@ -119,6 +156,95 @@ class _CastScreenState extends ConsumerState<CastScreen> {
     );
   }
 
+  /// 无障碍服务状态卡片
+  ///
+  /// 三态必须与「能否真正派发手势」一致：
+  ///  - enabled        实例已绑定，远程控制可用
+  ///  - settings_only  设置里开着但实例未绑定（未生效）→ 引导关闭再重新打开
+  ///  - disabled       未开启 → 一键跳转系统设置并定位到本 App
+  Widget _buildAccessibilityCard(ThemeData theme) {
+    final Color color;
+    final IconData icon;
+    final String title;
+    final String desc;
+    switch (_accessibilityState) {
+      case 'enabled':
+        color = Colors.green;
+        icon = Icons.check_circle;
+        title = '无障碍服务：已生效';
+        desc = 'Web 端可远程触控手机';
+      case 'settings_only':
+        color = Colors.orange;
+        icon = Icons.warning_amber_rounded;
+        title = '无障碍服务：已开启但未生效';
+        desc = '请到「设置 → 无障碍」把 AI-Cast-Hub 关闭再重新打开一次';
+      case 'disabled':
+        color = Colors.redAccent;
+        icon = Icons.error_outline;
+        title = '无障碍服务：未开启';
+        desc = '未开启时只能投屏，Web 端无法远程触控';
+      default:
+        color = Colors.grey;
+        icon = Icons.help_outline;
+        title = '无障碍服务：检测中…';
+        desc = '正在确认服务是否真正可用';
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color, size: 22),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(color: color, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                if (_checkingAccessibility)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              desc,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                FilledButton.icon(
+                  onPressed: () async {
+                    await RemoteControlService().openAccessibilitySettings();
+                  },
+                  icon: const Icon(Icons.settings_accessibility, size: 18),
+                  label: const Text('前往开启无障碍模式'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _refreshAccessibilityStatus,
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: const Text('重新检测'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 投屏控制视图
   Widget _buildControlView(
     dynamic castState,
@@ -145,6 +271,12 @@ class _CastScreenState extends ConsumerState<CastScreen> {
               ),
             ),
           ),
+        ),
+        const SizedBox(height: 16),
+        // 无障碍服务状态 + 前往开启入口（远程触控的唯一前置条件）
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _buildAccessibilityCard(theme),
         ),
         const SizedBox(height: 16),
         // 连接状态指示器

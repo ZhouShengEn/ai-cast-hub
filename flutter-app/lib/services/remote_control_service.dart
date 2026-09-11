@@ -346,24 +346,72 @@ class RemoteControlService {
     return diag['settingsEnabled'] == true;
   }
 
-  /// 采集一份状态快照，供上层通过 DataChannel 上报给 Web 端做 UI 提示
+  /// 无障碍服务真实状态快照
   ///
-  /// 关键：`accessibilityEnabled` 取「服务实例已绑定(connected)」而非宽松的
-  /// 「设置里已开启」。只有 connected 为真手势才可能派发成功；若沿用宽松判定，
-  /// Web 端会以为已开启而不显示警示条，用户点击后只收到一句笼统的失败提示。
+  /// - [connectedOrSettings]: 服务实例已绑定（可用）或仅系统设置已开启
+  /// - [accessibilityEnabled] 严格取「实例已绑定(connected)」——只有它为真时
+  ///   dispatchGesture 才可能派发成功，避免 Web 端显示「已开启」却点了没反应。
+  /// - 分辨率绝不为 0：原生取不到时用 Flutter 窗口物理像素兜底，
+  ///   否则 Web 端按 0 宽高换算坐标会全部落在 (0,0)，看起来像「触控失效」。
   Future<Map<String, dynamic>> getStatus() async {
     final diag = await getControlDiagnostics();
-    final connected = diag['connected'] == true;
+    var connected = diag['connected'] == true;
+    var width = (diag['screenWidth'] as num?)?.toInt() ?? 0;
+    var height = (diag['screenHeight'] as num?)?.toInt() ?? 0;
+
+    if (width <= 0 || height <= 0) {
+      final fallback = _fallbackScreenSize();
+      width = fallback['width']!;
+      height = fallback['height']!;
+    }
+
+    // 服务实例未绑定时，再补一次宽松探测（部分 ROM 的实例绑定有延迟），
+    // 但 accessibilityEnabled 仍只认 connected，避免「已开启但未生效」的误报。
+    if (!connected) {
+      try {
+        final enabledInSettings = await isEnabledInSettings();
+        if (enabledInSettings) {
+          final retry =
+              await _channel.invokeMethod<Map<dynamic, dynamic>>(
+            'getControlDiagnostics',
+          );
+          if (retry != null && retry['connected'] == true) {
+            connected = true;
+          }
+        }
+      } catch (_) {
+        // 探测失败不影响本次上报
+      }
+    }
+
     _isEnabled = connected;
     _isServiceRunning = connected;
     return <String, dynamic>{
       'accessibilityEnabled': connected,
       'settingsEnabled': diag['settingsEnabled'] == true,
       'state': diag['state'] ?? 'unknown',
-      'screenWidth': diag['screenWidth'] ?? 0,
-      'screenHeight': diag['screenHeight'] ?? 0,
+      'screenWidth': width,
+      'screenHeight': height,
+      'displayId': diag['displayId'] ?? -1,
+      if ((diag['lastError'] as String?)?.isNotEmpty == true)
+        'lastError': diag['lastError'],
       'platform': defaultTargetPlatform.name,
     };
+  }
+
+  /// 原生拿不到屏幕尺寸时的兜底：取 Flutter 窗口的物理像素
+  Map<String, int> _fallbackScreenSize() {
+    try {
+      final dispatcher = WidgetsBinding.instance.platformDispatcher;
+      final size = dispatcher.implicitView?.physicalSize ??
+          (dispatcher.views.isNotEmpty ? dispatcher.views.first.physicalSize : null);
+      if (size != null && size.width > 0 && size.height > 0) {
+        return {'width': size.width.round(), 'height': size.height.round()};
+      }
+    } catch (_) {
+      // 兜底失败则保持 0
+    }
+    return {'width': 0, 'height': 0};
   }
 
   /// 投屏结束时释放原生手势运行态（未抬起的触点等）
@@ -375,6 +423,17 @@ class RemoteControlService {
     } on MissingPluginException catch (e) {
       _rcLog('原生通道不可用: ${e.message}', level: LogLevel.warn);
     }
+  }
+
+  /// 无障碍服务三态，供 UI 直接展示：
+  /// - enabled：服务实例已绑定，远程控制真正可用
+  /// - settings_only：系统设置已开启，但实例未绑定（未生效）
+  /// - disabled：未开启
+  Future<String> accessibilityState() async {
+    final diag = await getControlDiagnostics();
+    if (diag['connected'] == true) return 'enabled';
+    if (diag['settingsEnabled'] == true) return 'settings_only';
+    return 'disabled';
   }
 
   Future<void> openAccessibilitySettings() async {

@@ -72,6 +72,21 @@ async function onDeviceBound(msg) {
   } catch (_) {}
 }
 
+/**
+ * 收到自动重连通知（设备重新上线，后端按持久化的绑定关系自动恢复配对）
+ *
+ * 无需用户任何操作：App 端只要重新连上 WS（已通过传输密钥鉴权），
+ * 后端就会向双方推送本事件，Web 端据此把「待重连」改回「在线」。
+ */
+function onDeviceRebind(msg) {
+  const payload = msg?.payload || {}
+  console.log('[App] 收到 device_rebind:', payload)
+  if (!payload.deviceUuid) return
+  deviceStore.applyRebind(payload)
+  const name = payload.deviceName || '设备'
+  showToast(`「${name}」已重新连接，绑定自动恢复`, 'success')
+}
+
 /** 收到设备解绑通知 */
 async function onDeviceUnbound(msg) {
   console.log('[App] 收到设备解绑通知:', msg)
@@ -131,6 +146,7 @@ onMounted(async () => {
   onMessage('device_bound', onDeviceBound)
   onMessage('device_unbound', onDeviceUnbound)
   onMessage('device_status', onDeviceStatus)
+  onMessage('device_rebind', onDeviceRebind)
   wsConnect()
 
   // 全局启动消息通道监听（无论是否在消息页面都能收到消息）
@@ -144,6 +160,7 @@ onUnmounted(() => {
   offMessage('device_bound', onDeviceBound)
   offMessage('device_unbound', onDeviceUnbound)
   offMessage('device_status', onDeviceStatus)
+  offMessage('device_rebind', onDeviceRebind)
   disconnectMessageChannel()
   wsDisconnect()
   uiStore.unbindViewportListener()

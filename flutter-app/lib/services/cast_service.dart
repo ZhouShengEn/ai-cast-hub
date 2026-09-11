@@ -84,6 +84,12 @@ class CastService {
   /// 当前投屏会话
   CastSession? get currentSession => _currentSession;
 
+  /// 视频帧看门狗：连接建立后若持续无帧输出则判定黑屏并尝试自愈
+  Timer? _frameWatchTimer;
+  int _lastFramesEncoded = -1;
+  DateTime _lastFrameProgressAt = DateTime.now();
+  int _frameRetryCount = 0;
+
   StreamSubscription? _dcSubscription;
   Future<void>? _cleanupFuture;
 
@@ -454,6 +460,13 @@ class CastService {
           await _webrtc.handleAnswer(payload['sdp'] as String);
           _updateSessionStatus('connected');
           _castLog('✅ 投屏连接已建立!', level: LogLevel.info);
+          // 投屏建立后立刻做三件事：
+          // 1) 强制重新校验无障碍服务是否真正可用，并把真实状态推给 Web 端
+          //    （避免「显示已开启、点了没反应」的误导）
+          // 2) 启动视频帧看门狗，5 秒无帧即判定黑屏并自愈
+          // 3) 屏幕模式下自动开启系统内录
+          unawaited(_reportRemoteControlStatus());
+          _startVideoFrameWatch();
           // 投屏建立后自动开启系统音频采集（用户仍需在手机上确认授权弹窗）。
           //
           // 仅【屏幕投屏】模式才开：摄像头模式走的是麦克风（getUserMedia 的 audio 约束），
@@ -580,6 +593,106 @@ class CastService {
         if (reason != null) 'reason': reason,
       },
     });
+  }
+
+  // ---- 黑屏自愈：视频帧看门狗 ----
+
+  /// 启动看门狗：每 2 秒采样一次 framesEncoded
+  void _startVideoFrameWatch() {
+    _frameWatchTimer?.cancel();
+    _lastFramesEncoded = -1;
+    _lastFrameProgressAt = DateTime.now();
+    _frameRetryCount = 0;
+    _frameWatchTimer =
+        Timer.periodic(const Duration(seconds: 2), (_) => _checkVideoFrames());
+  }
+
+  void _stopVideoFrameWatch() {
+    _frameWatchTimer?.cancel();
+    _frameWatchTimer = null;
+  }
+
+  /// 5 秒内帧数无增长 → 判定黑屏：上报 Web 并逐级自愈
+  Future<void> _checkVideoFrames() async {
+    if (_isDisposed || _frameWatchTimer == null) return;
+    final frames = await _webrtc.getVideoFramesEncoded();
+    // 读不到统计（平台不支持）时不误报
+    if (frames == null) return;
+
+    if (_lastFramesEncoded < 0 || frames > _lastFramesEncoded) {
+      if (_lastFramesEncoded >= 0 && frames > _lastFramesEncoded) {
+        _frameRetryCount = 0; // 恢复出帧，重置自愈计数
+      }
+      _lastFramesEncoded = frames;
+      _lastFrameProgressAt = DateTime.now();
+      return;
+    }
+
+    if (DateTime.now().difference(_lastFrameProgressAt) <
+        const Duration(seconds: 5)) {
+      return;
+    }
+
+    _frameRetryCount++;
+    _lastFrameProgressAt = DateTime.now();
+    _castLog(
+      '⚠ 连续 5 秒无视频帧（framesEncoded=$frames），第 $_frameRetryCount 次自愈',
+      level: LogLevel.error,
+    );
+    _sendControlMessage(<String, dynamic>{
+      'type': 'video_frame_timeout',
+      'payload': <String, dynamic>{
+        'framesEncoded': frames,
+        'attempt': _frameRetryCount,
+        'captureMode': _captureMode,
+      },
+    });
+
+    try {
+      if (_frameRetryCount == 1) {
+        // 轻度自愈：重置编码参数，唤醒编码器（不打断采集）
+        await _webrtc.setVideoEncoding(
+          scaleResolutionDownBy: 1.0,
+          maxFramerate: 30,
+        );
+      } else if (_frameRetryCount == 2) {
+        // 重度自愈：重建采集轨道并替换发送轨
+        await _restartVideoTrack();
+      } else {
+        // 已尽力，停止自愈避免无限打扰用户
+        _stopVideoFrameWatch();
+      }
+    } catch (e) {
+      _castLog('黑屏自愈失败: $e', level: LogLevel.error);
+    }
+  }
+
+  /// 重建视频采集轨并替换 PeerConnection 上的发送轨
+  Future<void> _restartVideoTrack() async {
+    _castLog('重建视频轨（黑屏自愈）...', level: LogLevel.info);
+    webrtc.MediaStream? stream;
+    try {
+      stream = _captureMode == 'camera'
+          ? await _cameraCapture.restartCapture(
+              frontCamera: _cameraFacing,
+              withAudio: _cameraWithAudio,
+            )
+          : await _screenCapture.restartCapture();
+    } catch (e) {
+      _castLog('重建采集失败: $e', level: LogLevel.error);
+      return;
+    }
+    if (stream == null) return;
+
+    final videoTracks =
+        stream.getTracks().where((t) => t.kind == 'video').toList();
+    if (videoTracks.isEmpty) {
+      _castLog('重建采集未获得视频轨，放弃替换', level: LogLevel.error);
+      return;
+    }
+    final ok = await _webrtc.replaceVideoTrack(videoTracks.first);
+    _castLog('视频轨替换${ok ? '成功' : '失败'}',
+        level: ok ? LogLevel.info : LogLevel.error);
   }
 
   /// 判定控制失败的具体原因。
@@ -834,6 +947,9 @@ class CastService {
   }
 
   Future<void> _performCleanup() async {
+    // 停止黑屏看门狗，避免清理后仍在检测旧连接
+    _stopVideoFrameWatch();
+
     // 释放原生手势运行态（未抬起的触点等），避免残留状态影响下次投屏
     try {
       await RemoteControlService().clearGestureState();

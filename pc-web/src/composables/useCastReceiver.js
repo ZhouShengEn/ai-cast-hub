@@ -319,6 +319,13 @@ export function useCastReceiver(externalVideoRef, options = {}) {
         // 重连恢复：重新查询手机端状态，避免音频开关 / 无障碍提示卡在旧态
         sendControl({ type: 'query_status' })
         _disconnectCount = 0
+        // 兜底绑定：onTrack 可能早于 video 元素挂载（组件异步渲染），
+        // 此时流已被丢弃、画面永久黑屏。连接就绪后补绑一次即可恢复。
+        if (remoteStream.value && videoRef.value && videoRef.value.srcObject !== remoteStream.value) {
+          console.log('[CastReceiver] connected 后补绑 video.srcObject')
+          videoRef.value.srcObject = remoteStream.value
+          try { await videoRef.value.play?.() } catch (_) { /* 自动播放被拦截属正常 */ }
+        }
       } else if (state === 'disconnected') {
         // 弱网自动降级：短时间内多次抖动 → 自动降一档画质以保流畅
         _disconnectCount++
@@ -417,6 +424,13 @@ export function useCastReceiver(externalVideoRef, options = {}) {
             currentQuality.value = msg.payload.profile
           }
           console.log('[CastReceiver] 画质已生效:', msg.payload)
+        } else if (msg.type === 'video_frame_timeout') {
+          // 手机端 5 秒无视频帧输出（黑屏）：已自动尝试恢复，这里给用户可见反馈
+          console.warn('[CastReceiver] 手机端无视频帧:', msg.payload)
+          options.showToast?.(
+            `手机端 ${msg.payload?.attempt > 1 ? '仍' : ''}未输出画面（${msg.payload?.attempt || 1} 次自动恢复中）…若持续黑屏请重新发起投屏`,
+            'warning',
+          )
         } else if (msg.type === 'control_result') {
           // 远程控制失败时按具体原因给出「可执行」的提示。
           // 笼统一句「请确认已开启无障碍服务」极具误导性——用户往往早就开了，

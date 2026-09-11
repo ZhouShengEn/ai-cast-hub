@@ -282,6 +282,60 @@ class WebrtcService {
     );
   }
 
+  /// 读取视频发送通道「已编码帧数」（用于「已连接但黑屏」检测）
+  ///
+  /// 黑屏最常见的成因是：轨道已添加、ICE 已连接，但编码器没出帧
+  /// （Surface 生命周期不同步 / 编码参数未生效）。framesEncoded 不增长即可判定。
+  /// 读不到（平台不支持）返回 null，调用方应跳过检测而不是误报。
+  Future<int?> getVideoFramesEncoded() async {
+    _ensureConnection();
+    try {
+      final reports = await _peerConnection!.getStats();
+      int total = 0;
+      bool found = false;
+      for (final r in reports) {
+        final values = r.values;
+        final isVideo =
+            values['kind'] == 'video' || values['mediaType'] == 'video';
+        final frames = values['framesEncoded'];
+        if (!isVideo || frames is! num) continue;
+        // outbound-rtp 才是本端发送统计；track 级统计通常无该字段
+        total += frames.toInt();
+        found = true;
+      }
+      return found ? total : null;
+    } catch (e) {
+      _rtcLog('读取视频帧统计失败: $e', level: LogLevel.warn);
+      return null;
+    }
+  }
+
+  /// 用新轨道替换当前视频发送轨（不重新协商，用于黑屏自愈）
+  Future<bool> replaceVideoTrack(webrtc.MediaStreamTrack track) async {
+    _ensureConnection();
+    try {
+      final senders = await _peerConnection!.getSenders();
+      for (final s in senders) {
+        if (s.track?.kind == 'video') {
+          await s.replaceTrack(track);
+          _rtcLog('视频发送轨已替换为 ${track.id}');
+          return true;
+        }
+      }
+      // 没有视频发送器（极端情况）则直接补加
+      final stream = _localStream;
+      if (stream != null) {
+        await _peerConnection!.addTrack(track, stream);
+      } else {
+        await _peerConnection!.addTrack(track);
+      }
+      return true;
+    } catch (e) {
+      _rtcLog('替换视频轨失败: $e', level: LogLevel.error);
+      return false;
+    }
+  }
+
   /// 读取当前视频轨实际分辨率高度（用于计算 scaleResolutionDownBy 的目标比例）
   /// 读不到时回退 1080，避免除零。
   Future<int> getVideoTrackHeight() async {

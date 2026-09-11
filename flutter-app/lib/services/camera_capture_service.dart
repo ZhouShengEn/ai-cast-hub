@@ -119,6 +119,23 @@ class CameraCaptureService {
     await startCapture(frontCamera: newFacing, withAudio: _withAudio);
   }
 
+  /// 重启摄像头捕获（黑屏自愈用）
+  Future<webrtc.MediaStream?> restartCapture({
+    bool frontCamera = true,
+    bool withAudio = true,
+  }) async {
+    try {
+      await stopCapture();
+      return await startCapture(
+        frontCamera: frontCamera,
+        withAudio: withAudio,
+      );
+    } catch (e) {
+      DebugService().error('[CameraCapture] 重启捕获失败: $e');
+      return null;
+    }
+  }
+
   /// 停止摄像头捕获
   Future<void> stopCapture() async {
     if (!_isCapturing) return;

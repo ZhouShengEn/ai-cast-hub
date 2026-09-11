@@ -24,6 +24,10 @@ class ChatMessage {
   final double progress;            // 传输进度 0.0-1.0
   /// 实时传输速率（字节/秒）。仅传输中有效，完成后置 null。
   final double? speed;
+  /// 已接收/已发送字节数（用于展示「3.2 MB / 10.0 MB」）
+  final int? transferredBytes;
+  /// 按当前速率预估的剩余秒数（速率为 0 时为 null）
+  final double? etaSeconds;
   final bool isFromMe;              // 是否自己发送的
   final DateTime timestamp;
 
@@ -40,6 +44,8 @@ class ChatMessage {
     this.filePath,
     this.progress = 0.0,
     this.speed,
+    this.transferredBytes,
+    this.etaSeconds,
     this.isFromMe = true,
     required this.timestamp,
   });
@@ -51,6 +57,33 @@ class ChatMessage {
     if (s < 1024) return '${s.toStringAsFixed(0)} B/s';
     if (s < 1024 * 1024) return '${(s / 1024).toStringAsFixed(1)} KB/s';
     return '${(s / 1024 / 1024).toStringAsFixed(1)} MB/s';
+  }
+
+  /// 已传输字节 + 总大小，如 "3.2 MB / 10.0 MB"
+  String get transferredLabel {
+    final done = transferredBytes;
+    if (done == null) return fileSizeFormatted;
+    return '${_fmtBytes(done)} / $fileSizeFormatted';
+  }
+
+  /// 预估剩余时间，如 "剩余 12 秒" / "剩余 2 分 05 秒"
+  String? get etaLabel {
+    final eta = etaSeconds;
+    if (eta == null || eta <= 0 || !isTransferring) return null;
+    final total = eta.round();
+    if (total < 60) return '剩余 $total 秒';
+    final m = total ~/ 60;
+    final s = total % 60;
+    return '剩余 $m 分 ${s.toString().padLeft(2, '0')} 秒';
+  }
+
+  static String _fmtBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   bool get isText => type == MessageType.text;
@@ -94,6 +127,8 @@ class ChatMessage {
     String? filePath,
     double? progress,
     double? speed,
+    int? transferredBytes,
+    double? etaSeconds,
     bool? isFromMe,
     DateTime? timestamp,
   }) {
@@ -109,9 +144,11 @@ class ChatMessage {
       fileMimeType: fileMimeType ?? this.fileMimeType,
       filePath: filePath ?? this.filePath,
       progress: progress ?? this.progress,
-      // 注意：speed 需要能被显式置 null（传输结束后清空），
+      // 注意：speed / etaSeconds 需要能被显式置 null（传输结束后清空），
       // 因此这里不能写成 `speed ?? this.speed`。
       speed: speed,
+      transferredBytes: transferredBytes ?? this.transferredBytes,
+      etaSeconds: etaSeconds,
       isFromMe: isFromMe ?? this.isFromMe,
       timestamp: timestamp ?? this.timestamp,
     );

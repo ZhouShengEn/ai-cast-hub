@@ -53,11 +53,70 @@ function broadcastDeviceStatus(affectedUuid, status) {
       for (const p of paired) {
         sendToDevice(p.device_uuid, {
           type: 'device_status',
-          payload: { deviceUuid: affectedUuid, status },
+          payload: {
+            deviceUuid: affectedUuid,
+            status,
+            // 离线时告诉对端「绑定仍在，等待重连」，Web 端据此显示“待重连”
+            // 而不是把设备当成已解绑（P1-4）
+            bound: true,
+          },
         });
       }
     })
     .catch(() => {});
+}
+
+/**
+ * 设备（重新）上线后的自动重连绑定（P1-4）
+ *
+ * 后端持久化了「设备 UUID ↔ 传输密钥 ↔ 绑定关系」，设备下线不会删除绑定。
+ * 当设备重新建立 WebSocket 连接（已通过 transferKey 鉴权）时，
+ * 后端主动向双方推送 device_rebind，App / Web 无需任何手动操作即可恢复配对。
+ *
+ * 安全性：密钥校验发生在 WS 连接阶段（ws/index.js 认证分支），
+ * 密钥不匹配的连接会被 4003 关闭，根本走不到这里，天然不会误绑定。
+ *
+ * @param {string} deviceUuid - 刚上线的设备 UUID
+ */
+async function autoRebindOnConnect(deviceUuid) {
+  try {
+    const paired = await DeviceModel.getPairedDevices(deviceUuid);
+    const self = await DeviceModel.findByUuid(deviceUuid);
+    for (const p of paired) {
+      const boundAt = DeviceModel.getBoundAt(deviceUuid, p.device_uuid);
+      // 通知刚上线的设备：你与 p 仍处于绑定关系
+      sendToDevice(deviceUuid, {
+        type: 'device_rebind',
+        payload: {
+          deviceUuid: p.device_uuid,
+          deviceName: p.device_name,
+          platform: p.platform,
+          isOnline: DeviceModel.isLive(p.device_uuid),
+          boundAt,
+          reason: 'auto',
+        },
+      });
+      // 通知对端：该设备已重新上线
+      sendToDevice(p.device_uuid, {
+        type: 'device_rebind',
+        payload: {
+          deviceUuid,
+          deviceName: self ? self.device_name : undefined,
+          platform: self ? self.platform : undefined,
+          isOnline: true,
+          boundAt,
+          reason: 'auto',
+        },
+      });
+    }
+    if (paired.length > 0) {
+      logger.info(
+        `[WS] 设备 ${deviceUuid} 重新上线，已自动恢复 ${paired.length} 条绑定关系 (device_rebind)`,
+      );
+    }
+  } catch (e) {
+    logger.warn(`[WS] 自动重连处理失败: ${e.message}`);
+  }
 }
 
 /**
@@ -71,6 +130,8 @@ function handleDeviceConnected(deviceUuid) {
   }
   DeviceModel.markConnected(deviceUuid);
   broadcastDeviceStatus(deviceUuid, 'online');
+  // 设备重新上线：匹配持久化的绑定关系并推送重连指令（P1-4）
+  autoRebindOnConnect(deviceUuid);
   // 设备上线后补投离线期间未 ACK 的防盗指令（P1-10）
   try {
     resendPendingCommands(deviceUuid, (uuid, msg) => sendToDevice(uuid, msg));

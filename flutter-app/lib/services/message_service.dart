@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
 import '../models/chat_message.dart';
+import '../utils/partial_file.dart';
 import 'websocket_service.dart';
 import 'webrtc_service.dart';
 import 'debug_service.dart';
@@ -42,6 +43,13 @@ class _PendingSend {
     required this.totalChunks,
     required this.bytes,
   });
+}
+
+/// 速率采样点：某一时刻的累计字节数
+class _RatePoint {
+  final DateTime at;
+  final int bytes;
+  _RatePoint(this.at, this.bytes);
 }
 
 class MessageService {
@@ -80,6 +88,9 @@ class MessageService {
 
   // ---- 断点续传：待发送文件缓存（中断后保留） ----
   final Map<String, _PendingSend> _pendingSends = {};
+
+  // ---- 已取消的传输：取消后仍可能收到在途分片，必须丢弃而不是重建会话 ----
+  final Set<String> _cancelledTransfers = {};
 
   // ---- 传输超时计时器（30 分钟） ----
   final Map<String, Timer> _fileTransferTimers = {};
@@ -806,9 +817,32 @@ class MessageService {
     _pendingSends.remove(fileId);
   }
 
+  /// 取消「发送中」的传输：清理本地资源 + 下发取消指令 + 同步 UI
+  ///
+  /// 之前只发一条 cancel 指令，本地 _pendingSends 与定时器都不清理，
+  /// 导致重连后又被当成中断任务自动续传（重复生成任务、重复上报进度）。
   void cancelSend(String id) {
     final dc = _webrtc.dataChannel;
-    if (dc != null) dc.send(webrtc.RTCDataChannelMessage(jsonEncode({'type': 'cancel', 'id': id})));
+    if (dc != null && dc.state == webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+      try {
+        dc.send(webrtc.RTCDataChannelMessage(
+          jsonEncode(<String, dynamic>{'type': 'cancel', 'id': id}),
+        ));
+      } catch (e) {
+        _msgLog('发送 cancel 指令失败: $e');
+      }
+    }
+    _cancelFileTimer(id);
+    _pendingSends.remove(id);
+    _fileMetas.remove(id);
+    _cancelledTransfers.add(id);
+    _clearRateState(id);
+    _msgLog('SEND 传输已取消: id=${_safeId(id)}');
+    _progressCtl.add(<String, dynamic>{
+      'id': id,
+      'progress': 0.0,
+      'cancelled': true,
+    });
   }
 
   void sendReadAll() {
@@ -829,6 +863,12 @@ class MessageService {
     final id = d['id'] as String;
     final totalChunks = d['totalChunks'] as int;
     final isResume = d['resume'] == true;
+
+    // 已取消的传输：对端可能还有在途分片，直接忽略，避免「取消后又冒出一条记录」
+    if (_cancelledTransfers.contains(id)) {
+      _msgLog('RECV 忽略已取消传输的 file_start: id=${_safeId(id)}');
+      return;
+    }
 
     // 如果是续传且已有缓冲，复用现有缓冲
     if (isResume && _fileMetas.containsKey(id)) {
@@ -857,6 +897,7 @@ class MessageService {
       'totalChunks': totalChunks,
       'mimeType': d['fileMimeType'] as String? ?? 'application/octet-stream',
       'chunksReceived': 0,
+      'bytesReceived': 0,
     };
     _startFileTimer(id);
     _incomingCtl.add(ChatMessage(
@@ -877,6 +918,9 @@ class MessageService {
 
   void _handleChunk(Map<String, dynamic> d) {
     final id = d['id'] as String;
+    // 取消后到达的在途分片一律丢弃：否则会重建 meta 并重新落一条记录，
+    // 这正是「Web 端取消后 App 端出现空白文件」的成因。
+    if (_cancelledTransfers.contains(id)) return;
     final meta = _fileMetas[id];
     if (meta == null) {
       _msgLog('RECV ⚠ chunk 无对应 meta: id=${_safeId(id)}');
@@ -889,8 +933,13 @@ class MessageService {
     if (buf[seq] != null) {
       return;
     }
-    buf[seq] = base64Decode(d['data'] as String);
+    final chunkBytes = base64Decode(d['data'] as String);
+    buf[seq] = chunkBytes;
     meta['chunksReceived'] = (meta['chunksReceived'] as int) + 1;
+    // 累计已收字节数：速率计算与「3.2 MB / 10 MB」展示都依赖它，
+    // 用实际解码后的字节数而不是 chunk 数 × 分片大小（末片通常不满）。
+    meta['bytesReceived'] =
+        (meta['bytesReceived'] as int? ?? 0) + chunkBytes.length;
 
     // 活动重置超时
     _startFileTimer(id);
@@ -904,10 +953,69 @@ class MessageService {
     final progress = rcvd / total;
     _progressCtl.add({'id': id, 'progress': progress});
 
+    // 接收速率：基于最近 1 秒的字节数滑动计算（与发送端口径一致）。
+    // 接收端此前完全没有速率统计，UI 上只能干等进度条，无法判断是否在传输。
+    _maybeReportReceiveRate(id, meta, total);
+
     // 检查是否全部接收完毕
     if (rcvd >= total) {
       _msgLog('RECV ✅ 所有chunk收齐，组装文件 id=${_safeId(id)}');
       _assembleFile(id);
+    }
+  }
+
+  /// 接收速率滑动采样：fileId -> [(时刻, 累计字节)]
+  final Map<String, List<_RatePoint>> _rateWindows = {};
+  /// 每个文件上次回写 UI 的时刻（节流，避免每片都触发重建）
+  final Map<String, DateTime> _rateEmitAt = {};
+
+  /// 计算并回写接收速率 / 已收字节 / 预估剩余时间
+  ///
+  /// 用最近 1 秒窗口而非「相邻两次采样」计算，可平滑单分片抖动，
+  /// 显示的速率不会像心跳一样乱跳。
+  void _maybeReportReceiveRate(
+    String id,
+    Map<String, dynamic> meta,
+    int totalChunks,
+  ) {
+    try {
+      final receivedBytes = meta['bytesReceived'] as int? ?? 0;
+      final now = DateTime.now();
+      final win = _rateWindows.putIfAbsent(id, () => <_RatePoint>[]);
+      win.add(_RatePoint(now, receivedBytes));
+      // 只保留最近 1 秒的采样点
+      final cutoff = now.subtract(const Duration(seconds: 1));
+      while (win.length > 2 && win.first.at.isBefore(cutoff)) {
+        win.removeAt(0);
+      }
+      // 采样点不足（刚开始 1 秒内）无法给出稳定速率
+      if (win.length < 2) return;
+      // 节流：每 300ms 最多回写一次 UI
+      final lastEmit = _rateEmitAt[id];
+      if (lastEmit != null &&
+          now.difference(lastEmit) < _speedSampleInterval) {
+        return;
+      }
+      _rateEmitAt[id] = now;
+
+      final first = win.first;
+      final last = win.last;
+      final dtMs = last.at.difference(first.at).inMilliseconds;
+      if (dtMs <= 0) return;
+      final speed = (last.bytes - first.bytes) * 1000 / dtMs;
+
+      final fileSize = (meta['fileSize'] as num?)?.toInt() ?? 0;
+      final remaining = (fileSize - receivedBytes).clamp(0, fileSize);
+      final eta = speed > 0 ? remaining / speed : 0.0;
+
+      _progressCtl.add(<String, dynamic>{
+        'id': id,
+        'speed': speed,
+        'receivedBytes': receivedBytes,
+        'etaSeconds': eta,
+      });
+    } catch (e) {
+      _msgLog('计算接收速率失败: $e');
     }
   }
 
@@ -920,6 +1028,7 @@ class MessageService {
   /// 组装文件并触发下载
   void _assembleFile(String id) {
     _cancelFileTimer(id);
+    _clearRateState(id);
     final meta = _fileMetas.remove(id);
     if (meta == null) return;
     final buf = meta['buffer'] as List<Uint8List?>;
@@ -929,7 +1038,20 @@ class MessageService {
     for (final c in buf) {
       if (c != null) totalBytes += c.length;
     }
-    if (totalBytes == 0) return;
+    if (totalBytes == 0) {
+      // 一字节都没收到（多为对端取消 / 连接中断）：
+      // 绝不能组装出 0 字节的空白文件，直接按取消处理并清理。
+      _msgLog('RECV ⚠ 无有效数据，放弃组装: id=${_safeId(id)}',
+          level: LogLevel.warn);
+      _cancelledTransfers.add(id);
+      _deletePartialFile(meta);
+      _progressCtl.add(<String, dynamic>{
+        'id': id,
+        'progress': 0.0,
+        'cancelled': true,
+      });
+      return;
+    }
 
     final merged = Uint8List(totalBytes);
     int off = 0;
@@ -1027,9 +1149,17 @@ class MessageService {
     _cancelFileTimer(fileId);
     _fileTransferTimers[fileId] = Timer(_transferTimeout, () {
       _msgLog('传输超时: ${_safeId(fileId)}');
+      // 超时即视为中断：清理缓冲与不完整数据，避免残留半成品文件
+      _deletePartialFile(_fileMetas[fileId]);
       _pendingSends.remove(fileId);
       _fileMetas.remove(fileId);
+      _clearRateState(fileId);
       _fileTransferTimers.remove(fileId);
+      _progressCtl.add(<String, dynamic>{
+        'id': fileId,
+        'progress': 0.0,
+        'interrupted': true,
+      });
     });
   }
 
@@ -1039,15 +1169,66 @@ class MessageService {
     _fileTransferTimers.remove(fileId);
   }
 
+  /// 清理某次传输的速率采样状态（完成 / 取消 / 超时 / 断开时调用）
+  void _clearRateState(String id) {
+    _rateWindows.remove(id);
+    _rateEmitAt.remove(id);
+  }
+
+  /// 取消「接收中」的传输（由 Web 端 cancel 指令触发，或本地主动取消）
+  ///
+  /// 关键点：
+  ///  1. 立即停止接收并释放缓冲 —— 不再组装、不再落盘，杜绝空白文件
+  ///  2. 记录到 _cancelledTransfers —— 在途分片到达时直接丢弃，防止会话复活
+  ///  3. 通过 progress 流通知 UI 标记「已取消」，**不再往消息流塞空白文件记录**
+  ///  4. 回传 cancel_ack，让 Web 端确认两端状态已一致
   void _cancelReceive(String id) {
     _cancelFileTimer(id);
     _pendingSends.remove(id);
-    _fileMetas.remove(id);
-    _incomingCtl.add(ChatMessage(
-      id: id, roomId: _roomId ?? '', type: MessageType.file,
-      status: MessageStatus.cancelled, fileName: '', isFromMe: false,
-      timestamp: DateTime.now(),
-    ));
+    final meta = _fileMetas.remove(id);
+    _cancelledTransfers.add(id);
+    _clearRateState(id);
+    // 防御性清理：若该传输曾写过临时/不完整文件，立即删除
+    _deletePartialFile(meta);
+
+    _msgLog('RECV 传输已取消: id=${_safeId(id)}');
+    _progressCtl.add(<String, dynamic>{
+      'id': id,
+      'progress': 0.0,
+      'cancelled': true,
+    });
+    _sendCancelAck(id);
+  }
+
+  /// 回传取消确认（供 Web 端确认接收端已清理，两端状态同步）
+  void _sendCancelAck(String id) {
+    final dc = _webrtc.dataChannel;
+    if (dc == null || dc.state != webrtc.RTCDataChannelState.RTCDataChannelOpen) {
+      return;
+    }
+    try {
+      dc.send(webrtc.RTCDataChannelMessage(
+        jsonEncode(<String, dynamic>{'type': 'cancel_ack', 'id': id}),
+      ));
+    } catch (e) {
+      _msgLog('回传 cancel_ack 失败: $e');
+    }
+  }
+
+  /// 删除本地残留的不完整文件（若有）
+  ///
+  /// 当前接收链路在内存缓冲中完成组装后才落盘，正常情况下不会有半成品文件；
+  /// 但保留该兜底，可覆盖「边收边写」的后续实现或异常中断留下的残file。
+  void _deletePartialFile(Map<String, dynamic>? meta) {
+    if (meta == null) return;
+    final path = meta['partialPath'] as String?;
+    if (path == null || path.isEmpty) return;
+    try {
+      deletePartialFile(path);
+      _msgLog('RECV 已删除不完整文件: $path');
+    } catch (e) {
+      _msgLog('RECV 删除不完整文件失败: $e');
+    }
   }
 
   String _mime(String n) {
@@ -1082,6 +1263,15 @@ class MessageService {
     _remoteDescSet = false;
     // 注意：不清理 _fileMetas、_pendingSends、_fileTransferTimers
     // 这些数据保留以便重连后断点续传
+    //
+    // 但必须把「进行中」的传输在 UI 上标记为「传输中断」并丢弃不完整数据：
+    // 否则列表里会留下一个永远停在 30% 的幽灵任务，用户也无从判断是否需要重传。
+    for (final id in _fileMetas.keys) {
+      _progressCtl.add(<String, dynamic>{'id': id, 'progress': 0.0, 'interrupted': true});
+    }
+    for (final id in _pendingSends.keys) {
+      _progressCtl.add(<String, dynamic>{'id': id, 'progress': 0.0, 'interrupted': true});
+    }
     onDisconnected?.call();
     _msgLog('已断开（保留文件传输状态以便续传）');
   }
@@ -1094,6 +1284,7 @@ class MessageService {
     }
     _fileTransferTimers.clear();
     _pendingSends.clear();
+    _cancelledTransfers.clear();
     _fileMetas.clear();
     _incomingCtl.close();
     _progressCtl.close();

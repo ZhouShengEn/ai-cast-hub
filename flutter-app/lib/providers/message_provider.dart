@@ -113,11 +113,17 @@ class MessageNotifier extends StateNotifier<MessageState> {
       // 速率更新：速率事件只带 speed 不带 progress，
       // 必须在下面的 progress 判空之前单独处理，否则会被直接丢弃。
       final sp = (d['speed'] as num?)?.toDouble();
-      if (sp != null) {
+      final receivedBytes = (d['receivedBytes'] as num?)?.toInt();
+      final eta = (d['etaSeconds'] as num?)?.toDouble();
+      if (sp != null || receivedBytes != null) {
         final si = state.messages.indexWhere((m) => m.id == id);
         if (si >= 0) {
           final sl = [...state.messages];
-          sl[si] = sl[si].copyWith(speed: sp);
+          sl[si] = sl[si].copyWith(
+            speed: sp ?? sl[si].speed,
+            transferredBytes: receivedBytes ?? sl[si].transferredBytes,
+            etaSeconds: eta ?? sl[si].etaSeconds,
+          );
           state = state.copyWith(messages: sl);
         }
         if (d['progress'] == null) return;
@@ -150,6 +156,10 @@ class MessageNotifier extends StateNotifier<MessageState> {
           newStatus = MessageStatus.failed;
         } else if (d['interrupted'] == true) {
           newStatus = MessageStatus.interrupted;
+        } else if (d['cancelled'] == true) {
+          // 对端取消 / 本地取消：标记已取消并停止速率显示。
+          // 关键：这里只更新状态、绝不新增记录，避免出现「空白文件」条目。
+          newStatus = MessageStatus.cancelled;
         } else if (d['resumed'] == true) {
           // 恢复传输：保持 sending/receiving 状态
           if (list[idx].isFromMe) {
@@ -160,12 +170,17 @@ class MessageNotifier extends StateNotifier<MessageState> {
         }
         // 传输结束后清空速率，避免界面上残留一个不再变化的旧值
         final finished = d['completed'] == true || d['sent'] == true ||
-            d['failed'] == true || d['interrupted'] == true;
+            d['failed'] == true || d['interrupted'] == true ||
+            d['cancelled'] == true;
         list[idx] = list[idx].copyWith(
-          progress: p,
+          // 取消时沿用最后已知进度，不要跳回 0%（取消事件不带真实进度）
+          progress: d['cancelled'] == true ? list[idx].progress : p,
           status: newStatus,
           filePath: savedPath ?? list[idx].filePath,
+          transferredBytes:
+              receivedBytes ?? (d['completed'] == true ? list[idx].fileSize : null) ?? list[idx].transferredBytes,
           speed: finished ? null : (sp ?? list[idx].speed),
+          etaSeconds: finished ? null : (eta ?? list[idx].etaSeconds),
         );
         state = state.copyWith(messages: list);
       }
