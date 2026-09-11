@@ -20,7 +20,7 @@
 set -uo pipefail
 
 # ---------- 配置 ----------
-PROJECT_DIR="${1:-${PROJECT_DIR:-/opt/workspace/ai_cast_hub}}"
+PROJECT_DIR="${1:-${PROJECT_DIR:-/opt/workspace/ai-cast-hub}}"
 SERVER_NAME="ai-cast-server"
 FRONTEND_DIR="$PROJECT_DIR/pc-web"
 LOG_PREFIX="[restart]"
