@@ -333,7 +333,13 @@ class MessageNotifier extends StateNotifier<MessageState> {
   }
 
   @override
-  void dispose() { _disposed = true; _svc?.dispose(); super.dispose(); }
+  void dispose() {
+    _disposed = true;
+    // 消息服务是全局单例且常驻后台（Web 端要能主动连上），
+    // 页面退出只解绑 UI 回调，绝不能销毁服务与 WS 监听。
+    _svc?.detachUi();
+    super.dispose();
+  }
 }
 
 final messageProvider = StateNotifierProvider<MessageNotifier, MessageState>((ref) => MessageNotifier());

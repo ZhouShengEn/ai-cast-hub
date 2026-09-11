@@ -25,9 +25,11 @@ export const useMonitorStore = defineStore('monitor', () => {
   const stats = computed(() => {
     const s = services.value
     const running = s.filter((x) => x.running).length
-    const stopped = s.filter((x) => !x.running && x.status !== 'error').length
-    const error = s.filter((x) => x.status === 'error' || (x.running && x.nginxLink && x.portLocked && false)).length
-    return { total: s.length, running, stopped, error: s.length - running - stopped < 0 ? 0 : s.length - running - stopped }
+    const error = s.filter(
+      (x) => x.status === 'error' || x.status === 'start_failed' || x.status === 'crashed',
+    ).length
+    const stopped = Math.max(0, s.length - running - error)
+    return { total: s.length, running, stopped, error }
   })
 
   const ws = useMonitorWs()
@@ -58,6 +60,26 @@ export const useMonitorStore = defineStore('monitor', () => {
     ws.onMessage('services_update', (p) => { services.value = p.services || []; connected.value = true })
     ws.onMessage('system_update', (p) => { system.value = p.system })
     ws.onMessage('nginx_links_update', (p) => { nginxLinks.value = p.nginxLinks || [] })
+    ws.onMessage('service_status', (p) => {
+      // 启停 / 崩溃等瞬时状态变化立即合并，无需等下一个轮询周期
+      if (!p?.projectPath && !p?.id) return
+      services.value = services.value.map((s) =>
+        (s.path === p.projectPath || s.id === p.id)
+          ? {
+              ...s,
+              status: p.status,
+              statusText: p.statusText,
+              running: p.running,
+              listening: p.listening,
+              health: p.health,
+              pid: p.pid,
+              port: p.port ?? s.port,
+              proxyCheck: p.proxyCheck ?? s.proxyCheck,
+            }
+          : s,
+      )
+      connected.value = true
+    })
     ws.onMessage('alert', (p) => pushAlert(p))
     ws.onMessage('log_line', (p) => {
       const arr = logs.value[p.projectId] || []

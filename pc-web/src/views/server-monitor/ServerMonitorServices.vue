@@ -67,7 +67,12 @@
           </div>
 
           <!-- 状态 -->
-          <StatusBadge :running="svc.running" :error="svc.status === 'error'" :port-locked="svc.portLocked" :text="badgeText(svc)" />
+          <StatusBadge
+            :running="svc.running"
+            :error="svc.status === 'error' || svc.status === 'start_failed' || svc.status === 'crashed'"
+            :starting="svc.status === 'starting'"
+            :port-locked="svc.portLocked"
+            :text="badgeText(svc)" />
 
           <!-- 端口 / 时长 -->
           <div class="text-sm text-gray-500 hidden md:block w-40">
@@ -83,7 +88,9 @@
 
           <!-- 操作 -->
           <div class="flex items-center gap-2 ml-auto">
-            <button v-if="!svc.running" :disabled="!isAdmin" class="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs hover:bg-green-700 disabled:opacity-40" @click="doStart(svc)">启动</button>
+            <button v-if="!svc.running" :disabled="!isAdmin || svc.status === 'starting'" class="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs hover:bg-green-700 disabled:opacity-40" @click="doStart(svc)">
+              {{ svc.status === 'starting' ? '启动中...' : '启动' }}
+            </button>
             <button v-else :disabled="!isAdmin" class="px-3 py-1.5 rounded-lg bg-gray-200 text-gray-700 text-xs hover:bg-gray-300 disabled:opacity-40" @click="doStop(svc)">停止</button>
             <button :disabled="!isAdmin || !svc.running" class="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs hover:bg-amber-600 disabled:opacity-40" @click="doRestart(svc)">重启</button>
             <router-link :to="`/monitor/service/${svc.id}`" class="px-3 py-1.5 rounded-lg border border-surface-200 text-xs text-gray-600 hover:bg-surface-50">详情</router-link>
@@ -129,8 +136,17 @@ function toggle(id) {
   collapsed.value = s
 }
 function badgeText(svc) {
-  if (svc.status === 'error') return '异常'
-  return svc.running ? '运行中' : '已停止'
+function badgeText(svc) {
+  // 细分状态优先：启动中 / 启动失败 / 异常退出 都要如实展示，
+  // 不能像以前那样「进程还在就算运行中、进程没了就显示未启动」。
+  switch (svc.status) {
+    case 'starting': return '启动中'
+    case 'start_failed': return '启动失败'
+    case 'crashed': return '异常退出'
+    case 'error': return '异常'
+    default: return svc.running ? '运行中' : '已停止'
+  }
+}
 }
 function gitInfo(svc) {
   const g = svc.git?.status ? gitLabel(svc.git.status) : { text: '-', icon: '', cls: '' }

@@ -8,6 +8,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
 import '../models/chat_message.dart';
 import '../utils/partial_file.dart';
+import 'api_client.dart';
 import 'websocket_service.dart';
 import 'webrtc_service.dart';
 import 'debug_service.dart';
@@ -52,7 +53,18 @@ class _RatePoint {
   _RatePoint(this.at, this.bytes);
 }
 
+/// 消息服务（全局单例）
+///
+/// 必须是单例：消息通道要与 UI 解耦、常驻后台，
+/// 若每个页面 new 一个实例，各自的 WS 监听会重复处理同一条 room_invitation，
+/// 出现「两个 PeerConnection 抢同一个房间」的诡异故障。
 class MessageService {
+  static final MessageService _instance = MessageService._internal();
+
+  factory MessageService() => _instance;
+
+  MessageService._internal();
+
   final WebSocketService _ws = WebSocketService.instance;
   final WebrtcService _webrtc = WebrtcService();
 
@@ -115,6 +127,9 @@ class MessageService {
   static const Duration _speedSampleInterval = Duration(milliseconds: 300);
 
   /// 启动监听（被动接收PC端连接邀请）
+  ///
+  /// 幂等：可重复调用；App 启动后即调用，令消息通道常驻后台，
+  /// 使 Web 端在 App 处于首页 / 后台时也能主动建立消息连接（P1-5）。
   Future<void> startListening() async {
     if (_ws.connectionState != WsConnectionState.connected) {
       await _ws.connect().timeout(const Duration(seconds: 10), onTimeout: () {
@@ -123,16 +138,15 @@ class MessageService {
       });
     }
 
-    // 监听WebSocket连接状态变化，重连后自动重新注册监听
+    // 注册全局 WS 监听（幂等，重复调用不会叠加）
+    _ensureWsListening();
+
+    // 监听 WebSocket 连接状态变化：WS 重连后自动恢复消息监听与通道（异常断开自动重连）
     if (_wsStateSub == null) {
       _wsStateSub = _ws.connectionStateStream.listen((state) {
         if (state == WsConnectionState.connected) {
           _msgLog('WebSocket重连成功，重新注册消息监听');
-          if (_wsSub != null) {
-            _wsSub?.cancel();
-            _wsSub = null;
-          }
-          _wsSub = _ws.messages.listen(_onMsg);
+          _ensureWsListening();
           // 如果之前是连接状态，重连后尝试恢复连接
           if (_connected) {
             _msgLog('重连后尝试恢复消息连接');
@@ -142,15 +156,44 @@ class MessageService {
           // 检查是否有中断的文件传输需要恢复
           if (_pendingSends.isNotEmpty || _fileMetas.isNotEmpty) {
             _msgLog('检测到 ${_pendingSends.length + _fileMetas.length} 个中断的文件传输');
+            _onReconnected();
           }
         }
       });
     }
 
-    if (_wsSub != null) return;
+    _msgLog('消息通道监听已就绪（后台常驻，不依赖消息页）', level: LogLevel.info);
+  }
 
-    _msgLog('启动消息通道监听（被动模式）');
+  /// 确保已订阅全局 WS 消息（幂等）
+  void _ensureWsListening() {
+    if (_wsSub != null) return;
     _wsSub = _ws.messages.listen(_onMsg);
+  }
+
+  /// 从服务器获取 ICE 配置（STUN/TURN）
+  ///
+  /// 消息通道此前硬编码单个 Google STUN，跨 NAT / 对称型网络下经常协商失败，
+  /// 表现为「Web 端主动连接一直转圈」。改用服务端下发的 TURN 配置可显著提升成功率。
+  Future<List<Map<String, dynamic>>> _fetchIceServers() async {
+    try {
+      final data = await ApiClient.instance.get('/webrtc/config');
+      if (data is Map<String, dynamic> && data.containsKey('iceServers')) {
+        final servers = data['iceServers'] as List<dynamic>;
+        _msgLog('已从服务器获取 ICE 配置: ${servers.length} 个');
+        return servers.cast<Map<String, dynamic>>();
+      }
+    } catch (e) {
+      _msgLog('获取 ICE 配置失败，使用默认 STUN: $e', level: LogLevel.warn);
+    }
+    return [
+      {
+        'urls': [
+          'stun:stun.l.google.com:19302',
+          'stun:stun1.l.google.com:19302',
+        ],
+      },
+    ];
   }
 
   Future<void> connect(String pcDeviceId) async {
@@ -172,7 +215,8 @@ class MessageService {
     }
 
     await _webrtc.createPeerConnection({
-      'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}],
+      'iceServers': await _fetchIceServers(),
+      'sdpSemantics': 'unified-plan',
     });
 
     _webrtc.onIceCandidate((c) {
@@ -282,11 +326,41 @@ class MessageService {
       case 'room_invitation':
         _onRoomInvitation(msg);
         break;
+      case 'message_connect_request':
+        _onMessageConnectRequest(msg);
+        break;
       case 'room_closed':
       case 'peer_disconnected':
         disconnect();
         break;
     }
+  }
+
+  /// 处理 Web 端「主动连接消息」指令（P1-5）
+  ///
+  /// Web 端点击按钮后，服务端除 room_invitation 外还会下发本指令。
+  /// App 端只需确认后台消息监听已就绪并回执，无需进入消息页面。
+  void _onMessageConnectRequest(Map<String, dynamic> msg) {
+    final from = (msg['payload'] as Map<String, dynamic>?)?['fromDeviceUuid'] as String?;
+    final roomId = msg['roomId'] as String?;
+    _msgLog('收到消息连接指令: room=${_safeId(roomId)} from=${_safeId(from)}',
+        level: LogLevel.info);
+
+    // 确保后台监听已注册（App 冷启动时可能尚未注册）
+    _ensureWsListening();
+
+    // 回执：告知 Web 端 App 端消息通道可用
+    _ws.send({
+      'type': 'message_connect_ack',
+      'roomId': roomId,
+      'targetDeviceUuid': from,
+      'payload': {
+        'targetDeviceUuid': from,
+        'roomId': roomId,
+        'ready': true,
+        'alreadyConnected': _connected,
+      },
+    });
   }
 
   /// 处理来自PC端的房间邀请
@@ -319,7 +393,8 @@ class MessageService {
 
     try {
       await _webrtc.createPeerConnection({
-        'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}],
+        'iceServers': await _fetchIceServers(),
+        'sdpSemantics': 'unified-plan',
       });
 
       _webrtc.onIceCandidate((c) {
@@ -1240,6 +1315,11 @@ class MessageService {
     return m[n.split('.').last.toLowerCase()] ?? 'application/octet-stream';
   }
 
+  /// 断开当前消息会话（保持 WS 监听，Web 端可再次主动连接）
+  ///
+  /// 以前会连 _wsSub 一起取消，导致断开一次后除非重新进入消息页，
+  /// 否则 Web 端再也无法主动连上（App 收不到 room_invitation）。
+  /// 现在只销毁 WebRTC 会话，WS 监听保持常驻。
   void disconnect() {
     if (_roomId != null) _ws.send({'type': 'close_room', 'roomId': _roomId!});
     // 取消未完成的 completer
@@ -1251,10 +1331,6 @@ class MessageService {
       _peerJoinedCompleter!.completeError('连接已断开');
     }
     _peerJoinedCompleter = null;
-    _wsSub?.cancel();
-    _wsSub = null;
-    _wsStateSub?.cancel();
-    _wsStateSub = null;
     _webrtc.close();
     _roomId = null;
     _connected = false;
@@ -1273,7 +1349,20 @@ class MessageService {
       _progressCtl.add(<String, dynamic>{'id': id, 'progress': 0.0, 'interrupted': true});
     }
     onDisconnected?.call();
-    _msgLog('已断开（保留文件传输状态以便续传）');
+    _msgLog('已断开（保留文件传输状态以便续传，消息监听常驻）');
+
+    // 保证 Web 端下次发起时能再次被邀请（消息通道与 UI 解耦）
+    _ensureWsListening();
+  }
+
+  /// 页面卸载时调用：仅解绑 UI 回调，**不销毁后台消息通道**
+  ///
+  /// 消息通道常驻后台是刚需（Web 端要能主动连上），因此 UI 退出时
+  /// 绝不能 dispose 掉服务本身。
+  void detachUi() {
+    onConnected = null;
+    onDisconnected = null;
+    _msgLog('UI 已解绑，消息通道保持后台常驻');
   }
 
   void dispose() {

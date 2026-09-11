@@ -105,7 +105,7 @@ router.get('/services/external', async (req, res) => {
 router.get('/services/:id', async (req, res) => {
   const p = resolvePath(req, res); if (!p) return;
   try {
-    const status = processManager.getStatus(p);
+    const status = await processManager.getStatus(p);
     const git = await gitService.getStatus(p);
     const override = require('./projectStore').getOverrides(p);
     let nginxLink = null;

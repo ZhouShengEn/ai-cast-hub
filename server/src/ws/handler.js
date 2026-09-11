@@ -193,6 +193,20 @@ async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
         },
       }, getWsByDeviceUuid);
 
+      // 消息类房间额外下发一条「主动连接」指令（P1-5）。
+      // room_invitation 只负责邀请，但部分情况下 App 端需要一条显式指令
+      // 来确保后台消息通道已就绪（例如刚启动、监听尚未注册完成）。
+      if (roomType === 'message') {
+        sendToDevice(targetDevice, {
+          type: 'message_connect_request',
+          roomId: room.roomId,
+          payload: {
+            fromDeviceUuid: deviceUuid,
+            type: roomType,
+          },
+        }, getWsByDeviceUuid);
+      }
+
       logger.info(`[WS Handler] 房间创建: roomId=${room.roomId} type=${roomType} 通知目标设备 ${targetDevice} ${notified ? '成功(在线)' : '失败(离线)'}`);
 
       return {
@@ -405,6 +419,24 @@ async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
     // ---- 心跳 ----
     case 'ping':
       return { type: 'pong', roomId: null, payload: { timestamp: Date.now() } };
+
+    // ---- 消息通道：App 端对 message_connect_request 的回执（P1-5）----
+    // 转发给发起方（Web 端），让其知道 App 端后台消息通道已就绪。
+    case 'message_connect_ack': {
+      const targetDevice =
+        message.targetDeviceUuid || message.payload?.targetDeviceUuid;
+      if (!targetDevice) return null;
+      sendToDevice(
+        targetDevice,
+        {
+          type: 'message_connect_ack',
+          fromDeviceUuid: deviceUuid,
+          payload: message.payload || {},
+        },
+        getWsByDeviceUuid,
+      );
+      return null;
+    }
 
     default:
       return { type: 'error', roomId: roomId || null, payload: { message: `未知消息类型: ${message.type}` } };

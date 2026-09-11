@@ -160,6 +160,76 @@ function computeCpuPercent(prev, curr, elapsedMs) {
 }
 
 /**
+ * HTTP 健康探测：GET http://127.0.0.1:port/path
+ * 只要拿到任意 HTTP 响应码（含 4xx/5xx）即认为服务进程在正常工作，
+ * 只有连接失败 / 超时才算不健康。
+ * @param {number} port
+ * @param {string} [path]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<{ok:boolean, status?:number, error?:string}>}
+ */
+function probeHttp(port, path = '/', timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const http = require('http');
+    const req = http.request(
+      { host: '127.0.0.1', port, path, method: 'GET', timeout: timeoutMs },
+      (res) => {
+        const status = res.statusCode || 0;
+        res.resume(); // 丢弃响应体，避免占用连接
+        resolve({ ok: true, status });
+      },
+    );
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      done({ ok: false, error: 'timeout' });
+    });
+    req.once('error', (e) => done({ ok: false, error: e.message }));
+    req.end();
+  });
+}
+
+/**
+ * 读取进程启动命令（/proc/<pid>/cmdline），用于「进程名 / 启动命令匹配」，
+ * 避免 PID 复用导致的误判（PID 存在但已不是本服务）。
+ * @param {number} pid
+ * @returns {string|null}
+ */
+function readCmdline(pid) {
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return raw.replace(/\0+$/, '').split('\0').join(' ').trim() || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * 判断存活进程是否「像」本服务：用启动脚本的 bin/关键字做宽松匹配。
+ * 匹配不上时返回 true（保守：宁可相信 PID，也不要把正常服务判成未运行）。
+ * @param {number} pid
+ * @param {{bin?:string, args?:string[]}} [script]
+ * @returns {boolean}
+ */
+function processMatchesScript(pid, script) {
+  try {
+    const cmd = readCmdline(pid);
+    if (!cmd) return true; // 读不到（非 Linux / 权限）不误判
+    if (!script || !script.bin) return true;
+    const bin = String(script.bin).split('/').pop();
+    if (!bin) return true;
+    return cmd.includes(bin) || cmd.includes(String(script.bin));
+  } catch (_) {
+    return true;
+  }
+}
+
+/**
  * 安全 MD5（用于配置文件变更检测）。
  */
 function md5File(filePath) {
@@ -235,6 +305,9 @@ module.exports = {
   safeJoin,
   validateEnv,
   isPortListening,
+  probeHttp,
+  readCmdline,
+  processMatchesScript,
   readProcStat,
   isPidAlive,
   computeCpuPercent,

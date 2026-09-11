@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -13,6 +15,7 @@ import 'screens/network_tools_screen.dart';
 import 'screens/anti_theft_screen.dart';
 import 'services/local_storage.dart';
 import 'services/debug_service.dart';
+import 'services/message_service.dart';
 import 'services/websocket_service.dart';
 import 'utils/navigator_key.dart';
 import 'widgets/common/debug_ball.dart';
@@ -80,9 +83,24 @@ class _MyAppState extends State<MyApp> {
       DebugService().info('[App] 设备尚未注册，暂缓启动 WS 连接');
       return;
     }
-    WebSocketService.instance.connect().catchError((e) {
+    WebSocketService.instance.connect().then((_) {
+      // WS 建连后启动消息通道后台监听（P1-5）。
+      // 消息通道必须与 UI 解耦：Web 端点击「主动连接消息」时，
+      // App 即使停在首页 / 后台也能收到 room_invitation 并建立 DataChannel。
+      unawaited(_startMessageChannel());
+    }).catchError((e) {
       DebugService().warn('[App] 启动 WS 连接失败（将自动重连）: $e');
     });
+  }
+
+  /// 启动常驻消息通道监听
+  Future<void> _startMessageChannel() async {
+    try {
+      await MessageService().startListening();
+      DebugService().info('[App] 消息通道后台监听已启动');
+    } catch (e) {
+      DebugService().warn('[App] 消息通道启动失败: $e');
+    }
   }
 
   @override

@@ -8,6 +8,20 @@
         <span v-else-if="store.isConnected" class="text-xs text-green-600">已连接</span>
         <span v-else-if="store.messages.length > 0" class="text-xs text-orange-500">未连接</span>
         <span v-else class="text-xs text-gray-400">等待连接</span>
+        <!-- 常驻「主动连接」入口：不依赖 App 端进入消息页（P1-5） -->
+        <button
+          v-if="!store.isConnected && !store.isConnecting"
+          @click="connectToApp"
+          :disabled="!canConnect"
+          :class="[
+            'px-2.5 py-1 text-xs rounded transition-colors',
+            canConnect
+              ? 'bg-blue-500 text-white hover:bg-blue-600'
+              : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+          ]"
+          :title="canConnect ? '向 App 端下发消息连接指令' : '暂无已配对设备或正在连接'">
+          主动连接消息
+        </button>
         <button v-if="store.isConnected" @click="disconnectChannel" class="text-xs text-red-500 hover:text-red-600 underline">断开</button>
         <button v-if="store.error || (!store.isConnected && !store.isConnecting && store.messages.length > 0)" @click="retryConnect" class="text-xs text-blue-500 hover:text-blue-600 underline">重连</button>
       </div>

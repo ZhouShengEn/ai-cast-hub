@@ -324,7 +324,11 @@ export function useCastReceiver(externalVideoRef, options = {}) {
         if (remoteStream.value && videoRef.value && videoRef.value.srcObject !== remoteStream.value) {
           console.log('[CastReceiver] connected 后补绑 video.srcObject')
           videoRef.value.srcObject = remoteStream.value
-          try { await videoRef.value.play?.() } catch (_) { /* 自动播放被拦截属正常 */ }
+          // 不能用 await：该回调非 async，改为 Promise 链，自动播放被拦截属正常
+          const playPromise = videoRef.value.play?.()
+          if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(() => {})
+          }
         }
       } else if (state === 'disconnected') {
         // 弱网自动降级：短时间内多次抖动 → 自动降一档画质以保流畅

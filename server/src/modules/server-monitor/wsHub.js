@@ -37,6 +37,28 @@ const subscriptions = new WeakMap();
 let _prevStatus = new Map();
 
 /**
+ * 注册进程状态变更监听：启动 / 退出 / 就绪等瞬间状态变化立即推送，
+ * 不必等下一个 3 秒轮询周期（P1-6「启动后 30 秒内状态实时推送」）。
+ */
+function registerProcessStatusListener() {
+  processManager.onStatusChange(({ projectPath, status }) => {
+    broadcast('service_status', {
+      id: status.id,
+      projectPath,
+      status: status.status,
+      statusText: status.statusText,
+      running: status.running,
+      listening: status.listening,
+      health: status.health,
+      pid: status.pid,
+      port: status.port,
+      proxyCheck: status.proxyCheck || null,
+      serverTime: new Date().toISOString(),
+    });
+  });
+}
+
+/**
  * 初始化监控 WS。
  * @param {import('http').Server} server
  */
@@ -102,6 +124,7 @@ function initMonitorWs() {
   });
 
   // 启动周期推送
+  registerProcessStatusListener();
   startPolling();
 
   return wss;

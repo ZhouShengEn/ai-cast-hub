@@ -17,16 +17,19 @@ import { computed } from 'vue'
 const props = defineProps({
   running: { type: Boolean, default: false },
   error: { type: Boolean, default: false },
+  starting: { type: Boolean, default: false },
   portLocked: { type: Boolean, default: false },
   text: { type: String, default: '' },
 })
 
 const badgeCls = computed(() => {
   if (props.error) return 'bg-red-100 text-red-700'
+  if (props.starting) return 'bg-blue-100 text-blue-700'
   return props.running ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
 })
 const dotCls = computed(() => {
   if (props.error) return 'bg-red-500'
+  if (props.starting) return 'bg-blue-500 animate-pulse'
   return props.running ? 'bg-green-500' : 'bg-gray-400'
 })
 </script>

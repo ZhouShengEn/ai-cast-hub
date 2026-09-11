@@ -44,7 +44,7 @@ async function getServices(withGit = true) {
   const projects = scanner.scan();
   const services = [];
   for (const proj of projects) {
-    const status = processManager.getStatus(proj.path);
+    const status = await processManager.getStatus(proj.path);
     const override = projectStore.getOverrides(proj.path);
     let git = null;
     if (withGit) {
