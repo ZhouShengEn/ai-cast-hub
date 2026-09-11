@@ -5,7 +5,7 @@
 # 流程：拉取最新代码 → 重启后端 server(PM2) → 重建前端 pc-web → 重载 nginx → 健康检查
 #
 # 适用部署形态（与仓库 README 一致）：
-#   - 后端 server 由 PM2 守护，进程名 ai-cast-server（入口 server/src/index.js，端口 3000）
+#   - 后端 server 由 PM2 守护，进程名 ai-cast-server（入口 server/src/index.js，端口 3100）
 #   - 前端 pc-web 由「系统 nginx」托管 dist/（域名 cast.zhoushengen.xyz），非常驻进程
 #
 # 用法：
@@ -107,14 +107,23 @@ fi
 # ---------- 5. 健康检查 ----------
 log "步骤 5/5  健康检查 ..."
 sleep 3
-HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/v1/health 2>/dev/null || echo "000")
-if [ "$HEALTH" = "200" ]; then
-  ok "后端健康 ✓ (HTTP $HEALTH)"
-else
+# 端口探测：server 实际监听 3100（3000 被同机 shiguangsha 占用），依次尝试避免误报
+HEALTH=""
+for PORT_TRY in ${SERVER_PORT:-3100} 3000; do
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT_TRY}/api/v1/health" 2>/dev/null || echo "000")
+  if [ "$CODE" = "200" ]; then
+    HEALTH="$CODE"
+    ok "后端健康 ✓ (HTTP $CODE, 端口 $PORT_TRY)"
+    break
+  fi
+  [ -z "$HEALTH" ] && HEALTH="$CODE"
+done
+if [ "$HEALTH" != "200" ]; then
   warn "后端健康检查返回 $HEALTH，查看日志：pm2 logs $SERVER_NAME"
 fi
+# 前端经 nginx 会把 http 301 跳 https，200/301 都算正常
 FRONT=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/ 2>/dev/null || echo "000")
-if [ "$FRONT" = "200" ]; then
+if [ "$FRONT" = "200" ] || [ "$FRONT" = "301" ] || [ "$FRONT" = "302" ]; then
   ok "前端可访问 ✓ (HTTP $FRONT)"
 else
   warn "前端返回 $FRONT（若使用其它端口/域名请自行访问确认）"
