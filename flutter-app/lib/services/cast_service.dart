@@ -430,7 +430,7 @@ class CastService {
     }
   }
 
-  void _onSignal(Map<String, dynamic> message) {
+  Future<void> _onSignal(Map<String, dynamic> message) async {
     final roomId = message['roomId'] as String?;
     if (roomId != _currentSession?.roomId) {
       _castLog('signal roomId不匹配: $roomId != ${_currentSession?.roomId}',
