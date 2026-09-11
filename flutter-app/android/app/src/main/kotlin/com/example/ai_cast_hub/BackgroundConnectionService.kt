@@ -11,9 +11,11 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 class BackgroundConnectionService : Service() {
+    private val TAG = "BackgroundConnectionService"
     private var wakeLock: PowerManager.WakeLock? = null
     private val CHANNEL_ID = "ai_cast_hub_connection"
     private val NOTIFICATION_ID = 1001

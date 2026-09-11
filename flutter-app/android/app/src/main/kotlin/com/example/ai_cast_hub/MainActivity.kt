@@ -363,7 +363,7 @@ class MainActivity : FlutterActivity() {
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            mp.registerCallback(this.mainExecutor, projectionCallback!!)
+            mp!!.registerCallback(projectionCallback!!, Handler(Looper.getMainLooper()))
         }
         SystemAudioProjectionHolder.mediaProjection = mp
         Log.i(TAG, "已获取独立 MediaProjection 令牌，系统内录可用")
