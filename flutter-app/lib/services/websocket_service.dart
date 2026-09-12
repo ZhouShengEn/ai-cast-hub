@@ -47,8 +47,11 @@ class WebSocketService {
   /// 用于等待服务端 connected/error 确认
   Completer<void>? _connectCompleter;
 
-  /// 重连最大间隔（指数退避上限）
-  static const Duration _maxReconnectDelay = Duration(seconds: 30);
+  /// 重连最大间隔（指数退避上限）。
+  /// 由 30s 收紧到 15s：手机熄屏进入 Doze 后 WS 会被切断，维护窗口恢复网络时
+  /// 更快重连，配合服务端离线指令缓存（resendPendingCommands）即可在重连瞬间
+  /// 补收到「呼叫响铃 / 定位」指令，缩短熄屏断联的可控空窗。
+  static const Duration _maxReconnectDelay = Duration(seconds: 15);
 
   /// 调试模式开关
   bool debugMode = false;

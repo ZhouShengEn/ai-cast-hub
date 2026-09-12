@@ -18,7 +18,10 @@ export const QUALITY_PROFILES = {
 /** 由高到低的档位顺序（也用于弱网自动降级） */
 export const QUALITY_ORDER = ['high', 'medium', 'low']
 
-export const DEFAULT_QUALITY = 'high'
+// 默认档位改为 medium（720p / 2Mbps）：手机原生屏往往 ≥1080p，按 high(1080p/4Mbps)
+// 编码在普通 WiFi 上极易卡顿；medium 编码压力减半、肉眼清晰度足够，投屏明显更流畅。
+// 用户仍可在投屏页手动切到 high / low。
+export const DEFAULT_QUALITY = 'medium'
 
 export function getProfile(name) {
   return QUALITY_PROFILES[name] || QUALITY_PROFILES[DEFAULT_QUALITY]

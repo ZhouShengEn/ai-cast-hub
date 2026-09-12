@@ -9,6 +9,7 @@ import '../services/device_service.dart';
 import '../services/local_storage.dart';
 import '../services/debug_service.dart';
 import '../services/websocket_service.dart';
+import '../services/anti_theft_service.dart';
 
 /// 设备状态
 class DeviceState {
@@ -221,6 +222,17 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
     try {
       await _service.bindByCode(pairCode);
       await fetchDeviceList();
+      // 绑定成功即把首个配对 PC 设为防盗/定位回执目标，并立即上报一次定位，
+      // 使「输入连接码关联 Web 后 Web 首页立刻看到手机定位」不依赖进入消息界面。
+      // 即使 WS 此刻未连，AntiTheftService 也会在重连后自动补报。
+      final firstPaired = state.pairedDevices;
+      if (firstPaired.isNotEmpty) {
+        try {
+          AntiTheftService().setTargetDevice(firstPaired.first.deviceUuid);
+        } catch (e) {
+          DebugService().warn('[Device] 绑定后设置防盗目标失败(非致命): $e');
+        }
+      }
       state = state.copyWith(isLoading: false);
     } catch (e) {
       state = state.copyWith(

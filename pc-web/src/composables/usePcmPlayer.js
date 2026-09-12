@@ -52,7 +52,16 @@ export function usePcmPlayer() {
       console.warn('[PcmPlayer] 当前浏览器不支持 Web Audio API')
       return null
     }
-    ctx = new AC()
+    // 必须用采集端 PCM 的采样率（默认 44100）创建 AudioContext，否则声道时钟不匹配：
+    // 手机端 AudioPlaybackCapture 固定 44.1kHz，浏览器默认往往 48kHz，混用会让声音
+    // 变调、提速并伴随爆音。显式指定 sampleRate 让浏览器做正确重采样。
+    const opts = typeof sampleRate === 'number' && sampleRate > 0 ? { sampleRate } : undefined
+    try {
+      ctx = opts ? new AC(opts) : new AC()
+    } catch (err) {
+      console.warn('[PcmPlayer] 指定采样率创建 AudioContext 失败，回退默认:', err)
+      ctx = new AC()
+    }
     gainNode = ctx.createGain()
     gainNode.gain.value = muted.value ? 0 : 1
     gainNode.connect(ctx.destination)

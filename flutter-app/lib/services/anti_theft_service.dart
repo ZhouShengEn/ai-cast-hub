@@ -277,6 +277,28 @@ class AntiTheftService {
     return true;
   }
 
+  /// 设备绑定成功后由上层调用：设置防盗/定位回执的目标 PC UUID。
+  ///
+  /// 关键解耦点：此前 [_targetDeviceUuid] 只在**收到远程指令后**才被赋值，
+  /// 导致「App 输入连接码关联 Web 端后立马上报定位」「熄屏断联重连后自动补报」
+  /// 都被门控跳过（必须先进消息界面收一条指令才能定位）。
+  /// 绑定即设置目标，配合 [connectionStateStream] 的自动上报与下方即时上报，
+  /// 实现「关联即上报、断联重连即补报」，完全不依赖消息界面。
+  void setTargetDevice(String? uuid) {
+    if (uuid == null || uuid.isEmpty) return;
+    _targetDeviceUuid = uuid;
+    unawaited(_storage.setLastAntiTheftTarget(uuid));
+    // 已连接则立即上报一次当前坐标（满足"关联后 Web 首页立刻看到定位"）。
+    // 未连接则由 connectionStateStream 在下次连上后补报（_autoReportedLocation 防重）。
+    if (WebSocketService.instance.connectionState == WsConnectionState.connected) {
+      _autoReportedLocation = true;
+      unawaited(_reportLocation());
+    }
+  }
+
+  /// 主动上报一次当前坐标（供绑定成功后或 UI 手动触发）
+  Future<bool> reportLocationNow() => _reportLocation();
+
   // ---- 丢失模式 ----
 
   /// 进入丢失模式：App 内显示「设备已标记丢失」提示，需本机或 Web 解除
