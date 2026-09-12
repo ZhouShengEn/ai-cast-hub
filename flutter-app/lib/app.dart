@@ -92,7 +92,7 @@ class _MyAppState extends State<MyApp> {
       // 启动防盗指令后台监听（P2-3）：响铃 / 定位指令必须与 UI 解耦，
       // 即使 App 停在首页 / 后台 / 锁屏，也能通过 WS（由 BackgroundConnectionService
       // 持 WakeLock 保活）收到并响应 PC 下发的远程指令。
-      unawaited(AntiTheftService().startListening());
+      AntiTheftService().startListening();
     }).catchError((e) {
       DebugService().warn('[App] 启动 WS 连接失败（将自动重连）: $e');
     });

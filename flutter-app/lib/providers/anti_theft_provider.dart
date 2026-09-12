@@ -106,9 +106,10 @@ class AntiTheftNotifier extends StateNotifier<AntiTheftState> {
 
   @override
   void dispose() {
+    // 仅取消本 Provider 对状态流的订阅；不销毁 AntiTheftService 单例，
+    // 否则会切断全局后台 WS 指令监听（单例在 App 启动即开始监听，与 UI 解耦）。
     _statusSub?.cancel();
     _statusSub = null;
-    _service.dispose();
     super.dispose();
   }
 }
