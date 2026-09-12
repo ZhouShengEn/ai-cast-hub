@@ -71,6 +71,14 @@ class CastService {
   /// 用于等待 peer_joined 消息
   Completer<void>? _peerJoinedCompleter;
 
+  /// 远端 SDP(answer) 是否已应用。
+  /// 投屏时序里 App 作为 offer 方，PC 的 answer 与它的 ICE 候选几乎是同时发来的，
+  /// 候选常常「先于 answer」到达。若此时还没 setRemoteDescription，libwebrtc 会直接丢弃
+  /// 这些候选，导致 ICE 协商慢（要等另一端候选或重试用时）甚至失败、需要重投。
+  /// 这里把先到的候选缓存起来，answer 应用后再补加，显著提升一次投屏成功率与速度。
+  bool _remoteDescriptionSet = false;
+  final List<Map<String, dynamic>> _pendingRemoteCandidates = [];
+
   /// 状态变化回调
   void Function(String status)? onStatusChanged;
 
@@ -109,6 +117,9 @@ class CastService {
     _captureMode = captureMode;
     _cameraFacing = frontCamera;
     _cameraWithAudio = withAudio;
+    // 新一轮会话：复位 ICE 候选缓存状态（避免沿用上一次残留的候选）
+    _remoteDescriptionSet = false;
+    _pendingRemoteCandidates.clear();
     _castLog('═══════════════════════════════════════════');
     _castLog(
         '开始创建投屏会话, 目标PC: ${_safeId(pcDeviceId)}, 模式: $_captureMode'
@@ -458,6 +469,9 @@ class CastService {
         // 否则 SDP 不匹配/会话已被并发清理时，会在「没建连」的状态卡死且无法自愈。
         try {
           await _webrtc.handleAnswer(payload['sdp'] as String);
+          // answer 已应用：标记远端描述就绪，并补加此前先于 answer 到达的 ICE 候选
+          _remoteDescriptionSet = true;
+          _flushPendingRemoteCandidates();
           _updateSessionStatus('connected');
           _castLog('✅ 投屏连接已建立!', level: LogLevel.info);
           // 投屏建立后立刻做三件事：
@@ -485,6 +499,17 @@ class CastService {
         break;
       case 'ice_candidate':
         _castLog('收到PC的ice_candidate', level: LogLevel.debug);
+        // 候选先于 answer 到达：先缓存，待 answer 应用后由 _flushPendingRemoteCandidates 补加，
+        // 避免 libwebrtc 在「无远端描述」时直接丢弃候选（投屏慢/失败的主因）。
+        if (!_remoteDescriptionSet) {
+          final cand = payload['candidate'] as Map<String, dynamic>?;
+          if (cand != null) {
+            _pendingRemoteCandidates.add(cand);
+            _castLog('ICE候选先于answer到达，已缓存(${_pendingRemoteCandidates.length})',
+                level: LogLevel.debug);
+          }
+          break;
+        }
         _webrtc
             .handleIceCandidate(payload['candidate'] as Map<String, dynamic>);
         break;
@@ -499,6 +524,22 @@ class CastService {
     // 房间关闭=会话真正结束，发 'closed' 让 Provider 完全重置
     _updateSessionStatus('closed');
     unawaited(_cleanupResources());
+  }
+
+  /// answer 应用后补加此前先于 answer 到达的远端 ICE 候选，
+  /// 避免「候选先于 remote description 被丢弃」导致的投屏慢/失败。
+  void _flushPendingRemoteCandidates() {
+    if (_pendingRemoteCandidates.isEmpty) return;
+    _castLog('answer 已应用，补加 ${_pendingRemoteCandidates.length} 个缓存 ICE 候选',
+        level: LogLevel.info);
+    for (final c in _pendingRemoteCandidates) {
+      try {
+        _webrtc.handleIceCandidate(c);
+      } catch (e) {
+        _castLog('补加缓存 ICE 候选失败: $e', level: LogLevel.warn);
+      }
+    }
+    _pendingRemoteCandidates.clear();
   }
 
   void _handleDataChannelMessage(webrtc.RTCDataChannelMessage message) {

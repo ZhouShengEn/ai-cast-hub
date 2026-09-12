@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'providers/anti_theft_provider.dart';
@@ -93,6 +94,9 @@ class _MyAppState extends State<MyApp> {
       // 即使 App 停在首页 / 后台 / 锁屏，也能通过 WS（由 BackgroundConnectionService
       // 持 WakeLock 保活）收到并响应 PC 下发的远程指令。
       AntiTheftService().startListening();
+      // 熄屏保活：请求豁免电池优化，避免 Doze 在屏幕关闭后切断后台 WebSocket，
+      // 否则手机熄屏时 Web 端下发的响铃/定位指令无法送达（详见 BackgroundConnectionService）。
+      _requestBatteryExemption();
     }).catchError((e) {
       DebugService().warn('[App] 启动 WS 连接失败（将自动重连）: $e');
     });
@@ -106,6 +110,18 @@ class _MyAppState extends State<MyApp> {
     } catch (e) {
       DebugService().warn('[App] 消息通道启动失败: $e');
     }
+  }
+
+  /// 请求系统把本 App 加入电池优化白名单（仅引导一次，已豁免则无操作）。
+  /// 这是「手机熄屏后仍能被 Web 端响铃/定位」的关键：前台服务 + WakeLock 只能保 CPU，
+  /// 无法绕过 Doze 的网络限制，必须豁免电池优化后台网络才不会被掐断。
+  static const MethodChannel _appChannel = MethodChannel('ai_cast_hub/app');
+  void _requestBatteryExemption() {
+    _appChannel
+        .invokeMethod('requestBatteryOptimizationExemption')
+        .catchError((e) {
+      DebugService().warn('[App] 请求电池优化豁免失败（可手动在系统设置授予）: $e');
+    });
   }
 
   @override

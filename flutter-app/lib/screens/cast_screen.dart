@@ -222,7 +222,12 @@ class _CastScreenState extends ConsumerState<CastScreen>
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
             const SizedBox(height: 8),
-            Row(
+            // 用 Wrap 替代 Row：两个按钮在窄屏会自动换行，避免横向溢出
+            // （之前固定 Row 在卡片内宽度不足时右溢 34px）。
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 FilledButton.icon(
                   onPressed: () async {
@@ -231,7 +236,6 @@ class _CastScreenState extends ConsumerState<CastScreen>
                   icon: const Icon(Icons.settings_accessibility, size: 18),
                   label: const Text('前往开启无障碍模式'),
                 ),
-                const SizedBox(width: 8),
                 OutlinedButton.icon(
                   onPressed: _refreshAccessibilityStatus,
                   icon: const Icon(Icons.refresh, size: 18),

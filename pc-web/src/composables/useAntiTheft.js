@@ -1,5 +1,6 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useWebSocket } from './useWebSocket'
+import { useDeviceStore } from '../stores/device'
 
 /**
  * 设备防盗 Composable（单例）
@@ -14,6 +15,7 @@ export function useAntiTheft() {
   if (_instance) return _instance
 
   const { send, onMessage } = useWebSocket()
+  const deviceStore = useDeviceStore()
 
   /** 手机最近一次上报的坐标 */
   const latestLocation = ref(null)
@@ -21,6 +23,8 @@ export function useAntiTheft() {
   const lastAck = ref(null)
   /** 是否正在请求位置共享 */
   const tracking = ref(false)
+  /** 是否已对本次上线自动请求过一次定位（避免重连抖动下重复请求） */
+  let _autoRequested = false
 
   onMessage('device_location_update', (msg) => {
     latestLocation.value = {
@@ -40,6 +44,26 @@ export function useAntiTheft() {
     if (action === 'stop_location_track') tracking.value = false
     if (action === 'start_location_track') tracking.value = true
   })
+
+  /**
+   * 手机（配对设备）上线即主动请求一次定位：
+   * 满足「App 连接 Web 端后自动上报一次定位信息」的可视效果——Web 首页立即可见坐标，
+   * 且坐标常驻展示（不再被 startTracking 清零）。
+   */
+  watch(
+    () => deviceStore.pairedDevices[0]?.isOnline,
+    (online) => {
+      if (online && !_autoRequested) {
+        _autoRequested = true
+        const d = deviceStore.pairedDevices[0]
+        const uuid = d?.uuid || d?.deviceUuid
+        if (uuid) requestLocation(uuid)
+      }
+      // 离线后再上线允许再次自动请求一次
+      if (!online) _autoRequested = false
+    },
+    { immediate: true },
+  )
 
   /**
    * 下发防盗指令
@@ -65,7 +89,8 @@ export function useAntiTheft() {
 
   function startTracking(uuid) {
     tracking.value = true
-    latestLocation.value = null
+    // 注意：不再清零 latestLocation——坐标需常驻展示，直到用户手动「清除」。
+    // 清零会导致「开始定位」后原有坐标一闪消失，与「定位展示一直不消除」需求冲突。
     command(uuid, 'start_location_track')
   }
 

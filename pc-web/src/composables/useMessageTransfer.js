@@ -743,6 +743,12 @@ export function useMessageTransfer() {
       store.updateMessage(fileId, { progress: Math.min(1, sentCount / pending.totalChunks) })
     }
 
+    if (_cancelledSends.has(fileId)) {
+      // 续传过程中被取消，保持 cancelled，不覆盖为 sent
+      console.log('[Message] 续传结束但已被取消，保持 cancelled 态:', fileId)
+      _cancelledSends.delete(fileId)
+      return
+    }
     if (_dataChannel && _dataChannel.readyState === 'open') {
       _dataChannel.send(JSON.stringify({ type: 'file_end', id: fileId }))
       store.updateMessage(fileId, { status: 'sent', progress: 1 })
@@ -969,6 +975,11 @@ export function useMessageTransfer() {
     let lastSampleBytes = 0
 
     for (let i = 0; i < totalChunks; i++) {
+      if (_cancelledSends.has(msgId)) {
+        // 已被取消：立即中断发送，绝不写 file_end / sent，保留 cancelled 态
+        console.log('[Message] 发送被取消，中断分片循环:', msgId)
+        return
+      }
       if (receivedSet.has(i)) continue // 跳过已收到的
 
       // 动态等待缓冲区释放（防止溢出断开）。
@@ -1020,6 +1031,12 @@ export function useMessageTransfer() {
       store.updateMessage(msgId, { progress: Math.min(1, (i + 1) / totalChunks) })
     }
 
+    if (_cancelledSends.has(msgId)) {
+      // 发送过程中被取消，不要下发 file_end，也不要把状态改回 sent（保留 cancelled）
+      console.log('[Message] 发送循环结束但已被取消，保持 cancelled 态:', msgId)
+      _cancelledSends.delete(msgId)
+      return
+    }
     if (_dataChannel && _dataChannel.readyState === 'open') {
       _dataChannel.send(JSON.stringify({ type: 'file_end', id: msgId }))
       store.updateMessage(msgId, { status: 'sent', progress: 1 })
@@ -1029,8 +1046,12 @@ export function useMessageTransfer() {
     }
   }
 
+  /** 已在发送中被取消的文件 id（防止发送循环结束后把状态覆盖回 sent） */
+  const _cancelledSends = new Set()
+
   /** 取消传输 */
   function cancelTransfer(id) {
+    _cancelledSends.add(id)
     if (_dataChannel && _dataChannel.readyState === 'open') {
       _dataChannel.send(JSON.stringify({ type: 'cancel', id }))
     }

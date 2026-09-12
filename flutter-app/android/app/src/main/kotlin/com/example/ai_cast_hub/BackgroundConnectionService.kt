@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -17,6 +18,7 @@ import androidx.core.app.NotificationCompat
 class BackgroundConnectionService : Service() {
     private val TAG = "BackgroundConnectionService"
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private val CHANNEL_ID = "ai_cast_hub_connection"
     private val NOTIFICATION_ID = 1001
 
@@ -24,6 +26,7 @@ class BackgroundConnectionService : Service() {
         super.onCreate()
         createNotificationChannel()
         acquireWakeLock()
+        acquireWifiLock()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -54,11 +57,13 @@ class BackgroundConnectionService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         releaseWakeLock()
+        releaseWifiLock()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         Log.i(TAG, "BackgroundConnectionService onTaskRemoved，释放 WakeLock")
         releaseWakeLock()
+        releaseWifiLock()
         stopSelf()
     }
 
@@ -113,6 +118,36 @@ class BackgroundConnectionService : Service() {
             }
         }
         wakeLock = null
+    }
+
+    /**
+     * 持有一个高优先级 WifiLock，防止系统在网络空闲/熄屏后把 WiFi 切到低功耗或断开，
+     * 从而保住后台 WebSocket 的长连接（Doze 下网络会被限制，前台服务 + WakeLock 只能保 CPU，
+     * WifiLock 进一步降低网络被掐断的概率；彻底规避仍需电池优化白名单）。
+     */
+    private fun acquireWifiLock() {
+        try {
+            val wifiManager =
+                applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wifiManager.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                "AIContainerHub::BackgroundConnection",
+            ).apply { acquire() }
+        } catch (e: Exception) {
+            Log.w(TAG, "获取 WifiLock 失败（不影响连接）: ${e.message}")
+        }
+    }
+
+    private fun releaseWifiLock() {
+        try {
+            wifiLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+        } catch (_: Exception) {
+        }
+        wifiLock = null
     }
 
     fun updateNotification(title: String, content: String) {

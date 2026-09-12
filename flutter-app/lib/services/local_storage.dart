@@ -152,6 +152,14 @@ class LocalStorage {
   Future<bool> saveAntiTheftLogs(List<Map<String, dynamic>> logs) =>
       _prefs.setString('anti_theft_logs', jsonEncode(logs));
 
+  /// 上一次互动的已配对 PC 设备 UUID。
+  /// 用于 App 连接 Web 后「自动上报一次定位」：冷启动时无来源指令也能向该 PC 回传坐标。
+  String? getLastAntiTheftTarget() => _prefs.getString('anti_theft_target');
+
+  /// 保存上一次互动的已配对 PC 设备 UUID
+  Future<bool> setLastAntiTheftTarget(String uuid) =>
+      _prefs.setString('anti_theft_target', uuid);
+
   /// 获取 API Key 列表 [{provider, key}]
   List<Map<String, String>> getApiKeys() {
     final raw = _prefs.getString('api_keys');

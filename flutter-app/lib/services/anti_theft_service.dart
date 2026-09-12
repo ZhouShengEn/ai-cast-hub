@@ -56,6 +56,9 @@ class AntiTheftStatus {
 /// 持 WakeLock 保活）；UI 侧的 Provider 引用同一实例，共享状态流与日志。
 class AntiTheftService {
   AntiTheftService._internal() {
+    // 冷启动时恢复上次互动过的配对 PC UUID，使「连接后自动上报一次定位」在
+    // 没有收到新指令时也能向该 PC 回传坐标。
+    _targetDeviceUuid = _storage.getLastAntiTheftTarget();
     _initWsListener();
   }
 
@@ -79,6 +82,11 @@ class AntiTheftService {
   final LocationService _locationService = LocationService();
 
   StreamSubscription<Map<String, dynamic>>? _wsSubscription;
+  StreamSubscription<dynamic>? _connSubscription;
+
+  /// 本会话是否已对当前连接自动上报过一次定位（避免重连抖动下重复上报）
+  bool _autoReportedLocation = false;
+
   Timer? _locationTimer;
 
   final StreamController<AntiTheftStatus> _statusController =
@@ -107,6 +115,21 @@ class AntiTheftService {
   void _initWsListener() {
     if (_wsSubscription != null) return;
     _wsSubscription = WebSocketService.instance.messages.listen(_onWsMessage);
+    // 订阅 WS 连接状态：每次（重）连成功后，若已知配对 PC，自动上报一次定位，
+    // 满足「App 连接 Web 端后自动上报一次定位信息」——Web 端首页即可立即看到手机位置。
+    _connSubscription ??= WebSocketService.instance.connectionStateStream.listen(
+      (state) {
+        if (state == WsConnectionState.connected) {
+          if (!_autoReportedLocation && _targetDeviceUuid != null) {
+            _autoReportedLocation = true;
+            unawaited(_reportLocation());
+          }
+        } else if (state == WsConnectionState.disconnected) {
+          // 断线后允许下次重连再上报一次
+          _autoReportedLocation = false;
+        }
+      },
+    );
   }
 
   void _onWsMessage(Map<String, dynamic> msg) {
@@ -127,6 +150,8 @@ class AntiTheftService {
 
     // 记录指令来源，用于回执与日志
     _targetDeviceUuid = fromUuid;
+    // 持久化最近一次互动的配对 PC，供「连接后自动上报一次定位」在冷启动时也能定向回传
+    unawaited(_storage.setLastAntiTheftTarget(fromUuid ?? ''));
 
     switch (action) {
       case 'start_alarm':
@@ -364,6 +389,8 @@ class AntiTheftService {
     _locationTimer = null;
     _wsSubscription?.cancel();
     _wsSubscription = null;
+    _connSubscription?.cancel();
+    _connSubscription = null;
     _statusController.close();
   }
 }

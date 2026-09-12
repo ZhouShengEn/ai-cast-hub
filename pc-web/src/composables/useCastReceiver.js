@@ -90,6 +90,18 @@ export function useCastReceiver(externalVideoRef, options = {}) {
     stop: stopAudio,
   } = usePcmPlayer()
 
+  // 浏览器自动播放策略：AudioContext 初始为 suspended，必须等一次用户手势才能 resume。
+  // 投屏成功即「默认同步系统媒体声音」，因此注册一次性手势监听：用户在投屏页首次点击/触摸时
+  // 即解锁 AudioContext 并取消静音，无需手动再点「系统音频」开关也能出声。
+  const _unlockAudioOnGesture = () => {
+    unlockAudio().then((ok) => {
+      if (ok) setAudioMuted(false)
+    })
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('pointerdown', _unlockAudioOnGesture, { once: true })
+  }
+
   /** 手机端是否支持系统内录（Android 10+） */
   const systemAudioSupported = ref(false)
   /** 系统内录是否已开启 */
@@ -377,8 +389,8 @@ export function useCastReceiver(externalVideoRef, options = {}) {
     systemAudioSupported.value = false
     systemAudioActive.value = false
     audioChannelReady.value = false
-    // 重置本地静音态为默认（已静音）：避免重连后沿用旧值，导致声音按钮显示与实际静音态不一致（P1-11）
-    systemAudioMuted.value = true
+    // 重置本地静音态为默认（播放中）：投屏成功即默认同步系统声音，不回退到静音（P1-11 兼容）
+    systemAudioMuted.value = false
     stopAudio()
   }
 
@@ -457,6 +469,11 @@ export function useCastReceiver(externalVideoRef, options = {}) {
     channel.binaryType = 'arraybuffer'
     channel.onopen = () => {
       audioChannelReady.value = true
+      // 投屏成功即默认播放系统声音：best-effort 解锁 AudioContext（若已有用户手势则立即出声），
+      // 并取消静音。即便解锁失败（尚无手势），后续用户首次交互也会由上面的全局监听补解锁。
+      unlockAudio().then((ok) => {
+        if (ok) setAudioMuted(false)
+      })
       console.log('[CastReceiver] ✅ 音频 DataChannel 已打开')
     }
     channel.onclose = () => {
@@ -487,11 +504,11 @@ export function useCastReceiver(externalVideoRef, options = {}) {
    */
   /**
    * 系统音频「播放/静音」开关的本地态。
-   * 初始必须为 true（已静音）：浏览器自动播放策略下 AudioContext 处于 suspended，
-   * 投屏建立后音频实际无声；用户首次点击在手势内 unlock 并切到播放（false）。
-   * 若初始为 false，则首次点击会先 unlock 再立即置回静音，导致「需点两次才出声」的失效现象。
+   * 初始为 false（播放中）：投屏成功后系统媒体声音默认同步到 PC 端。
+   * 浏览器自动播放策略下 AudioContext 初始 suspended，实际出声仍需一次用户手势解锁——
+   * 已由上面的全局 pointerdown 监听与音频通道 onopen 自动处理，用户无需手动点开关。
    */
-  const systemAudioMuted = ref(true)
+  const systemAudioMuted = ref(false)
   async function toggleSystemAudioPlayback() {
     // 先在当前用户手势里 resume AudioContext，兼容浏览器自动播放策略
     const unlocked = await unlockAudio()

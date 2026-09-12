@@ -8,11 +8,14 @@ import android.content.pm.PackageManager
 import android.graphics.Point
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.webkit.MimeTypeMap
 import android.widget.Toast
@@ -278,6 +281,10 @@ class MainActivity : FlutterActivity() {
                     bringToFront()
                     result.success(null)
                 }
+                "requestBatteryOptimizationExemption" -> {
+                    requestBatteryOptimizationExemption()
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -300,6 +307,28 @@ class MainActivity : FlutterActivity() {
             startActivity(intent)
         } catch (e: Exception) {
             Log.w(TAG, "bringToFront 失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 请求豁免电池优化，保持后台 WebSocket 在熄屏后不被 Doze 断网。
+     *
+     * 仅引导一次：已加入电池优化白名单则不再弹窗。这是「手机熄屏后 Web 端还能下发
+     * 响铃/定位指令」的关键——前台服务 + WakeLock 只能保 CPU，无法绕过 Doze 的网络限制，
+     * 必须把 App 加入电池优化白名单，后台网络才能持续。
+     */
+    private fun requestBatteryOptimizationExemption() {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (pm.isIgnoringBatteryOptimizations(packageName)) return
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "请求电池优化豁免失败: ${e.message}")
         }
     }
 
