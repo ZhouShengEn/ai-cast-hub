@@ -66,6 +66,17 @@
               <span v-else-if="svc.source === 'systemd'" class="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] text-slate-600">systemd</span>
             </div>
             <div class="text-xs text-gray-400 truncate" :title="svc.path">{{ truncatePath(svc.path) }}</div>
+            <!-- Git 状态（常驻展示：分支 / 状态 / 可拉取提交数） -->
+            <div
+              v-if="svc.git?.status && svc.git.status !== 'no_repo' && svc.git.status !== 'error'"
+              class="text-xs mt-1 flex items-center gap-1"
+              :class="gitInfo(svc).cls"
+            >
+              <span>🌿 {{ svc.git.branch }}</span>
+              <span>· {{ gitInfo(svc).text }}</span>
+              <span v-if="svc.git.behind" class="text-cyan-600">· 可拉取 {{ svc.git.behind }}</span>
+              <span v-if="svc.git.ahead" class="text-gray-400">· 领先 {{ svc.git.ahead }}</span>
+            </div>
           </div>
 
           <!-- 状态 -->

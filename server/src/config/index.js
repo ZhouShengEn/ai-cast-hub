@@ -15,22 +15,8 @@ const config = {
   /** 加密密钥（32字节hex字符串，用于设备认证加解密） */
   encryptionKey: process.env.ENCRYPTION_KEY || '',
 
-  /** 数据库配置 */
-  db: {
-    mysql: {
-      host: process.env.DB_MYSQL_HOST || 'localhost',
-      port: parseInt(process.env.DB_MYSQL_PORT, 10) || 3306,
-      user: process.env.DB_MYSQL_USER || 'ai_cast',
-      password: process.env.DB_MYSQL_PASSWORD || 'ai_cast_pass',
-      database: process.env.DB_MYSQL_DATABASE || 'ai_cast_hub',
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      charset: 'utf8mb4',
-    },
-    // 当前使用内存模式存储设备数据
-    // 如需持久化，可启用 MySQL 或添加 SQLite 支持
-  },
+  // 数据存储：内存 + 文件（server/data/*.json），不依赖外部数据库（已移除 MySQL）。
+  // 需要持久化请使用 config/database.js 暴露的 dataStore。
 
   /**
    * TURN/STUN 服务器配置

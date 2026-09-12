@@ -357,6 +357,94 @@ function getListeningPortsForPid(pid) {
   }
 }
 
+/**
+ * 通过端口反查监听该端口的进程 PID（与 getListeningPortsForPid 互逆）。
+ * 用于「即便本模块无运行记录 / 记录的 PID 已失效，只要端口在监听即可判定运行中」。
+ * 读取 /proc/net/tcp{,6} 的 LISTEN socket（端口 -> inode），再遍历 /proc/<pid>/fd
+ * 匹配 socket:[inode] 得到 pid。非 Linux / 读取失败返回 null（前端降级）。
+ * @param {number} port
+ * @returns {number|null}
+ */
+function findPidByPort(port) {
+  try {
+    const targetHex = Number(port).toString(16).padStart(4, '0');
+    const listeningInodes = new Set();
+    for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+      let raw;
+      try {
+        raw = fs.readFileSync(file, 'utf8');
+      } catch (_) {
+        continue;
+      }
+      for (const line of raw.split('\n').slice(1)) {
+        const cols = line.trim().split(/\s+/);
+        if (cols.length < 10) continue;
+        if (cols[3] !== '0A') continue; // 状态 0A = LISTEN
+        const localPort = parseInt(cols[1].split(':')[1], 16);
+        if (localPort === Number(port)) listeningInodes.add(cols[9]);
+      }
+    }
+    if (listeningInodes.size === 0) return null;
+
+    let pids;
+    try {
+      pids = fs.readdirSync('/proc');
+    } catch (_) {
+      return null;
+    }
+    for (const pidStr of pids) {
+      if (!/^\d+$/.test(pidStr)) continue;
+      const fdDir = `/proc/${pidStr}/fd`;
+      let fds;
+      try {
+        fds = fs.readdirSync(fdDir);
+      } catch (_) {
+        continue;
+      }
+      for (const fd of fds) {
+        let link;
+        try {
+          link = fs.readlinkSync(`${fdDir}/${fd}`);
+        } catch (_) {
+          continue;
+        }
+        const m = link.match(/^socket:\[(\d+)\]$/);
+        if (m && listeningInodes.has(m[1])) return Number(pidStr);
+      }
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * 读取进程真实启动时间（ISO），用于「运行时常」精准展示。
+ * 公式：系统启动时间(btime, 来自 /proc/stat) + 进程 starttime(时钟滴答) / CLK_TCK。
+ * 比「本模块记录的启动时刻」更准（能覆盖被回收/换 pid 的外部托管进程）。
+ * @param {number} pid
+ * @returns {string|null} ISO 时间或 null
+ */
+function getProcessStartIso(pid) {
+  try {
+    const stat = fs.readFileSync('/proc/stat', 'utf8');
+    const btimeMatch = stat.match(/^btime\s+(\d+)/m);
+    if (!btimeMatch) return null;
+    const btime = parseInt(btimeMatch[1], 10);
+
+    const procStat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const idx = procStat.lastIndexOf(')');
+    const parts = procStat.slice(idx + 2).split(' ');
+    const starttime = parseInt(parts[19], 10) || 0;
+    const ticks = 100; // sysconf _SC_CLK_TCK
+    const startSec = btime + starttime / ticks;
+    if (!Number.isFinite(startSec)) return null;
+    return new Date(startSec * 1000).toISOString();
+  } catch (_) {
+    return null;
+  }
+}
+
 module.exports = {
   isWithinSandbox,
   safeJoin,
@@ -372,4 +460,6 @@ module.exports = {
   listSubDirs,
   readTail,
   getListeningPortsForPid,
+  findPidByPort,
+  getProcessStartIso,
 };

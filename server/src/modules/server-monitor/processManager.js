@@ -22,6 +22,7 @@ const { encodeProjectId, decodeProjectId } = require('./ids');
 const {
   isPidAlive, readProcStat, computeCpuPercent, isPortListening,
   probeHttp, processMatchesScript, getListeningPortsForPid,
+  findPidByPort, getProcessStartIso,
 } = require('./util');
 const logger = require('../../utils/logger');
 
@@ -446,6 +447,12 @@ async function getStatus(projectPath) {
         }),
       };
     }
+    // 端口反查：即便本模块无运行记录，只要端口在监听即判定运行中（比「无记录=已停止」更准）
+    const portForProbe = (script && script.port) || null;
+    if (portForProbe) {
+      const portPid = findPidByPort(portForProbe);
+      if (portPid) return await _procStatusForPid(base, portPid, 'auto');
+    }
     return {
       ...base,
       ..._statusShape(SERVICE_STATUS.STOPPED, {
@@ -471,6 +478,24 @@ async function getStatus(projectPath) {
   if (!alive || !processMatchesScript(pid, script && script.start)) {
     const wasRunning = rt.phase === SERVICE_STATUS.RUNNING;
     const crashed = wasRunning || (rt.everRunning === true);
+    // 端口反查：记录的 PID 已失效，但端口仍在监听 → 进程仍运行（可能换 pid / 被回收）
+    const probePort = (rt.port != null) ? rt.port : (script && script.port);
+    if (probePort) {
+      const portPid = findPidByPort(probePort);
+      if (portPid && processMatchesScript(portPid, script && script.start)) {
+        const st = await _procStatusForPid(base, portPid, base.source);
+        // 用真实 pid 回写运行时记录，避免下次重复反查
+        _runtime[projectPath] = {
+          ...rt,
+          pid: portPid,
+          phase: SERVICE_STATUS.RUNNING,
+          everRunning: true,
+          startedAt: st.startedAt || rt.startedAt,
+        };
+        saveRuntime();
+        return st;
+      }
+    }
       delete _runtime[projectPath];
       saveRuntime();
       const ext = await getExternalStatusByPath(projectPath);
@@ -585,6 +610,41 @@ function _statusShape(status, extra = {}) {
     statusText: STATUS_TEXT[status] || status,
     running: status === SERVICE_STATUS.RUNNING,
     ...extra,
+  };
+}
+
+/**
+ * 由「端口反查到的真实 PID」构造运行中状态（更准的运行时长 / 资源占用）。
+ * 用于：本模块无运行记录但端口在监听、或记录的 PID 已失效但端口仍在监听的场景。
+ * @param {object} base getStatus 基础字段
+ * @param {number} pid 端口实际监听进程 PID
+ * @param {string} [source] 覆盖来源（默认沿用 base.source）
+ */
+async function _procStatusForPid(base, pid, source) {
+  const sample = readProcStat(pid);
+  let cpu = null;
+  if (sample) {
+    const prev = _cpuSamples.get(pid);
+    const now = Date.now();
+    if (prev) cpu = computeCpuPercent(prev.sample, sample, now - prev.ts);
+    _cpuSamples.set(pid, { sample, ts: now });
+  }
+  const startedAt = getProcessStartIso(pid);
+  const uptimeSec = startedAt
+    ? Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)
+    : 0;
+  return {
+    ...base,
+    ..._statusShape(SERVICE_STATUS.RUNNING, {
+      pid,
+      listening: base.port ? true : null,
+      health: null,
+      startedAt,
+      uptimeSec,
+      cpuPercent: cpu,
+      memRssMb: sample ? sample.memRssMb : null,
+      source: source || base.source,
+    }),
   };
 }
 
