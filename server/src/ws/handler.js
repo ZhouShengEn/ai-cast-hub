@@ -306,6 +306,7 @@ async function handleMessage(ws, deviceUuid, message, getWsByDeviceUuid) {
       const ALLOWED_ACTIONS = [
         'start_alarm', 'stop_alarm',
         'start_location_track', 'stop_location_track',
+        'request_location',
         'lock_device', 'unlock_device',
       ];
       if (!ALLOWED_ACTIONS.includes(action)) {

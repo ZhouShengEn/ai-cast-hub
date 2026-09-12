@@ -417,6 +417,7 @@ async function getStatus(projectPath) {
     id: encodeProjectId(projectPath),
     path: projectPath,
     port: (rt && rt.port != null) ? rt.port : (script && script.port) || null,
+    source: script && script.source === 'custom' ? 'custom' : 'auto',
     nginxLinked,
     logFile: script ? logPathFor(projectPath) : null,
     scriptInfo: script ? { source: script.source, notes: script.notes } : null,

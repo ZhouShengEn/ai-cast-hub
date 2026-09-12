@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -48,6 +49,7 @@ class AntiTheftService : Service() {
         private const val REQ_CONTENT = 1
         private const val REQ_STOP_ALARM = 2
         private const val REQ_STOP_LOCATION = 3
+        private const val REQ_ALARM_SCREEN = 4
 
         /** 当前状态（进程内有效，供 Flutter 侧查询） */
         @Volatile var alarmRunning = false
@@ -84,6 +86,7 @@ class AntiTheftService : Service() {
 
     private var mediaPlayer: MediaPlayer? = null
     private var originalAlarmVolume = -1
+    private var alarmWakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
 
     private val alarmTimeoutRunnable = Runnable {
@@ -125,6 +128,7 @@ class AntiTheftService : Service() {
         super.onDestroy()
         stopAlarmInternal()
         locationSharing = false
+        releaseAlarmWakeLock()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -172,7 +176,37 @@ class AntiTheftService : Service() {
         alarmRunning = true
         handler.removeCallbacks(alarmTimeoutRunnable)
         handler.postDelayed(alarmTimeoutRunnable, ALARM_TIMEOUT_MS)
+
+        // 熄屏场景：点亮屏幕（ACQUIRE_CAUSES_WAKE_UP + ON_AFTER_RELEASE），
+        // 配合通知的 fullScreenIntent，即使手机锁屏也能亮屏并弹出停止界面，
+        // 用户丢失手机后仍能通过 PC 触发响铃并立即看到/停止。
+        acquireAlarmWakeLock()
+
         Log.i(TAG, "响铃已启动（用户可随时停止，5 分钟后自动停止）")
+    }
+
+    /** 点亮屏幕的 WakeLock：仅响铃期间持有，停止时释放 */
+    private fun acquireAlarmWakeLock() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            alarmWakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK
+                        or PowerManager.ACQUIRE_CAUSES_WAKE_UP
+                        or PowerManager.ON_AFTER_RELEASE,
+                "AIContainerHub::AntiTheftAlarm",
+            ).apply { acquire(ALARM_TIMEOUT_MS + 60_000L) }
+        } catch (e: Exception) {
+            Log.w(TAG, "获取响铃 WakeLock 失败（不影响响铃）: ${e.message}")
+        }
+    }
+
+    private fun releaseAlarmWakeLock() {
+        alarmWakeLock?.let {
+            if (it.isHeld) {
+                try { it.release() } catch (_: Exception) {}
+            }
+        }
+        alarmWakeLock = null
     }
 
     private fun applyAlarmAudioAttributes(player: MediaPlayer) {
@@ -191,6 +225,7 @@ class AntiTheftService : Service() {
 
     private fun stopAlarmInternal() {
         handler.removeCallbacks(alarmTimeoutRunnable)
+        releaseAlarmWakeLock()
 
         mediaPlayer?.apply {
             try {
@@ -252,6 +287,12 @@ class AntiTheftService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
 
+        // 响铃时通过 fullScreenIntent 在锁屏上亮屏弹出停止界面，
+        // 即便手机熄屏/丢失也能被 PC 触发并立即看到。
+        if (alarmRunning) {
+            builder.setFullScreenIntent(buildAlarmScreenIntent(), true)
+        }
+
         if (alarmRunning) {
             builder.addAction(
                 android.R.drawable.ic_lock_idle_alarm,
@@ -275,6 +316,19 @@ class AntiTheftService : Service() {
         return PendingIntent.getActivity(
             this,
             REQ_CONTENT,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    /** 响铃锁屏亮屏用的全屏意图：拉起 AlarmActivity 并点亮屏幕 */
+    private fun buildAlarmScreenIntent(): PendingIntent {
+        val intent = Intent(this, AlarmActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        return PendingIntent.getActivity(
+            this,
+            REQ_ALARM_SCREEN,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )

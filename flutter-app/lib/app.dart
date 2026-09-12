@@ -15,6 +15,7 @@ import 'screens/network_tools_screen.dart';
 import 'screens/anti_theft_screen.dart';
 import 'services/local_storage.dart';
 import 'services/debug_service.dart';
+import 'services/anti_theft_service.dart';
 import 'services/message_service.dart';
 import 'services/websocket_service.dart';
 import 'utils/navigator_key.dart';
@@ -88,6 +89,10 @@ class _MyAppState extends State<MyApp> {
       // 消息通道必须与 UI 解耦：Web 端点击「主动连接消息」时，
       // App 即使停在首页 / 后台也能收到 room_invitation 并建立 DataChannel。
       unawaited(_startMessageChannel());
+      // 启动防盗指令后台监听（P2-3）：响铃 / 定位指令必须与 UI 解耦，
+      // 即使 App 停在首页 / 后台 / 锁屏，也能通过 WS（由 BackgroundConnectionService
+      // 持 WakeLock 保活）收到并响应 PC 下发的远程指令。
+      unawaited(AntiTheftService().startListening());
     }).catchError((e) {
       DebugService().warn('[App] 启动 WS 连接失败（将自动重连）: $e');
     });

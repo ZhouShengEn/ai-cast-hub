@@ -92,6 +92,14 @@
             android:exported="false"
             android:foregroundServiceType="specialUse"
             tools:targetApi="34" />
+        <!-- 响铃锁屏亮屏界面：被 PC 触发响铃时点亮屏幕并允许一键停止 -->
+        <activity
+            android:name=".AlarmActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

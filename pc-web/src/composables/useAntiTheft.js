@@ -74,6 +74,21 @@ export function useAntiTheft() {
     command(uuid, 'stop_location_track')
   }
 
+  /**
+   * 主动向手机请求一次当前坐标（P2-2）。
+   * 与「开始定位」(持续共享) 的区别：请求一次即返回，不维持后台定时上报；
+   * 即便未开启实时共享，也能立即拿到手机此刻的位置。
+   */
+  function requestLocation(uuid) {
+    if (!uuid) return
+    command(uuid, 'request_location')
+  }
+
+  /** 清除面板展示的最后一次坐标（P2-2：解决旧坐标一直残留不清除的问题） */
+  function clearLocation() {
+    latestLocation.value = null
+  }
+
   function lockDevice(uuid) {
     command(uuid, 'lock_device')
   }
@@ -91,6 +106,8 @@ export function useAntiTheft() {
     stopAlarm,
     startTracking,
     stopTracking,
+    requestLocation,
+    clearLocation,
     lockDevice,
     unlockDevice,
   }

@@ -41,17 +41,33 @@
         </button>
       </div>
 
-      <!-- 坐标卡片 -->
-      <div class="rounded-lg border border-gray-200 p-3 bg-white">
-        <div class="flex items-center justify-between mb-1">
-          <span class="text-xs text-gray-500">最近坐标</span>
-          <span
-            v-if="tracking"
-            class="text-xs text-green-600 flex items-center gap-1"
-          >
-            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>共享中
-          </span>
-        </div>
+        <!-- 坐标卡片 -->
+        <div class="rounded-lg border border-gray-200 p-3 bg-white">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-xs text-gray-500">最近坐标</span>
+            <div class="flex items-center gap-2">
+              <button
+                @click="onRefreshLocation"
+                :disabled="refreshing"
+                class="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 text-gray-600 transition-colors disabled:opacity-50"
+              >
+                {{ refreshing ? '请求中…' : '刷新定位' }}
+              </button>
+              <button
+                v-if="hasLocation"
+                @click="onClearLocation"
+                class="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 text-gray-400 transition-colors"
+              >
+                清除
+              </button>
+              <span
+                v-if="tracking"
+                class="text-xs text-green-600 flex items-center gap-1"
+              >
+                <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>共享中
+              </span>
+            </div>
+          </div>
 
         <template v-if="hasLocation">
           <div class="text-sm text-gray-800 font-mono">
@@ -102,7 +118,7 @@ import { useDeviceStore } from '../../stores/device'
 import { useAntiTheft } from '../../composables/useAntiTheft'
 
 const deviceStore = useDeviceStore()
-const { latestLocation, lastAck, tracking, startAlarm, stopAlarm, startTracking, stopTracking } =
+const { latestLocation, lastAck, tracking, startAlarm, stopAlarm, startTracking, stopTracking, requestLocation, clearLocation } =
   useAntiTheft()
 const showToast = inject('showToast', () => {})
 
@@ -111,6 +127,9 @@ const targetUuid = computed(() => {
   const d = deviceStore.pairedDevices[0]
   return d ? d.uuid || d.id || d.deviceUuid : ''
 })
+
+/** 刷新定位的请求中状态（由坐标回调驱动清除，兜底 3s 超时） */
+const refreshing = ref(false)
 
 const hasLocation = computed(() => {
   const loc = latestLocation.value
@@ -165,7 +184,10 @@ function ensureMap() {
 watch(
   () => latestLocation.value,
   (loc) => {
-    if (loc && typeof loc.latitude === 'number') nextTick(ensureMap)
+    if (loc && typeof loc.latitude === 'number') {
+      refreshing.value = false
+      nextTick(ensureMap)
+    }
   },
 )
 
@@ -197,5 +219,19 @@ function onToggleTracking() {
     startTracking(targetUuid.value)
     showToast('已请求位置共享，等待手机授权并上报', 'info')
   }
+}
+function onRefreshLocation() {
+  if (!targetUuid.value) return
+  refreshing.value = true
+  requestLocation(targetUuid.value)
+  showToast('已向手机请求当前位置', 'info')
+  // 兜底：3 秒后若手机无回执也解除「请求中」态
+  setTimeout(() => {
+    refreshing.value = false
+  }, 3000)
+}
+function onClearLocation() {
+  clearLocation()
+  showToast('已清除坐标显示', 'info')
 }
 </script>
