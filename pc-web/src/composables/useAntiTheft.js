@@ -45,22 +45,33 @@ export function useAntiTheft() {
     if (action === 'start_location_track') tracking.value = true
   })
 
+  // App 重新上线/重连（device_rebind）时主动再要一次定位：
+  // 防止自动上报那一次因后台取位置失败而永久不展示（只进消息界面才出现）。
+  onMessage('device_rebind', () => {
+    const d = deviceStore.pairedDevices[0]
+    const uuid = d?.uuid || d?.deviceUuid
+    if (uuid) requestLocation()
+  })
+
   /**
    * 手机（配对设备）上线即主动请求一次定位：
    * 满足「App 连接 Web 端后自动上报一次定位信息」的可视效果——Web 首页立即可见坐标，
    * 且坐标常驻展示（不再被 startTracking 清零）。
    */
   watch(
-    () => deviceStore.pairedDevices[0]?.isOnline,
-    (online) => {
-      if (online && !_autoRequested) {
+    () => {
+      const d = deviceStore.pairedDevices[0]
+      return d?.uuid || d?.deviceUuid || null
+    },
+    (uuid) => {
+      // 已配对即主动请求一次定位：不再等 isOnline 时序（isOnline 推送偶发漏触发
+      // 会导致「必须进消息界面收条指令才展示」）。配对关系本身即代表两端就绪。
+      if (uuid && !_autoRequested) {
         _autoRequested = true
-        const d = deviceStore.pairedDevices[0]
-        const uuid = d?.uuid || d?.deviceUuid
-        if (uuid) requestLocation(uuid)
+        requestLocation()
       }
-      // 离线后再上线允许再次自动请求一次
-      if (!online) _autoRequested = false
+      // 配对解除后允许下次重新配对再请求
+      if (!uuid) _autoRequested = false
     },
     { immediate: true },
   )
@@ -104,7 +115,9 @@ export function useAntiTheft() {
    * 与「开始定位」(持续共享) 的区别：请求一次即返回，不维持后台定时上报；
    * 即便未开启实时共享，也能立即拿到手机此刻的位置。
    */
-  function requestLocation(uuid) {
+  function requestLocation() {
+    const d = deviceStore.pairedDevices[0]
+    const uuid = d?.uuid || d?.deviceUuid
     if (!uuid) return
     command(uuid, 'request_location')
   }

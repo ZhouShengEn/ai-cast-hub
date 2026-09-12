@@ -288,12 +288,31 @@ class AntiTheftService {
     if (uuid == null || uuid.isEmpty) return;
     _targetDeviceUuid = uuid;
     unawaited(_storage.setLastAntiTheftTarget(uuid));
-    // 已连接则立即上报一次当前坐标（满足"关联后 Web 首页立刻看到定位"）。
-    // 未连接则由 connectionStateStream 在下次连上后补报（_autoReportedLocation 防重）。
-    if (WebSocketService.instance.connectionState == WsConnectionState.connected) {
-      _autoReportedLocation = true;
-      unawaited(_reportLocation());
+    _tryAutoReport();
+  }
+
+  /// 绑定/重连后尝试自动上报一次定位。
+  /// 关键点（修复「只有进消息界面才展示定位」）：此前上报只有「一次机会」——
+  /// 若那次后台取位置失败或 WS 尚未就绪，就再也不会自动报，只能等收到远程指令
+  /// （而远程指令恰在进消息界面才下发）。这里改为：已连则立即报，失败 2s 后重试一次；
+  /// 未连则交由 [_initWsListener] 的 connectionStateStream 在连上后补报。
+  void _tryAutoReport() {
+    if (_targetDeviceUuid == null) return;
+    if (WebSocketService.instance.connectionState != WsConnectionState.connected) {
+      return; // 等 connectionStateStream 连上后由 _initWsListener 补报
     }
+    _autoReportedLocation = true;
+    _reportLocation().then((ok) {
+      if (!ok) {
+        // 后台首次取位置可能失败（GPS 未就绪/权限延迟），2s 后兜底重试一次
+        Future.delayed(const Duration(seconds: 2), () {
+          if (_targetDeviceUuid != null &&
+              WebSocketService.instance.connectionState == WsConnectionState.connected) {
+            unawaited(_reportLocation());
+          }
+        });
+      }
+    });
   }
 
   /// 主动上报一次当前坐标（供绑定成功后或 UI 手动触发）

@@ -27,6 +27,8 @@ class BackgroundConnectionService : Service() {
         createNotificationChannel()
         acquireWakeLock()
         acquireWifiLock()
+        // 周期唤醒：Doze 下也能让 WebSocket 主动重连，确保熄屏后仍能收呼叫响铃/定位
+        KeepAliveReceiver.schedule(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -56,6 +58,7 @@ class BackgroundConnectionService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        KeepAliveReceiver.cancel(this)
         releaseWakeLock()
         releaseWifiLock()
     }

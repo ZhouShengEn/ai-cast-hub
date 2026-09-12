@@ -229,6 +229,9 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
       if (firstPaired.isNotEmpty) {
         try {
           AntiTheftService().setTargetDevice(firstPaired.first.deviceUuid);
+          // 兜底：若设备 WS 已连，立即上报一次当前坐标（不依赖 connectionStateStream
+          // 是否恰好发过 connected）。设置 target 后再调，上报才会带 targetDeviceUuid。
+          AntiTheftService().reportLocationNow();
         } catch (e) {
           DebugService().warn('[Device] 绑定后设置防盗目标失败(非致命): $e');
         }
