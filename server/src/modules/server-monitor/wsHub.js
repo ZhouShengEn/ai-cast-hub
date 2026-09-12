@@ -182,7 +182,9 @@ function handleSubscribeLog(ws, payload) {
   if (!projectId) return;
   const projectPath = decodeProjectId(projectId);
   if (!projectPath) return;
-  const logFile = processManager.logPathFor(projectPath);
+  const logFile = processManager.externalLogPath(projectPath)
+    || processManager.pm2LogPathFor(projectPath)
+    || processManager.logPathFor(projectPath);
   try {
     const stop = logService.watch(logFile, (chunk) => {
       // 按行推送，附带分级（前端再渲染颜色）

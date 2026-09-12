@@ -300,6 +300,63 @@ async function readTail(filePath, lines = 200) {
   });
 }
 
+/**
+ * 获取某进程监听的 TCP 端口列表（读 /proc/net/tcp{,6} + /proc/<pid>/fd socket inode 映射）。
+ * 用于 pm2 托管进程的端口自动识别（pm2 jlist 不带端口信息）。
+ * @param {number} pid
+ * @returns {number[]} 监听端口数组（可能为空）
+ */
+function getListeningPortsForPid(pid) {
+  try {
+    // 1. 收集全系统 LISTEN socket: inode -> port
+    const inodeToPort = new Map();
+    for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+      let raw;
+      try {
+        raw = fs.readFileSync(file, 'utf8');
+      } catch (_) {
+        continue;
+      }
+      const lines = raw.split('\n').slice(1); // 跳过表头
+      for (const line of lines) {
+        const cols = line.trim().split(/\s+/);
+        if (cols.length < 10) continue;
+        // 状态 0A = LISTEN
+        if (cols[3] !== '0A') continue;
+        const localPort = parseInt(cols[1].split(':')[1], 16);
+        const inode = cols[9];
+        if (localPort > 0 && inode) inodeToPort.set(inode, localPort);
+      }
+    }
+    if (inodeToPort.size === 0) return [];
+
+    // 2. 遍历进程 fd，匹配 socket:[inode]
+    const ports = new Set();
+    const fdDir = `/proc/${pid}/fd`;
+    let fds;
+    try {
+      fds = fs.readdirSync(fdDir);
+    } catch (_) {
+      return [];
+    }
+    for (const fd of fds) {
+      let link;
+      try {
+        link = fs.readlinkSync(`${fdDir}/${fd}`);
+      } catch (_) {
+        continue;
+      }
+      const m = link.match(/^socket:\[(\d+)\]$/);
+      if (!m) continue;
+      const port = inodeToPort.get(m[1]);
+      if (port) ports.add(port);
+    }
+    return [...ports].sort((a, b) => a - b);
+  } catch (_) {
+    return [];
+  }
+}
+
 module.exports = {
   isWithinSandbox,
   safeJoin,
@@ -314,4 +371,5 @@ module.exports = {
   md5File,
   listSubDirs,
   readTail,
+  getListeningPortsForPid,
 };

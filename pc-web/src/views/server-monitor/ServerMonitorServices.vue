@@ -62,6 +62,8 @@
               </router-link>
               <span class="px-1.5 py-0.5 rounded bg-surface-100 text-[10px] text-gray-500">{{ typeLabel(svc.type) }}</span>
               <span v-if="svc.source === 'custom'" class="px-1.5 py-0.5 rounded bg-indigo-100 text-[10px] text-indigo-600">自定义脚本</span>
+              <span v-else-if="svc.source === 'pm2'" class="px-1.5 py-0.5 rounded bg-cyan-100 text-[10px] text-cyan-700">pm2 托管</span>
+              <span v-else-if="svc.source === 'systemd'" class="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] text-slate-600">systemd</span>
             </div>
             <div class="text-xs text-gray-400 truncate" :title="svc.path">{{ truncatePath(svc.path) }}</div>
           </div>
@@ -108,7 +110,7 @@
           </span>
           <span v-if="svc.scriptInfo?.notes" class="text-gray-400">脚本：{{ svc.scriptInfo.notes }}</span>
           <span class="ml-auto">
-            <button :disabled="!isAdmin" class="px-2 py-1 rounded bg-primary-600 text-white text-xs hover:bg-primary-700 disabled:opacity-40" @click="doBuild(svc)">编译</button>
+            <button v-if="svc.source !== 'pm2' && svc.source !== 'systemd'" :disabled="!isAdmin" class="px-2 py-1 rounded bg-primary-600 text-white text-xs hover:bg-primary-700 disabled:opacity-40" @click="doBuild(svc)">编译</button>
           </span>
         </div>
       </div>
@@ -136,7 +138,6 @@ function toggle(id) {
   collapsed.value = s
 }
 function badgeText(svc) {
-function badgeText(svc) {
   // 细分状态优先：启动中 / 启动失败 / 异常退出 都要如实展示，
   // 不能像以前那样「进程还在就算运行中、进程没了就显示未启动」。
   switch (svc.status) {
@@ -146,7 +147,6 @@ function badgeText(svc) {
     case 'error': return '异常'
     default: return svc.running ? '运行中' : '已停止'
   }
-}
 }
 function gitInfo(svc) {
   const g = svc.git?.status ? gitLabel(svc.git.status) : { text: '-', icon: '', cls: '' }

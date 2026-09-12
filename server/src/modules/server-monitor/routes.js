@@ -164,7 +164,7 @@ router.post('/services/:id/build', permission.requireAdmin, async (req, res) => 
 router.get('/services/:id/logs', async (req, res) => {
   const p = resolvePath(req, res); if (!p) return;
   const lines = parseInt(req.query.lines, 10) || 500;
-  const logFile = processManager.logPathFor(p);
+  const logFile = processManager.externalLogPath(p) || processManager.pm2LogPathFor(p) || processManager.logPathFor(p);
   const r = await logService.readRecent(logFile, lines);
   if (!r.ok) return fail(res, 404, r.message || '无日志');
   ok(res, { content: r.content, path: r.path });

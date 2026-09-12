@@ -6,7 +6,7 @@
         <router-link to="/monitor/services" class="text-gray-400 hover:text-gray-600">← 返回</router-link>
         <h1 class="text-2xl font-bold text-surface-900">{{ detail.name }}</h1>
         <span class="px-2 py-0.5 rounded bg-surface-100 text-xs text-gray-500">{{ typeLabel(detail.type) }}</span>
-        <StatusBadge :running="detail.running" :error="detail.status === 'error'" :port-locked="!!detail.nginxLink" :text="detail.running ? '运行中' : '已停止'" />
+        <StatusBadge :running="detail.running" :error="['error','start_failed','crashed'].includes(detail.status)" :port-locked="!!detail.nginxLink" :text="detail.running ? '运行中' : '已停止'" />
         <span v-if="detail.portLocked" class="text-amber-600 text-xs">🔒 端口被 Nginx 锁定</span>
       </div>
       <div class="flex items-center gap-2">

@@ -69,6 +69,51 @@ async function getServices(withGit = true) {
       env: override.env || [],
     });
   }
+
+  // ---- 合并外部托管服务（pm2 / systemd nginx） ----
+  // 注意：被 pm2 托管的工作区目录项目已在上面经 getStatus 反映为 pm2 真实状态，
+  // 这里仅补充「非目录项目」的外部服务（如 systemd nginx、未扫描到的 pm2 应用），
+  // 避免重复列出同一服务。
+  try {
+    const ext = await processManager.detectExternalServices();
+    const dirPaths = new Set(services.map((s) => s.path));
+    for (const e of ext) {
+      if (e.source === 'pm2' && e.cwd && dirPaths.has(e.cwd)) {
+        // 该 pm2 进程的工作区就是某个已扫描目录项目，已在上面展示，跳过
+        continue;
+      }
+      services.push({
+        id: e.id,
+        path: e.path,
+        name: e.name,
+        type: e.type,
+        source: e.source,
+        status: e.status,
+        statusText: e.statusText,
+        running: e.running,
+        port: e.port,
+        ports: e.ports,
+        pid: e.pid,
+        listening: e.listening,
+        health: e.health,
+        startedAt: e.startedAt,
+        uptimeSec: e.uptimeSec,
+        cpuPercent: e.cpuPercent,
+        memRssMb: e.memRssMb,
+        cwd: e.cwd,
+        pm2Name: e.pm2Name,
+        systemdUnit: e.systemdUnit,
+        scriptInfo: { source: 'pm2', notes: e.source === 'systemd' ? '系统服务 (systemctl)' : 'pm2 进程管理器托管' },
+        git: null,
+        nginxLink: null,
+        portLocked: false,
+        env: [],
+      });
+    }
+  } catch (e) {
+    logger.debug(`[Monitor] 外部服务合并失败: ${e.message}`);
+  }
+
   return services;
 }
 
