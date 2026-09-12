@@ -597,10 +597,10 @@ class MessageService {
       _msgLog('RECV chunk $seq/$total size=${chunkData.length}B received=${meta['chunksReceived']}');
     }
 
-    _handleChunk({
-      'id': id, 'seq': seq, 'total': total,
-      'data': base64Encode(chunkData),
-    });
+    // 二进制分片直接存原始字节，避免先 base64 编码再经 _handleChunk 解码的无谓往返。
+    // 旧实现每片多一次编解码 + 内存分配，高吞吐时卡住主 isolate 事件循环，
+    // 导致 SCTP 接收窗口收缩 → 对端（Web）DC 缓冲区持续满载 → 文件传输超时。
+    _storeChunkData(id, seq, total, chunkData);
   }
 
   // ---- 发送（Text + File，带流控） ----
@@ -991,8 +991,10 @@ class MessageService {
     });
   }
 
-  void _handleChunk(Map<String, dynamic> d) {
-    final id = d['id'] as String;
+  /// 写入一个已收到的分片（二进制路径直接传原始字节，旧 JSON/base64 路径先解码）。
+  ///
+  /// 抽出公共逻辑，避免二进制分片在接收端做无谓的 base64 编解码往返（见 [_handleBinaryChunk]）。
+  void _storeChunkData(String id, int seq, int total, Uint8List chunkBytes) {
     // 取消后到达的在途分片一律丢弃：否则会重建 meta 并重新落一条记录，
     // 这正是「Web 端取消后 App 端出现空白文件」的成因。
     if (_cancelledTransfers.contains(id)) return;
@@ -1002,13 +1004,9 @@ class MessageService {
       return;
     }
     final buf = meta['buffer'] as List<Uint8List?>;
-    final seq = d['seq'] as int;
-    final total = d['total'] as int;
     // 跳过已接收的分片（用于断点续传去重）
-    if (buf[seq] != null) {
-      return;
-    }
-    final chunkBytes = base64Decode(d['data'] as String);
+    if (buf[seq] != null) return;
+
     buf[seq] = chunkBytes;
     meta['chunksReceived'] = (meta['chunksReceived'] as int) + 1;
     // 累计已收字节数：速率计算与「3.2 MB / 10 MB」展示都依赖它，
@@ -1029,7 +1027,6 @@ class MessageService {
     _progressCtl.add({'id': id, 'progress': progress});
 
     // 接收速率：基于最近 1 秒的字节数滑动计算（与发送端口径一致）。
-    // 接收端此前完全没有速率统计，UI 上只能干等进度条，无法判断是否在传输。
     _maybeReportReceiveRate(id, meta, total);
 
     // 检查是否全部接收完毕
@@ -1037,6 +1034,15 @@ class MessageService {
       _msgLog('RECV ✅ 所有chunk收齐，组装文件 id=${_safeId(id)}');
       _assembleFile(id);
     }
+  }
+
+  /// 兼容旧协议（JSON/base64）的分片入口
+  void _handleChunk(Map<String, dynamic> d) {
+    final id = d['id'] as String;
+    final seq = d['seq'] as int;
+    final total = d['total'] as int;
+    final chunkBytes = base64Decode(d['data'] as String);
+    _storeChunkData(id, seq, total, chunkBytes);
   }
 
   /// 接收速率滑动采样：fileId -> [(时刻, 累计字节)]

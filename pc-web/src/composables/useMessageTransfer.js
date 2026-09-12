@@ -540,26 +540,32 @@ export function useMessageTransfer() {
     const seq = view.getUint32(1 + idLen, false)
     const total = view.getUint32(1 + idLen + 4, false)
 
-    // 提取 chunk 数据并转为 base64
-    const chunkData = bytes.slice(headerSize)
-    let binary = ''
-    for (let i = 0; i < chunkData.length; i++) binary += String.fromCharCode(chunkData[i])
-    const base64 = btoa(binary)
+    // 直接取原始分片字节（slice 零拷贝副本），不再做逐字节拼字符串 + btoa/atob 的往返。
+    // 旧实现每片 64KB 要跑 6 万次字符串拼接再 base64，高吞吐时卡住主线程
+    // → SCTP 接收窗口收缩 → 对端（App）DC 缓冲区持续满载 → 文件传输超时。
+    const chunkBytes = bytes.slice(headerSize)
 
-    // 安全网：如果 file_start 还没到，暂存 chunk
+    // 安全网：如果 file_start 还没到，暂存 chunk（存原始字节）
     if (!_fileBuffers[id]) {
       if (!_pendingChunks[id]) _pendingChunks[id] = []
-      _pendingChunks[id].push({ id, seq, total, data: base64 })
+      _pendingChunks[id].push({ id, seq, total, bytes: chunkBytes })
       console.warn('[Message] chunk 早于 file_start 到达, 暂存: id=', id, 'seq=', seq, '/', total)
       return
     }
 
     // 每 10 个 chunk 或首尾打日志
     if (seq === 0 || seq === total - 1 || seq % 10 === 0) {
-      console.log('[Message] chunk', seq, '/', total, 'size=', chunkData.length)
+      console.log('[Message] chunk', seq, '/', total, 'size=', chunkBytes.length)
     }
 
-    _handleFileChunkData({ id, seq, total, data: base64 })
+    _handleFileChunkData({ id, seq, total, bytes: chunkBytes })
+  }
+
+  function _base64ToUint8(b64) {
+    const binary = atob(b64)
+    const out = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+    return out
   }
 
   function _handleFileChunkData(data) {
@@ -570,15 +576,17 @@ export function useMessageTransfer() {
     }
     // 跳过已接收的分片（断点续传去重）
     if (buf[data.seq]) return
-    try {
-      const binary = atob(data.data)
-      const bytes = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-      buf[data.seq] = bytes
-    } catch (e) {
-      console.error('[Message] base64 解码失败, seq:', data.seq, e)
-      return
+    // 二进制路径已直接给出原始字节（data.bytes）；旧 JSON/base64 协议在此解码一次。
+    let bytes = data.bytes
+    if (!bytes) {
+      try {
+        bytes = _base64ToUint8(data.data)
+      } catch (e) {
+        console.error('[Message] base64 解码失败, seq:', data.seq, e)
+        return
+      }
     }
+    buf[data.seq] = bytes
 
     // 活动重置超时
     _resetFileTransferTimer(data.id)
@@ -988,7 +996,7 @@ export function useMessageTransfer() {
       while (_dataChannel && _dataChannel.bufferedAmount > CHUNK_BACKLOG_LIMIT) {
         await new Promise(r => setTimeout(r, 2))
         retryCount++
-        if (retryCount > 1500) {
+        if (retryCount > 2500) {
           console.error('[Message] 文件传输超时：DC 缓冲区持续满载')
           store.updateMessage(msgId, { status: 'interrupted' })
           return
