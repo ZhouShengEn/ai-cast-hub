@@ -177,9 +177,11 @@ class AntiTheftService : Service() {
         handler.removeCallbacks(alarmTimeoutRunnable)
         handler.postDelayed(alarmTimeoutRunnable, ALARM_TIMEOUT_MS)
 
-        // 熄屏场景：点亮屏幕（ACQUIRE_CAUSES_WAKE_UP + ON_AFTER_RELEASE），
-        // 配合通知的 fullScreenIntent，即使手机锁屏也能亮屏并弹出停止界面，
-        // 用户丢失手机后仍能通过 PC 触发响铃并立即看到/停止。
+        // 熄屏场景：屏幕点亮由 AlarmActivity 的 setTurnScreenOn(true) +
+        // setShowWhenLocked(true) + FLAG_KEEP_SCREEN_ON 负责（API 27+ 官方做法，
+        // 比给 PARTIAL_WAKE_LOCK 加 ACQUIRE_CAUSES_WAKE_UP 更稳，且后者与
+        // PARTIAL_WAKE_LOCK 组合会在运行时抛 IllegalArgumentException）。
+        // 这里 WakeLock 只需保活 CPU，让响铃声音持续播放、服务不被回收。
         acquireAlarmWakeLock()
 
         Log.i(TAG, "响铃已启动（用户可随时停止，5 分钟后自动停止）")
@@ -191,7 +193,6 @@ class AntiTheftService : Service() {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             alarmWakeLock = pm.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK
-                        or PowerManager.ACQUIRE_CAUSES_WAKE_UP
                         or PowerManager.ON_AFTER_RELEASE,
                 "AIContainerHub::AntiTheftAlarm",
             ).apply { acquire(ALARM_TIMEOUT_MS + 60_000L) }

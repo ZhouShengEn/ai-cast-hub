@@ -148,7 +148,9 @@ class RemoteControlService : AccessibilityService() {
          */
         fun openAccessibilitySettings(context: Context) {
             val launched = try {
-                val detail = Intent(Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS).apply {
+                // 注意：ACTION_ACCESSIBILITY_DETAILS_SETTINGS 是 @SystemApi/@hide 常量，
+                // 不在公开 SDK 的 android.jar 中，直接引用会编译失败。用其等价字符串值。
+                val detail = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                     data = android.net.Uri.parse("package:${context.packageName}")
                 }

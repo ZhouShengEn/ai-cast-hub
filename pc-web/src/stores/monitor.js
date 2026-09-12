@@ -43,8 +43,25 @@ export const useMonitorStore = defineStore('monitor', () => {
     alerts.value = alerts.value.filter((a) => a.id !== id)
   }
 
+  /**
+   * 合并服务列表并保留 git 信息。
+   * 服务端周期推送（services_update / snapshot）可能不含 git 字段
+   * （aggregator.getServices(false) 不拉取 git，避免每 3 秒一次 git fetch），
+   * 若直接整体替换会清掉首屏 REST 加载的 git 数据，导致卡片上的
+   * 「git：分支 / 领先落后 / 可拉取」展示一会就消失。
+   * 因此：当新数据缺少 git 但旧数据有 git 时，沿用旧 git。
+   */
+  function mergeServicesPreservingGit(next) {
+    const prevByKey = new Map(services.value.map((s) => [s.id || s.path, s]))
+    return (next || []).map((s) => {
+      const old = prevByKey.get(s.id || s.path)
+      if (old && old.git && !s.git) return { ...s, git: old.git }
+      return s
+    })
+  }
+
   function applySnapshot(payload) {
-    services.value = payload.services || []
+    services.value = mergeServicesPreservingGit(payload.services)
     external.value = payload.external || []
     nginxLinks.value = payload.nginxLinks || []
     if (payload.system) system.value = payload.system
@@ -57,7 +74,7 @@ export const useMonitorStore = defineStore('monitor', () => {
     registered = true
     ws.onMessage('auth', (p) => { role.value = p.role; connected.value = true })
     ws.onMessage('snapshot', (p) => applySnapshot(p))
-    ws.onMessage('services_update', (p) => { services.value = p.services || []; connected.value = true })
+    ws.onMessage('services_update', (p) => { services.value = mergeServicesPreservingGit(p.services); connected.value = true })
     ws.onMessage('system_update', (p) => { system.value = p.system })
     ws.onMessage('nginx_links_update', (p) => { nginxLinks.value = p.nginxLinks || [] })
     ws.onMessage('service_status', (p) => {

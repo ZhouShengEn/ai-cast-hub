@@ -114,12 +114,34 @@ function genVue(project, override) {
     else if (scripts.serve) scriptName = 'serve';
     else if (scripts.start) scriptName = 'start';
   } catch {}
+
+  // 检测 Vite 开发端口：用于「端口在监听即判定运行中」（即便本模块无运行记录也能识别）。
+  // 优先读 vite.config.* 的 server.port，否则回退到 Vite 默认 5173。
+  const devPort = detectVitePort(cwd) ?? 5173;
+
   return {
     type: project.type, source: 'auto',
-    start: { bin: 'npm', args: ['run', scriptName], cwd, env: {}, note: `npm run ${scriptName}（开发服务）` },
+    start: { bin: 'npm', args: ['run', scriptName], cwd, env: {}, note: `npm run ${scriptName}（开发服务 :${devPort}）` },
     stop: { strategy: 'kill-pid' }, build: { bin: 'npm', args: ['run', 'build'], cwd },
-    port: null, notes: 'Vue/前端项目，默认拉起开发服务（dev/serve）。生产请改用 build + 静态托管。',
+    port: devPort, notes: 'Vue/前端项目，默认拉起开发服务（dev/serve）。生产请改用 build + 静态托管。',
   };
+}
+
+/**
+ * 从 vite.config.* 中尽力提取 dev server 端口。
+ * @param {string} cwd
+ * @returns {number|null}
+ */
+function detectVitePort(cwd) {
+  for (const f of ['vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'vite.config.cjs']) {
+    try {
+      const content = fs.readFileSync(path.join(cwd, f), 'utf8');
+      const m = content.match(/server\s*\??\s*[:=]\s*\{[^}]*?port\s*[:=]\s*(\d+)/i)
+        || content.match(/port\s*[:=]\s*(\d+)/i);
+      if (m) return parseInt(m[1], 10);
+    } catch {}
+  }
+  return null;
 }
 
 function genSpringboot(project, override) {
