@@ -122,7 +122,7 @@ class AntiTheftService {
         if (state == WsConnectionState.connected) {
           if (!_autoReportedLocation && _targetDeviceUuid != null) {
             _autoReportedLocation = true;
-            unawaited(_reportLocation());
+            _reportLocationWithRetry();
           }
         } else if (state == WsConnectionState.disconnected) {
           // 断线后允许下次重连再上报一次
@@ -292,26 +292,34 @@ class AntiTheftService {
   }
 
   /// 绑定/重连后尝试自动上报一次定位。
-  /// 关键点（修复「只有进消息界面才展示定位」）：此前上报只有「一次机会」——
-  /// 若那次后台取位置失败或 WS 尚未就绪，就再也不会自动报，只能等收到远程指令
-  /// （而远程指令恰在进消息界面才下发）。这里改为：已连则立即报，失败 2s 后重试一次；
-  /// 未连则交由 [_initWsListener] 的 connectionStateStream 在连上后补报。
+  /// 关键点（修复「只有进消息界面才展示定位」）：已连则立即报，并通过
+  /// [_reportLocationWithRetry] 克服 GPS 冷启动（首次取不到坐标就多次重试），
+  /// 确保拿到 Fix 后立即上报，完全不依赖消息界面。未连则交由 [_initWsListener]
+  /// 的 connectionStateStream 在连上后补报。
   void _tryAutoReport() {
     if (_targetDeviceUuid == null) return;
     if (WebSocketService.instance.connectionState != WsConnectionState.connected) {
       return; // 等 connectionStateStream 连上后由 _initWsListener 补报
     }
     _autoReportedLocation = true;
+    _reportLocationWithRetry();
+  }
+
+  /// 上报定位，并克服 GPS 冷启动：室内或刚授权时首次取坐标常失败，
+  /// 因此在约 30s 窗口内按 5s 间隔重试，确保拿到 Fix 后立即上报（无需进消息界面）。
+  void _reportLocationWithRetry({int attempt = 0, int maxAttempts = 6}) {
     _reportLocation().then((ok) {
-      if (!ok) {
-        // 后台首次取位置可能失败（GPS 未就绪/权限延迟），2s 后兜底重试一次
-        Future.delayed(const Duration(seconds: 2), () {
-          if (_targetDeviceUuid != null &&
-              WebSocketService.instance.connectionState == WsConnectionState.connected) {
-            unawaited(_reportLocation());
-          }
-        });
+      if (ok) return;
+      if (attempt + 1 >= maxAttempts) return;
+      if (WebSocketService.instance.connectionState != WsConnectionState.connected) {
+        return;
       }
+      Future.delayed(const Duration(seconds: 5), () {
+        if (_targetDeviceUuid != null &&
+            WebSocketService.instance.connectionState == WsConnectionState.connected) {
+          _reportLocationWithRetry(attempt: attempt + 1, maxAttempts: maxAttempts);
+        }
+      });
     });
   }
 

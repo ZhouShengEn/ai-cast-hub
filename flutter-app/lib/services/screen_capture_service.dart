@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'background_service.dart';
 import 'debug_service.dart';
+import 'system_audio_service.dart';
 
 /// 屏幕捕获服务
 ///
@@ -64,18 +65,34 @@ class ScreenCaptureService {
           }
         }
 
-        // flutter_webrtc 会缓存这次授权返回的 Intent。Android 14+ 要求每次
-        // 投屏会话都重新授权，且必须在授权后才能启动 mediaProjection FGS。
-        final granted = await webrtc.Helper.requestCapturePermission(
-          fullScreenOnly: true,
-        );
-        if (!granted) {
-          throw Exception('用户取消了屏幕录制授权');
+        // 统一申请 MediaProjection 授权：一次授权同时供屏幕画面捕获 + 系统音频内录使用。
+        // 原生层会把授权 Intent 注入 flutter_webrtc，使 getDisplayMedia 不再弹第二次授权，
+        // 解决荣耀/华为等 ROM 双投影冲突、系统音频无声的问题。
+        final systemAudio = SystemAudioService();
+        final audioSupported = await systemAudio.isSupported();
+        final bool projectionGranted;
+        if (audioSupported) {
+          projectionGranted = await systemAudio.requestProjection();
+          if (!projectionGranted) {
+            throw Exception('用户取消了屏幕录制授权');
+          }
+          DebugService().log(
+            '[ScreenCapture] 统一 MediaProjection 授权成功（屏幕+音频复用）',
+            level: LogLevel.info,
+          );
+        } else {
+          // 低版本系统没有 AudioPlaybackCapture，只捕获画面即可
+          projectionGranted = await webrtc.Helper.requestCapturePermission(
+            fullScreenOnly: true,
+          );
+          if (!projectionGranted) {
+            throw Exception('用户取消了屏幕录制授权');
+          }
+          DebugService().log(
+            '[ScreenCapture] MediaProjection 用户授权成功（仅画面）',
+            level: LogLevel.info,
+          );
         }
-        DebugService().log(
-          '[ScreenCapture] MediaProjection 用户授权成功',
-          level: LogLevel.info,
-        );
 
         final started = await BackgroundService.startMediaProjectionService();
         DebugService().log(

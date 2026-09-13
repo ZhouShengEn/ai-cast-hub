@@ -401,11 +401,10 @@ export function useCastReceiver(externalVideoRef, options = {}) {
       castStore.setControlChannelOpen(true)
       // 通道就绪后立即查询一次无障碍服务状态，用于 Web 端提示用户
       sendControl({ type: 'query_status' })
-      // 用户已选定非默认画质时，连接建立即下发（重连/新会话都会走到这里，
-      // 保证上次的选择在新会话生效，无需手动再切一次）
-      if (currentQuality.value !== DEFAULT_QUALITY) {
-        setQuality(currentQuality.value)
-      }
+      // 连接建立即下发当前画质（默认 medium 也会下发）：保证编码器从一开始就拿到
+      // 明确的分辨率/帧率/码率，避免「不切画质就跑原生分辨率 + 无码率上限」导致的高负载与卡顿。
+      // 重连/新会话都会走到这里，用户上次的选择也自动生效，无需手动再切一次。
+      setQuality(currentQuality.value)
     }
     channel.onclose = () => {
       console.log('[CastReceiver] 🔌 远程控制 DataChannel 已关闭')

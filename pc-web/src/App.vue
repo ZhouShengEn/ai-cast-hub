@@ -37,6 +37,7 @@ import { useDeviceStore } from './stores/device'
 import { useMessageStore } from './stores/message'
 import { useMessageTransfer } from './composables/useMessageTransfer'
 import { useUiStore } from './stores/ui'
+import { useAntiTheft } from './composables/useAntiTheft'
 import MainLayout from './layout/MainLayout.vue'
 
 const route = useRoute()
@@ -151,6 +152,13 @@ onMounted(async () => {
 
   // 全局启动消息通道监听（无论是否在消息页面都能收到消息）
   startMessageListening()
+
+  // 全局启用防盗/定位监听（关键修复 P3-3）：
+  // 此前 useAntiTheft 仅在 AntiTheftPanel 挂载时才实例化，其 device_location_update
+  // 监听器与「配对即请求定位」的 watch 不激活，导致 Web 端必须打开消息/防盗页才能看到
+  // 手机定位——表现为「进消息界面才能定位」。这里在 App 启动即实例化，使其全局常驻监听，
+  // 手机绑定后立即可见防盗与定位，完全不依赖消息界面。
+  useAntiTheft()
 
   // 注册视口监听：窗口尺寸变化时自动切换 PC / 移动端布局模式
   uiStore.bindViewportListener()

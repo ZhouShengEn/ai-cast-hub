@@ -2,6 +2,7 @@ package com.example.ai_cast_hub
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -15,17 +16,24 @@ import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 保存自建的 MediaProjection 令牌。
+ * 保存统一的 MediaProjection 令牌及其授权 Intent。
  *
- * flutter_webrtc 内部的 MediaProjection 授权 Intent 是其 GetUserMediaImpl 的私有字段且无 getter，
- * Dart 层拿不到，所以系统内录必须由我们自己再申请一次屏幕采集授权，并在此保存令牌。
- *
- * 注意：此令牌仅用于「系统音频内录」，与 flutter_webrtc 内部的屏幕采集投影是相互独立的两路。
- * 因此停止/释放本令牌不会影响屏幕画面投屏。
+ * 荣耀/华为等 ROM 对双 MediaProjection（一路屏幕、一路音频）支持极差，常导致授权弹两次且音频无声。
+ * 这里把「系统音频内录」与「flutter_webrtc 屏幕捕获」复用同一次授权：
+ *   1. Dart 先调用 [SystemAudioService.requestProjection] 弹一次授权；
+ *   2. 授权成功后把 Intent 注入 flutter_webrtc 的 GetUserMediaImpl.mediaProjectionData，
+ *      后续 getDisplayMedia 不再弹第二次授权；
+ *   3. 同一个 MediaProjection 既用于 AudioPlaybackCapture（系统音频），也用于屏幕画面捕获。
  */
 object SystemAudioProjectionHolder {
     @Volatile
     var mediaProjection: MediaProjection? = null
+
+    @Volatile
+    var mediaProjectionData: Intent? = null
+
+    @Volatile
+    var resultCode: Int = android.app.Activity.RESULT_CANCELED
 }
 
 /**
@@ -96,8 +104,15 @@ class SystemAudioCaptureManager {
     private var audioRecord: AudioRecord? = null
     private var captureThread: Thread? = null
 
-    /** 本次采集使用的 MediaProjection 令牌（仅用于音频内录，独立一路） */
+    /** 本次采集使用的 MediaProjection 令牌 */
     private var mediaProjectionRef: MediaProjection? = null
+
+    /**
+     * 本管理器是否持有 MediaProjection 的所有权。
+     * 当与 flutter_webrtc 屏幕捕获复用同一个 MediaProjection 时，所有权归屏幕捕获侧，
+     * 音频 stop 时只释放 AudioRecord，不能 stop MediaProjection，否则会把屏幕画面也掐断。
+     */
+    private var ownsMediaProjection = true
 
     /** 应用上下文（applicationContext，避免内存泄漏），用于恢复音量 */
     private var appContext: Context? = null
@@ -117,6 +132,7 @@ class SystemAudioCaptureManager {
         mediaProjection: MediaProjection,
         onPcm: (ByteArray) -> Unit,
         onError: ((String) -> Unit)? = null,
+        ownsProjection: Boolean = true,
     ): Boolean {
         if (!isSupported()) {
             Log.w(TAG, "当前系统不支持内录（需要 Android 10 / API 29+）")
@@ -128,6 +144,9 @@ class SystemAudioCaptureManager {
         }
         this.appContext = context.applicationContext
         this.onError = onError
+        // 记录投影所有权：与 flutter_webrtc 复用同一授权令牌时应为 false（借用方），
+        // 此时 stop() 只释放 AudioRecord，不 stop 共享投影，避免掐断屏幕画面。
+        this.ownsMediaProjection = ownsProjection
 
         // 保存原始媒体音量并静音（音量仅在录屏授权成功后改动，见 MainActivity 门控）
         saveAndMuteMediaVolume()

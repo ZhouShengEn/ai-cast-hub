@@ -46,7 +46,7 @@ class MainActivity : FlutterActivity() {
     private val APP_CHANNEL = "ai_cast_hub/app"
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** 独立申请屏幕采集授权的请求码（取 MediaProjection 令牌用于系统内录） */
+    /** 统一申请屏幕采集授权的请求码（供屏幕捕获 + 系统音频内录复用） */
     private val REQUEST_MEDIA_PROJECTION = 9001
 
     private val systemAudioCapture = SystemAudioCaptureManager()
@@ -54,6 +54,9 @@ class MainActivity : FlutterActivity() {
     private var pendingProjectionResult: MethodChannel.Result? = null
     /** 注册的 MediaProjection 生命周期回调，停止采集时反注册 */
     private var projectionCallback: MediaProjection.Callback? = null
+
+    /** 保留 FlutterEngine 引用，用于把授权 Intent 注入 flutter_webrtc */
+    private var flutterEngineRef: FlutterEngine? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,6 +66,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        flutterEngineRef = flutterEngine
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -399,17 +403,15 @@ class MainActivity : FlutterActivity() {
     // ---- 系统内录（AudioPlaybackCapture）----
 
     /**
-     * 申请一次独立的屏幕采集授权。
+     * 申请统一的屏幕采集授权。
      *
-     * flutter_webrtc 内部的 MediaProjection 令牌拿不到（私有字段无 getter），
-     * 所以系统内录必须自己再申请一次。代价是用户会看到两次录屏授权弹窗。
+     * 该授权 Intent 同时用于：
+     *   1. 系统音频内录（AudioPlaybackCapture）
+     *   2. flutter_webrtc 屏幕画面捕获
+     * 通过反射把 Intent 注入 flutter_webrtc 内部后，getDisplayMedia 不再弹第二次授权，
+     * 解决荣耀/华为等 ROM 上双投影冲突、弹两次授权且系统音频无声的问题。
      */
     private fun requestMediaProjection(result: MethodChannel.Result) {
-        if (!SystemAudioCaptureManager.isSupported()) {
-            Log.w(TAG, "系统版本低于 Android 10(API 29)，不支持系统内录")
-            result.success(false)
-            return
-        }
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         pendingProjectionResult = result
         @Suppress("DEPRECATION")
@@ -424,12 +426,17 @@ class MainActivity : FlutterActivity() {
         val pending = pendingProjectionResult
         pendingProjectionResult = null
         if (resultCode != android.app.Activity.RESULT_OK || data == null) {
-            Log.w(TAG, "用户取消了屏幕采集授权，无法进行系统内录")
+            Log.w(TAG, "用户取消了屏幕采集授权")
             pending?.success(false)
             return
         }
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val mp = mpm.getMediaProjection(resultCode, data)
+        if (mp == null) {
+            Log.e(TAG, "getMediaProjection 返回 null")
+            pending?.success(false)
+            return
+        }
         // 注册生命周期回调：用户从状态栏停止录屏或系统回收投影时，自动停止内录并释放资源
         projectionCallback = object : MediaProjection.Callback() {
             override fun onStop() {
@@ -438,11 +445,51 @@ class MainActivity : FlutterActivity() {
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            mp!!.registerCallback(projectionCallback!!, Handler(Looper.getMainLooper()))
+            mp.registerCallback(projectionCallback!!, Handler(Looper.getMainLooper()))
         }
+        // 保存统一令牌：屏幕捕获与系统音频内录复用
         SystemAudioProjectionHolder.mediaProjection = mp
-        Log.i(TAG, "已获取独立 MediaProjection 令牌，系统内录可用")
+        SystemAudioProjectionHolder.mediaProjectionData = data
+        SystemAudioProjectionHolder.resultCode = resultCode
+        // 把授权 Intent 注入 flutter_webrtc，使其 getDisplayMedia 不再弹第二次授权
+        injectMediaProjectionDataIntoFlutterWebRTC(data)
+        Log.i(TAG, "已获取统一 MediaProjection 令牌并注入 flutter_webrtc")
         pending?.success(true)
+    }
+
+    /**
+     * 将授权 Intent 反射注入 flutter_webrtc 的 GetUserMediaImpl.mediaProjectionData。
+     *
+     * flutter_webrtc 1.5.2 的 getDisplayMedia 在 mediaProjectionData 为 null 时会重新弹授权，
+     * 而我们已经通过统一授权拿到了 Intent。注入后，后续 getDisplayMedia 会直接使用该 Intent，
+     * 用户只需点一次「开始录制」。
+     */
+    private fun injectMediaProjectionDataIntoFlutterWebRTC(data: Intent) {
+        try {
+            val engine = flutterEngineRef ?: return
+            val plugin = engine.plugins.get(FlutterWebRTCPlugin::class.java)
+                ?: throw IllegalStateException("FlutterWebRTCPlugin 未注册")
+            val pluginClass = plugin.javaClass
+
+            val methodCallHandlerField = pluginClass.getDeclaredField("methodCallHandler")
+            methodCallHandlerField.isAccessible = true
+            val methodCallHandler = methodCallHandlerField.get(plugin)
+                ?: throw IllegalStateException("methodCallHandler 为空")
+
+            val getUserMediaImplField = methodCallHandler.javaClass.getDeclaredField("getUserMediaImpl")
+            getUserMediaImplField.isAccessible = true
+            val getUserMediaImpl = getUserMediaImplField.get(methodCallHandler)
+                ?: throw IllegalStateException("getUserMediaImpl 为空")
+
+            val mediaProjectionDataField = getUserMediaImpl.javaClass.getDeclaredField("mediaProjectionData")
+            mediaProjectionDataField.isAccessible = true
+            mediaProjectionDataField.set(getUserMediaImpl, data)
+
+            Log.i(TAG, "已注入 MediaProjection 授权到 flutter_webrtc，后续 getDisplayMedia 不再弹授权")
+        } catch (e: Exception) {
+            // 注入失败不会阻断功能，只是 getDisplayMedia 会再弹一次授权（回到旧行为）
+            Log.w(TAG, "注入 MediaProjection 授权到 flutter_webrtc 失败（将回退到双授权）: ${e.message}")
+        }
     }
 
     private fun startSystemAudioCapture(result: MethodChannel.Result) {
@@ -466,7 +513,10 @@ class MainActivity : FlutterActivity() {
             { err ->
                 // 采集致命错误：通知 Dart 层（经调试日志），状态已由 manager 复位
                 Log.e(TAG, "系统内录错误回调: $err")
-            }
+            },
+            // 与 flutter_webrtc 屏幕捕获复用同一授权令牌：音频侧为借用方，
+            // stop 时只释放 AudioRecord，不 stop 共享投影（否则会掐断屏幕画面）。
+            ownsProjection = false
         )
         Log.i(TAG, "startSystemAudioCapture -> $started")
         result.success(started)

@@ -275,8 +275,8 @@ function _releaseRemoteIfActive() {
   _resetPointerGesture()
 }
 
-/** 静音状态（默认静音以满足浏览器自动播放策略，用户可手动取消） */
-const isMuted = ref(true)
+/** 静音状态（默认不静音：投屏成功后手机端系统声音/麦克风应直接播放；浏览器自动播放策略由首次 pointerdown 统一解锁） */
+const isMuted = ref(false)
 
 /** 远程控制状态 */
 const activePointerId = ref(null)
@@ -419,8 +419,11 @@ function onPointerDown(e) {
   const percent = _mapToPhonePercent(e.clientX, e.clientY)
   if (!percent) return
 
-  // 用户手势内解锁 AudioContext（系统音频自动播放兼容）
-  emit('unlock-audio')
+    // 用户手势内解锁 AudioContext，并尝试播放视频（解除浏览器自动播放限制）
+    emit('unlock-audio')
+    if (videoEl.value && videoEl.value.paused) {
+      videoEl.value.play().catch(() => {})
+    }
 
   activePointerId.value = e.pointerId
   gestureStart.value = { ...percent, clientX: e.clientX, clientY: e.clientY }
@@ -581,6 +584,14 @@ function _bindStream(stream) {
   if (stream) {
     const tracks = stream.getTracks()
     hasAudioTrack.value = tracks.some((t) => t.kind === 'audio')
+    // 默认不静音，让用户直接听到系统声音/麦克风；浏览器自动播放策略会在首次 pointerdown 中解锁
+    videoEl.value.muted = isMuted.value
+    const playPromise = videoEl.value.play?.()
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch((err) => {
+        console.log('[CastReceiver] 自动播放被浏览器策略拦截，等待用户手势:', err?.name)
+      })
+    }
     console.log(
       '[CastReceiver] video.srcObject 已绑定, tracks:',
       tracks.map((t) => `${t.kind}(id=${t.id.substring(0, 8)})`).join(', '),

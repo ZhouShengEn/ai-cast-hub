@@ -4,8 +4,6 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 
-import 'webrtc_codec_prefs_stub.dart'
-    if (dart.library.io) 'webrtc_codec_prefs_io.dart';
 import 'debug_service.dart';
 
 /// WebRTC 服务日志
@@ -22,6 +20,10 @@ class WebrtcService {
   webrtc.RTCPeerConnection? _peerConnection;
   webrtc.RTCDataChannel? _dataChannel;
   webrtc.MediaStream? _localStream;
+
+  /// 是否在 offer SDP 中把 H.264 排到最前（启用硬件编码，避免软件 VP8 卡顿）。
+  /// 仅原生平台启用（Web 平台不投屏、无需处理）。
+  bool _preferH264 = false;
 
   /// ICE 候选回调
   void Function(webrtc.RTCIceCandidate)? _onIceCandidateCallback;
@@ -138,9 +140,21 @@ class WebrtcService {
     _ensureConnection();
     _rtcLog('createOffer: 创建中...');
     final offer = await _peerConnection!.createOffer({});
-    await _peerConnection!.setLocalDescription(offer);
-    _rtcLog('createOffer: 已创建, SDP长度=${offer.sdp?.length ?? 0}');
-    return offer;
+    String? sdp = offer.sdp;
+    // 把 H.264 排到 m=video 最前：对端（Chrome/Safari/Firefox 均支持 H.264）会优先协商
+    // 硬件编码的 H.264，避免回落到软件 VP8 导致投屏严重卡顿（这是「投屏很卡」的核心根因之一）。
+    if (_preferH264 && sdp != null) {
+      final munged = _preferH264InSdp(sdp);
+      if (munged != sdp) {
+        _rtcLog('createOffer: 已将 H.264 排到 m=video 最前（启用硬件编码）',
+            level: LogLevel.info);
+        sdp = munged;
+      }
+    }
+    final result = webrtc.RTCSessionDescription(sdp, offer.type);
+    await _peerConnection!.setLocalDescription(result);
+    _rtcLog('createOffer: 已创建, SDP长度=${sdp?.length ?? 0}');
+    return result;
   }
 
   /// 创建 SDP Answer
@@ -381,13 +395,66 @@ class WebrtcService {
     _rtcLog('addStream: 所有轨道已添加完成');
   }
 
-  /// 设置 H.264 视频编码偏好
+  /// 设置 H.264 视频编码偏好（启用硬件编码）
   ///
-  /// Android 硬件编码 H.264 比 VP8/VP9 功耗更低、帧率更稳定。
-  /// 在 addTrack 之后、createOffer/createAnswer 之前调用。
+  /// Android 硬件编码 H.264 比 VP8/VP9 软件编码功耗更低、帧率更稳定，
+  /// 是投屏流畅性的关键。flutter_webrtc 原生 API 不直接暴露 setCodecPreferences 的便捷封装，
+  /// 因此这里只置位偏好标记，真正的「H.264 优先」在 [createOffer] 里对 SDP 的 m=video 行做
+  /// payload type 重排实现——既不丢弃其它编解码能力（保留 VP8/VP9 作降级），又能让对端协商到
+  /// 硬件 H.264。在 addTrack 之后、createOffer 之前调用。
   /// Web 平台通过条件导入自动跳过，编译期无平台 API 引用。
   Future<void> setH264Preference() async {
-    await setH264CodecPreferences(_peerConnection);
+    _preferH264 = !kIsWeb;
+    _rtcLog('已启用 H.264 硬件编码偏好（offer SDP 将把 H.264 排到最前）',
+        level: LogLevel.info);
+  }
+
+  /// 在 SDP 的 m=video 行把 H.264 的 payload type 重排到最前。
+  ///
+  /// WebRTC 协商时 offerer 列出的编解码顺序即偏好顺序，对端会在交集里优先选第一个受支持的。
+  /// 把 H.264 排到最前即引导对端协商硬件 H.264；若设备本身不支持 H.264（极少数）则保持原样。
+  String _preferH264InSdp(String sdp) {
+    final lines = sdp.split('\r\n');
+    int videoLineIdx = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('m=video')) {
+        videoLineIdx = i;
+        break;
+      }
+    }
+    if (videoLineIdx < 0) return sdp;
+
+    // 建立 payload type → 编解码 的映射（a=rtpmap:<pt> <codec>/<clock>）
+    final codecByPt = <String, String>{};
+    for (final line in lines) {
+      if (line.startsWith('a=rtpmap:')) {
+        final rest = line.substring('a=rtpmap:'.length).split(' ');
+        if (rest.length >= 2) {
+          final pt = rest[0];
+          final codec = rest[1].split('/').first.toLowerCase();
+          codecByPt[pt] = codec;
+        }
+      }
+    }
+
+    final videoParts = lines[videoLineIdx].split(' ');
+    final pts = videoParts.skip(1).where((p) => p.isNotEmpty).toList();
+    if (pts.isEmpty) return sdp;
+
+    final h264Pts = <String>[];
+    final otherPts = <String>[];
+    for (final pt in pts) {
+      if (codecByPt[pt] == 'h264') {
+        h264Pts.add(pt);
+      } else {
+        otherPts.add(pt);
+      }
+    }
+    if (h264Pts.isEmpty) return sdp; // 不支持 H.264，保持原样
+
+    final newPts = <String>[...h264Pts, ...otherPts];
+    lines[videoLineIdx] = '${videoParts[0]} ${newPts.join(' ')}';
+    return lines.join('\r\n');
   }
 
   /// 屏幕捕获（Web 端使用 getDisplayMedia）
