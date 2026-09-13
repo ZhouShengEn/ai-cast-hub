@@ -275,8 +275,9 @@ function _releaseRemoteIfActive() {
   _resetPointerGesture()
 }
 
-/** 静音状态（默认不静音：投屏成功后手机端系统声音/麦克风应直接播放；浏览器自动播放策略由首次 pointerdown 统一解锁） */
-const isMuted = ref(false)
+/** 静音状态（默认静音：移动端自动播放策略只允许「静音视频」自动渲染首帧，
+ *  故默认静音以保证画面立即可见；首次 pointerdown 用户手势时取消静音，系统声音/麦克风随之播放） */
+const isMuted = ref(true)
 
 /** 远程控制状态 */
 const activePointerId = ref(null)
@@ -419,6 +420,12 @@ function onPointerDown(e) {
   const percent = _mapToPhonePercent(e.clientX, e.clientY)
   if (!percent) return
 
+    // 首次用户手势：取消视频静音，让系统声音/麦克风音频随之播放
+    // （移动端自动播放策略只允许静音视频自动渲染，首次手势才能解锁带声音的播放）
+    if (isMuted.value) {
+      isMuted.value = false
+      if (videoEl.value) videoEl.value.muted = false
+    }
     // 用户手势内解锁 AudioContext，并尝试播放视频（解除浏览器自动播放限制）
     emit('unlock-audio')
     if (videoEl.value && videoEl.value.paused) {

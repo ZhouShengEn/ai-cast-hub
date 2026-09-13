@@ -28,6 +28,9 @@ function _createInstance(ns, config) {
     iceServersReady: null,
     connectionState: ref('new'),
     remoteStream: shallowRef(null),
+    // 手动兜底流：当远端 ontrack 未关联 MediaStream（event.streams 为空）时，
+    // 用此流汇集各轨道，避免 remoteStream 始终为空导致接收端画面黑屏
+    manualStream: null,
     dataChannel: shallowRef(null),
     iceCandidateCallbacks: new Set(),
     trackCallbacks: new Set(),
@@ -75,10 +78,19 @@ function _createInstance(ns, config) {
     state.pc.ontrack = (event) => {
       log('🎬 收到track事件:', event.track?.kind, 'track id:', event.track?.id)
       log('    streams数量:', event.streams?.length)
-      if (event.streams && event.streams[0]) {
-        log('    stream id:', event.streams[0].id)
-        state.remoteStream.value = event.streams[0]
+      let stream = event.streams && event.streams[0]
+      if (!stream) {
+        // 部分实现/浏览器未把轨道关联到 MediaStream（event.streams 为空），
+        // 手动建一个流并把轨道加进去，避免 remoteStream 始终为空 → 画面永久黑屏。
+        // 视频轨与音频轨会各自触发 ontrack，复用同一手动流，最终汇聚到一条流里。
+        if (!state.manualStream) state.manualStream = new MediaStream()
+        stream = state.manualStream
+        stream.addTrack(event.track)
+        log('    event.streams 为空，已加入手动创建的 MediaStream')
+      } else {
+        log('    stream id:', stream.id)
       }
+      state.remoteStream.value = stream
       state.trackCallbacks.forEach((fn) => fn(event))
     }
 
@@ -133,6 +145,7 @@ function _createInstance(ns, config) {
       state.pc = null
     }
     state.remoteStream.value = null
+    state.manualStream = null
     state.connectionState.value = 'new'
     log('PC 已重置')
   }
