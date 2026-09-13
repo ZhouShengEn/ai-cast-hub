@@ -414,47 +414,58 @@ class WebrtcService {
   /// WebRTC 协商时 offerer 列出的编解码顺序即偏好顺序，对端会在交集里优先选第一个受支持的。
   /// 把 H.264 排到最前即引导对端协商硬件 H.264；若设备本身不支持 H.264（极少数）则保持原样。
   String _preferH264InSdp(String sdp) {
-    final lines = sdp.split('\r\n');
-    int videoLineIdx = -1;
-    for (var i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('m=video')) {
-        videoLineIdx = i;
-        break;
-      }
-    }
-    if (videoLineIdx < 0) return sdp;
-
-    // 建立 payload type → 编解码 的映射（a=rtpmap:<pt> <codec>/<clock>）
-    final codecByPt = <String, String>{};
-    for (final line in lines) {
-      if (line.startsWith('a=rtpmap:')) {
-        final rest = line.substring('a=rtpmap:'.length).split(' ');
-        if (rest.length >= 2) {
-          final pt = rest[0];
-          final codec = rest[1].split('/').first.toLowerCase();
-          codecByPt[pt] = codec;
+    try {
+      final lines = sdp.split('\r\n');
+      int videoLineIdx = -1;
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('m=video')) {
+          videoLineIdx = i;
+          break;
         }
       }
-    }
+      if (videoLineIdx < 0) return sdp;
 
-    final videoParts = lines[videoLineIdx].split(' ');
-    final pts = videoParts.skip(1).where((p) => p.isNotEmpty).toList();
-    if (pts.isEmpty) return sdp;
-
-    final h264Pts = <String>[];
-    final otherPts = <String>[];
-    for (final pt in pts) {
-      if (codecByPt[pt] == 'h264') {
-        h264Pts.add(pt);
-      } else {
-        otherPts.add(pt);
+      // 建立 payload type → 编解码 的映射（a=rtpmap:<pt> <codec>/<clock>）
+      final codecByPt = <String, String>{};
+      for (final line in lines) {
+        if (line.startsWith('a=rtpmap:')) {
+          final rest = line.substring('a=rtpmap:'.length).split(' ');
+          if (rest.length >= 2) {
+            final pt = rest[0];
+            final codec = rest[1].split('/').first.toLowerCase();
+            codecByPt[pt] = codec;
+          }
+        }
       }
-    }
-    if (h264Pts.isEmpty) return sdp; // 不支持 H.264，保持原样
 
-    final newPts = <String>[...h264Pts, ...otherPts];
-    lines[videoLineIdx] = '${videoParts[0]} ${newPts.join(' ')}';
-    return lines.join('\r\n');
+      // m=video 格式: m=video <port> <protocol> <pt1> <pt2> ...
+      // 必须跳过前 3 项（媒体类型、端口、传输协议），只对后面的 payload type 重排，
+      // 否则会把 "9" 和 "UDP/TLS/RTP/SAVPF" 当成 payload type，SDP 格式错乱，
+      // setLocalDescription 会报 SessionDescription is NULL。
+      final videoParts = lines[videoLineIdx].split(' ');
+      if (videoParts.length < 4) return sdp;
+      final header = videoParts.take(3).toList();
+      final pts = videoParts.skip(3).where((p) => p.isNotEmpty).toList();
+      if (pts.isEmpty) return sdp;
+
+      final h264Pts = <String>[];
+      final otherPts = <String>[];
+      for (final pt in pts) {
+        if (codecByPt[pt] == 'h264') {
+          h264Pts.add(pt);
+        } else {
+          otherPts.add(pt);
+        }
+      }
+      if (h264Pts.isEmpty) return sdp; // 不支持 H.264，保持原样
+
+      final newPts = <String>[...h264Pts, ...otherPts];
+      lines[videoLineIdx] = '${header.join(' ')} ${newPts.join(' ')}';
+      return lines.join('\r\n');
+    } catch (e, st) {
+      _rtcLog('H.264 SDP munge 失败（回退原 SDP）: $e\n$st', level: LogLevel.warn);
+      return sdp;
+    }
   }
 
   /// 屏幕捕获（Web 端使用 getDisplayMedia）
