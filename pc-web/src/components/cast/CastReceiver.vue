@@ -1,5 +1,5 @@
 <template>
-  <div ref="containerRef" class="relative w-full aspect-video bg-black rounded-lg overflow-hidden">
+  <div ref="containerRef" class="relative w-full aspect-video bg-black rounded-lg overflow-hidden" :class="{ 'cast-fullscreen': isFullscreen }">
     <!-- 视频变换层：双指捏合缩放 / 平移作用于此层，坐标映射按屏幕实际渲染框计算 -->
     <div
       ref="transformRef"
@@ -7,11 +7,20 @@
       :style="transformStyle"
     >
       <!-- 视频区域（始终渲染，确保 videoEl 始终可用） -->
+      <!--
+        关键 iOS Safari 修复：
+        iOS 在解析 <video> 标签时即评估 autoplay 策略，此时只认「HTML 静态属性」的 muted，
+        不认 JS 后续设置的 property。若仅用 :muted（property 绑定），标签解析时 muted 尚未生效，
+        autoplay 被拒 → 首帧永不渲染 → 黑屏（但控制通道正常，表现为「能触控、画面黑」）。
+        故此处同时写死静态属性 muted + webkit-playsinline，保证 iOS 解析标签即放行 autoplay。
+      -->
       <video
         ref="videoEl"
         class="w-full h-full object-contain"
         autoplay
         playsinline
+        webkit-playsinline
+        muted
         :muted="isMuted"
       ></video>
     </div>
@@ -191,6 +200,14 @@ const videoEl = ref(null)
 const containerRef = ref(null)
 const transformRef = ref(null)
 defineExpose({ videoEl })
+
+/**
+ * 伪全屏状态（CSS fixed 铺满视口，而非原生 Fullscreen API）。
+ * 原因：iOS Safari 对普通元素的 requestFullscreen() 支持极差（历史上仅 video 支持，
+ * 且进入的是 iOS 原生播放器，会剥离我们的触控层 → 全屏后无法远程控制）。
+ * 用 fixed inset-0 模拟全屏既能铺满屏幕，又保留全部触控/按钮，是投屏场景的最佳方案。
+ */
+const isFullscreen = ref(false)
 
 // ---- 双指缩放 / 平移状态 ----
 const zoom = ref(1)
@@ -666,23 +683,25 @@ function toggleMute() {
 
 /** 全屏切换（移动端进入全屏时尝试锁定横屏，获得更大观看区域） */
 async function toggleFullscreen() {
-  const el = containerRef.value || videoEl.value?.parentElement || videoEl.value
+  const el = containerRef.value
   if (!el) return
-  try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen()
-      _unlockOrientation()
-    } else {
-      await el.requestFullscreen()
-      if (ui.isMobile) {
-        try {
-          await screen.orientation?.lock?.('landscape')
-        } catch (_) {
-          // 部分浏览器/上下文不支持锁定方向，忽略
-        }
+  if (isFullscreen.value) {
+    // 退出伪全屏
+    isFullscreen.value = false
+    _unlockOrientation()
+    console.log('[CastReceiver] 退出伪全屏')
+  } else {
+    // 进入伪全屏：CSS fixed 铺满视口，保留全部触控层与按钮
+    isFullscreen.value = true
+    console.log('[CastReceiver] 进入伪全屏')
+    if (ui.isMobile) {
+      try {
+        await screen.orientation?.lock?.('landscape')
+      } catch (_) {
+        // 部分浏览器/上下文不支持锁定方向，忽略
       }
     }
-  } catch (_) {}
+  }
 }
 
 /** 解除方向锁定 */
@@ -721,3 +740,21 @@ onUnmounted(() => {
   _unlockOrientation()
 })
 </script>
+
+<style scoped>
+/* 伪全屏：用 fixed 铺满视口替代原生 Fullscreen API。
+   iOS Safari 对普通元素的 requestFullscreen() 支持差（进入的是原生视频播放器、剥离触控层），
+   故用 CSS 模拟全屏，保留全部触控层与按钮。!important 确保覆盖 tailwind 的 relative/aspect-video。 */
+.cast-fullscreen {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9998 !important;
+  border-radius: 0 !important;
+}
+</style>
+

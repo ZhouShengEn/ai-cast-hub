@@ -854,7 +854,9 @@ class CastService {
         _castLog('音频通道未就绪，跳过自动开启系统音频', level: LogLevel.warn);
         return;
       }
-      final ok = await _systemAudio.start();
+      // 屏幕投屏场景：投影已由屏幕捕获授权并注入 flutter_webrtc，音频复用同一投影，
+      // 切勿再 requestProjection（会弹第二次框并自消费令牌 → 荣耀闪退）。
+      final ok = await _systemAudio.start(requestIfNeeded: false);
       if (ok) {
         _systemAudioEnabled = true;
         _pcmErrorLogged = false;

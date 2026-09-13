@@ -89,7 +89,15 @@ class SystemAudioService {
   }
 
   /// 开始采集系统音频
-  Future<bool> start() async {
+  ///
+  /// [requestIfNeeded]：是否在本方法内申请屏幕授权令牌。
+  ///   - 普通独立场景传 true（默认）：未授权则先弹一次系统授权。
+  ///   - 屏幕投屏场景务必传 false：此时投屏流程已用「屏幕捕获」申请过一次授权，
+  ///     且授权 Intent 已注入 flutter_webrtc（单投影复用）。若这里再 requestProjection，
+  ///     会弹第二次授权框、并自消费那枚只能消费一次的令牌 → 荣耀/Android 16 上直接闪退，
+  ///     且会打断「屏幕+音频复用同一投影」的设计。原生 startCapture 会自行从 flutter_webrtc
+  ///     的 MediaProjection 反射取出并复用，无需本端再申请。
+  Future<bool> start({bool requestIfNeeded = true}) async {
     if (_isCapturing) return true;
 
     if (!await isSupported()) {
@@ -97,8 +105,8 @@ class SystemAudioService {
       return false;
     }
 
-    // 令牌只需申请一次；已授予则不再打扰用户
-    if (!_projectionGranted) {
+    // 令牌只需申请一次；已授予则不再打扰用户（屏幕投屏场景由屏幕捕获复用，传 false 跳过）
+    if (requestIfNeeded && !_projectionGranted) {
       final granted = await requestProjection();
       if (!granted) return false;
     }
