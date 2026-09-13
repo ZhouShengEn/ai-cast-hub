@@ -16,14 +16,18 @@ import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 保存统一的 MediaProjection 令牌及其授权 Intent。
+ * 保存统一的 MediaProjection 授权 Intent 及其 resultCode。
  *
- * 荣耀/华为等 ROM 对双 MediaProjection（一路屏幕、一路音频）支持极差，常导致授权弹两次且音频无声。
- * 这里把「系统音频内录」与「flutter_webrtc 屏幕捕获」复用同一次授权：
- *   1. Dart 先调用 [SystemAudioService.requestProjection] 弹一次授权；
- *   2. 授权成功后把 Intent 注入 flutter_webrtc 的 GetUserMediaImpl.mediaProjectionData，
- *      后续 getDisplayMedia 不再弹第二次授权；
- *   3. 同一个 MediaProjection 既用于 AudioPlaybackCapture（系统音频），也用于屏幕画面捕获。
+ * 关键设计（荣耀/Android 16 投屏闪退修复）：
+ * MediaProjection 授权令牌只允许被消费一次。本项目只弹一次授权，把 Intent 注入 flutter_webrtc，
+ * 由它唯一一次消费令牌创建屏幕投影（见 MainActivity.injectMediaProjectionDataIntoFlutterWebRTC）。
+ * 系统内录**不复用本 holder 的 mediaProjection**，而是事后从 flutter_webrtc 的
+ * OrientationAwareScreenCapturer.mediaProjection 反射取出、作为借用方使用（ownsProjection=false），
+ * 否则本端再 getMediaProjection 会与 flutter_webrtc 对同一令牌二次消费 → 国产 ROM 闪退。
+ *
+ * 因此：
+ *   - [mediaProjectionData] / [resultCode]：授权结果，供注入 flutter_webrtc 使用；
+ *   - [mediaProjection]：已不再承载音频侧的投影（保留字段仅作兼容/兜底，正常流程为 null）。
  */
 object SystemAudioProjectionHolder {
     @Volatile

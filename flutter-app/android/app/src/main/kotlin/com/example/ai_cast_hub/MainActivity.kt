@@ -26,6 +26,7 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.lang.reflect.Field
 import java.net.URLConnection
 import java.util.Locale
 
@@ -431,30 +432,18 @@ class MainActivity : FlutterActivity() {
             pending?.success(false)
             return
         }
-        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val mp = mpm.getMediaProjection(resultCode, data)
-        if (mp == null) {
-            Log.e(TAG, "getMediaProjection 返回 null")
-            pending?.success(false)
-            return
-        }
-        // 注册生命周期回调：用户从状态栏停止录屏或系统回收投影时，自动停止内录并释放资源
-        projectionCallback = object : MediaProjection.Callback() {
-            override fun onStop() {
-                Log.i(TAG, "系统停止了 MediaProjection（用户停止或系统回收），停止系统内录")
-                stopSystemAudioCapture()
-            }
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            mp.registerCallback(projectionCallback!!, Handler(Looper.getMainLooper()))
-        }
-        // 保存统一令牌：屏幕捕获与系统音频内录复用
-        SystemAudioProjectionHolder.mediaProjection = mp
+        // 关键修复（荣耀/Android 16 投屏闪退根因）：
+        // 绝不要在此处自己调用 getMediaProjection(data) 创建 MediaProjection。flutter_webrtc 的
+        // getDisplayMedia 内部会对同一份授权 Intent 再调一次 getMediaProjection，而 Android 的
+        // MediaProjection 授权令牌只允许被消费一次；同一 Intent 第二次 getMediaProjection 在国产
+        // ROM 上会抛未捕获异常（IllegalStateException / NPE）→ 整个 App 直接闪退。
+        // 正确做法：把 Intent 注入 flutter_webrtc，由它唯一一次消费令牌创建屏幕投影；系统内录复用
+        // flutter_webrtc 创建好的 MediaProjection（见 startSystemAudioCapture / getFlutterWebRTCMediaProjection）。
         SystemAudioProjectionHolder.mediaProjectionData = data
         SystemAudioProjectionHolder.resultCode = resultCode
         // 把授权 Intent 注入 flutter_webrtc，使其 getDisplayMedia 不再弹第二次授权
         injectMediaProjectionDataIntoFlutterWebRTC(data)
-        Log.i(TAG, "已获取统一 MediaProjection 令牌并注入 flutter_webrtc")
+        Log.i(TAG, "已获取 MediaProjection 授权令牌并注入 flutter_webrtc（投影交由 flutter_webrtc 唯一消费）")
         pending?.success(true)
     }
 
@@ -504,12 +493,22 @@ class MainActivity : FlutterActivity() {
             result.success(false)
             return
         }
-        val projection = SystemAudioProjectionHolder.mediaProjection
+        // 系统内录复用 flutter_webrtc 屏幕捕获创建好的 MediaProjection（令牌已被它唯一一次消费）。
+        // 不再使用 SystemAudioProjectionHolder.mediaProjection：本端若再 getMediaProjection 会与
+        // flutter_webrtc 对同一令牌二次消费 → 荣耀/Android 16 上闪退。
+        val projection = getFlutterWebRTCMediaProjection()
         if (projection == null) {
-            Log.w(TAG, "尚未取得 MediaProjection 令牌，请先调用 requestProjection")
+            Log.w(TAG, "尚未取到 flutter_webrtc 的 MediaProjection（屏幕投影可能未就绪），系统内录暂不启动，屏幕照常")
             result.success(false)
             return
         }
+        // 在 flutter_webrtc 的投影上挂回调：用户停止/系统回收投影时同步停止内录
+        projection.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.i(TAG, "flutter_webrtc 投影已停止（用户停止或系统回收），停止系统内录")
+                stopSystemAudioCapture()
+            }
+        }, Handler(Looper.getMainLooper()))
         val started = systemAudioCapture.start(
             this,
             projection,
@@ -521,12 +520,72 @@ class MainActivity : FlutterActivity() {
                 // 采集致命错误：通知 Dart 层（经调试日志），状态已由 manager 复位
                 Log.e(TAG, "系统内录错误回调: $err")
             },
-            // 与 flutter_webrtc 屏幕捕获复用同一授权令牌：音频侧为借用方，
+            // 与 flutter_webrtc 屏幕捕获复用同一投影：音频侧为借用方，
             // stop 时只释放 AudioRecord，不 stop 共享投影（否则会掐断屏幕画面）。
             ownsProjection = false
         )
         Log.i(TAG, "startSystemAudioCapture -> $started")
         result.success(started)
+    }
+
+    /**
+     * 从 flutter_webrtc 取出它已创建好的 MediaProjection，供系统内录复用。
+     *
+     * 屏幕投影由 flutter_webrtc 在 getDisplayMedia 时唯一一次消费令牌创建，其
+     * OrientationAwareScreenCapturer.mediaProjection 字段在 startCapture（轨道真正开始发送）后才赋值。
+     * 本方法在音频 start 时调用——此时屏幕投影早已就绪（音频本就在 WebRTC answer 之后才启动），
+     * 因此单次非阻塞提取即可；拿不到则返回 null（音频不启动，但屏幕照常工作）。
+     */
+    private fun getFlutterWebRTCMediaProjection(): MediaProjection? {
+        return try {
+            extractFlutterWebRTCMediaProjectionOnce()
+        } catch (e: Exception) {
+            Log.w(TAG, "提取 flutter_webrtc MediaProjection 异常: ${e.message}")
+            null
+        }
+    }
+
+    private fun extractFlutterWebRTCMediaProjectionOnce(): MediaProjection? {
+        val engine = flutterEngineRef ?: return null
+        @Suppress("UNCHECKED_CAST")
+        val flutterWebRTCCls = Class.forName("com.cloudwebrtc.webrtc.FlutterWebRTCPlugin")
+            as Class<FlutterPlugin>
+        val plugin = engine.plugins.get(flutterWebRTCCls) ?: return null
+        val methodCallHandlerField = plugin.javaClass.getDeclaredField("methodCallHandler")
+        methodCallHandlerField.isAccessible = true
+        val methodCallHandler = methodCallHandlerField.get(plugin) ?: return null
+        val getUserMediaImplField = methodCallHandler.javaClass.getDeclaredField("getUserMediaImpl")
+        getUserMediaImplField.isAccessible = true
+        val getUserMediaImpl = getUserMediaImplField.get(methodCallHandler) ?: return null
+        val capturersField = getUserMediaImpl.javaClass.getDeclaredField("mVideoCapturers")
+        capturersField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val capturers = capturersField.get(getUserMediaImpl) as? Map<Any?, Any?> ?: return null
+        for ((_, info) in capturers) {
+            if (info == null) continue
+            val capturerField = getFieldRecursive(info.javaClass, "capturer") ?: continue
+            capturerField.isAccessible = true
+            val capturer = capturerField.get(info) ?: continue
+            if (capturer.javaClass.name != "com.cloudwebrtc.webrtc.OrientationAwareScreenCapturer") continue
+            val mpField = getFieldRecursive(capturer.javaClass, "mediaProjection") ?: continue
+            mpField.isAccessible = true
+            return mpField.get(capturer) as? MediaProjection
+        }
+        Log.w(TAG, "未找到 flutter_webrtc 屏幕 capturer 的 MediaProjection")
+        return null
+    }
+
+    /** 沿类继承链向上查找字段（兼容字段声明在父类的情况） */
+    private fun getFieldRecursive(clazz: Class<*>, name: String): Field? {
+        var c: Class<*>? = clazz
+        while (c != null) {
+            try {
+                return c.getDeclaredField(name)
+            } catch (_: NoSuchFieldException) {
+                c = c.superclass
+            }
+        }
+        return null
     }
 
     private fun stopSystemAudioCapture() {
