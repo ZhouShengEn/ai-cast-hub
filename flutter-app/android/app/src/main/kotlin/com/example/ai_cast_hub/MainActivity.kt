@@ -22,6 +22,7 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
@@ -467,7 +468,13 @@ class MainActivity : FlutterActivity() {
     private fun injectMediaProjectionDataIntoFlutterWebRTC(data: Intent) {
         try {
             val engine = flutterEngineRef ?: return
-            val plugin = engine.plugins.get(FlutterWebRTCPlugin::class.java)
+            // 不能写死 FlutterWebRTCPlugin::class.java 直接引用：MainActivity 在 app 模块，
+            // 编译期看不到插件 module 的类（CI 上会报 Unresolved reference）。改为按全限定名
+            // 反射取 Class，再交给 PluginRegistry.get() 拿到插件实例。
+            @Suppress("UNCHECKED_CAST")
+            val flutterWebRTCCls = Class.forName("com.cloudwebrtc.webrtc.FlutterWebRTCPlugin")
+                as Class<FlutterPlugin>
+            val plugin = engine.plugins.get(flutterWebRTCCls)
                 ?: throw IllegalStateException("FlutterWebRTCPlugin 未注册")
             val pluginClass = plugin.javaClass
 
