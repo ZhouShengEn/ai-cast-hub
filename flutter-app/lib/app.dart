@@ -13,6 +13,7 @@ import 'screens/message_screen.dart';
 import 'screens/file_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/network_tools_screen.dart';
+import 'screens/http_tool_screen.dart';
 import 'screens/anti_theft_screen.dart';
 import 'services/local_storage.dart';
 import 'services/debug_service.dart';
@@ -153,6 +154,7 @@ class _MyAppState extends State<MyApp> {
             '/file': (context) => const FileScreen(),
             '/settings': (context) => const SettingsScreen(),
             '/network-tools': (context) => const NetworkToolsScreen(),
+            '/http-tool': (context) => const HttpToolScreen(),
             '/anti-theft': (context) => const AntiTheftScreen(),
           },
           builder: (context, child) {

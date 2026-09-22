@@ -183,44 +183,82 @@ class LocalStorage {
 
     return openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
-        // 对话表
-        await db.execute('''
-          CREATE TABLE conversations (
-            id TEXT PRIMARY KEY,
-            device_id TEXT,
-            title TEXT NOT NULL DEFAULT '新对话',
-            model_provider TEXT NOT NULL DEFAULT '',
-            model_name TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-          )
-        ''');
-
-        // 消息表
-        await db.execute('''
-          CREATE TABLE messages (
-            id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL DEFAULT '',
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            model_name TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-          )
-        ''');
-
-        // 索引加速查询
-        await db.execute(
-          'CREATE INDEX idx_messages_conv_id ON messages(conversation_id)',
-        );
-        await db.execute(
-          'CREATE INDEX idx_conversations_updated ON conversations(updated_at DESC)',
-        );
+        await _createV1Tables(db);
+        await _createHttpRecordsTable(db);
       },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // v1 → v2：新增 HTTP 接口调试请求记录表
+        if (oldVersion < 2) {
+          await _createHttpRecordsTable(db);
+        }
+      },
+    );
+  }
+
+  /// v1 既有表：对话 + 消息
+  Future<void> _createV1Tables(Database db) async {
+    // 对话表
+    await db.execute('''
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY,
+        device_id TEXT,
+        title TEXT NOT NULL DEFAULT '新对话',
+        model_provider TEXT NOT NULL DEFAULT '',
+        model_name TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+
+    // 消息表
+    await db.execute('''
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        model_name TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+      )
+    ''');
+
+    // 索引加速查询
+    await db.execute(
+      'CREATE INDEX idx_messages_conv_id ON messages(conversation_id)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_conversations_updated ON conversations(updated_at DESC)',
+    );
+  }
+
+  /// v2 新增表：HTTP 接口调试的请求记录
+  ///
+  /// headers / response_headers 以 JSON 字符串存 `[{"key":..,"value":..}]`。
+  Future<void> _createHttpRecordsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE http_records (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT 'GET',
+        url TEXT NOT NULL DEFAULT '',
+        timeout_sec INTEGER NOT NULL DEFAULT 10,
+        headers TEXT NOT NULL DEFAULT '[]',
+        body TEXT NOT NULL DEFAULT '',
+        status_code INTEGER,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        response_headers TEXT NOT NULL DEFAULT '[]',
+        response_body TEXT NOT NULL DEFAULT '',
+        error TEXT,
+        created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_http_records_created ON http_records(created_at DESC)',
     );
   }
 
@@ -228,6 +266,83 @@ class LocalStorage {
   Future<Database> get db async {
     _db ??= await _initDatabase();
     return _db!;
+  }
+
+  // ---- HTTP 接口调试请求记录 ----
+
+  /// Web 等无 sqflite 环境下的兜底存储 key
+  static const String _httpRecordsFallbackKey = 'http_records_fallback';
+
+  /// 最多保留的请求记录条数
+  static const int httpRecordsLimit = 100;
+
+  /// 新增 / 更新一条请求记录
+  ///
+  /// sqflite 不可用（如 Web）时自动降级为 SharedPreferences 存储。
+  Future<void> saveHttpRecord(Map<String, dynamic> record) async {
+    final database = _db;
+    if (database == null) {
+      final list = _prefs.getStringList(_httpRecordsFallbackKey) ?? <String>[];
+      final id = record['id'];
+      list.removeWhere((e) {
+        try {
+          return (jsonDecode(e) as Map)['id'] == id;
+        } catch (_) {
+          return false;
+        }
+      });
+      list.insert(0, jsonEncode(record));
+      if (list.length > httpRecordsLimit) {
+        list.removeRange(httpRecordsLimit, list.length);
+      }
+      await _prefs.setStringList(_httpRecordsFallbackKey, list);
+      return;
+    }
+    await database.insert(
+      'http_records',
+      record,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// 读取请求记录（按创建时间倒序）
+  Future<List<Map<String, dynamic>>> getHttpRecords() async {
+    final database = _db;
+    if (database == null) {
+      final list = _prefs.getStringList(_httpRecordsFallbackKey) ?? <String>[];
+      return list
+          .map((e) => Map<String, dynamic>.from(jsonDecode(e) as Map))
+          .toList();
+    }
+    return database.query('http_records', orderBy: 'created_at DESC');
+  }
+
+  /// 删除单条请求记录
+  Future<void> deleteHttpRecord(String id) async {
+    final database = _db;
+    if (database == null) {
+      final list = _prefs.getStringList(_httpRecordsFallbackKey) ?? <String>[];
+      list.removeWhere((e) {
+        try {
+          return (jsonDecode(e) as Map)['id'] == id;
+        } catch (_) {
+          return false;
+        }
+      });
+      await _prefs.setStringList(_httpRecordsFallbackKey, list);
+      return;
+    }
+    await database.delete('http_records', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// 清空全部请求记录
+  Future<void> clearHttpRecords() async {
+    final database = _db;
+    if (database == null) {
+      await _prefs.remove(_httpRecordsFallbackKey);
+      return;
+    }
+    await database.delete('http_records');
   }
 
   // ---- 对话缓存 ----

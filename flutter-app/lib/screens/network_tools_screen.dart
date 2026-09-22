@@ -209,6 +209,20 @@ class _NetworkToolsScreenState extends State<NetworkToolsScreen> {
 
           const SizedBox(height: 16),
 
+          // HTTP 接口调试入口
+          Card(
+            child: ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              leading: Icon(Icons.http, size: 32, color: theme.colorScheme.primary),
+              title: Text('HTTP 接口调试', style: theme.textTheme.titleMedium),
+              subtitle: const Text('自定义 Method / URL / Headers / Body，查看原始响应与请求记录'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.pushNamed(context, '/http-tool'),
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
           // Ping 工具
           Card(
             child: Padding(

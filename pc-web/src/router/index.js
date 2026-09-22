@@ -14,11 +14,15 @@ const ServerMonitorNginx = () => import('../views/server-monitor/ServerMonitorNg
 const ServerMonitorAudit = () => import('../views/server-monitor/ServerMonitorAudit.vue')
 const ServerMonitorSettings = () => import('../views/server-monitor/ServerMonitorSettings.vue')
 
+// HTTP 接口调试工具（独立小工具，记录存浏览器 localStorage）
+const HttpToolView = () => import('../views/HttpToolView.vue')
+
 const routes = [
   { path: '/',     name: 'Home',     component: HomeView,     meta: { title: '首页 - 设备绑定' } },
   { path: '/chat', name: 'Chat',     component: ChatView,     meta: { title: 'AI 对话' } },
   { path: '/cast', name: 'Cast',     component: CastView,     meta: { title: '投屏接收' } },
   { path: '/message', name: 'Message', component: MessageView, meta: { title: '消息' } },
+  { path: '/http-tool', name: 'HttpTool', component: HttpToolView, meta: { title: 'HTTP 接口调试' } },
 
   // ---- 服务器运维监控（独立模块） ----
   { path: '/monitor', name: 'MonitorDashboard', component: ServerMonitorDashboard, meta: { title: '服务监控 - 概览' } },

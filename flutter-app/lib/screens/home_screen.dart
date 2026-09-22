@@ -154,7 +154,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with RouteAware {
               context,
               icon: Icons.network_ping,
               title: '网络工具',
-              subtitle: 'Ping 测试 · 查看本机 IP',
+              subtitle: 'Ping 测试 · 本机 IP · HTTP 接口调试',
               route: '/network-tools',
             ),
           ],

@@ -197,6 +197,7 @@ const navItems = [
   { path: '/chat', label: 'AI 对话', icon: '💬' },
   { path: '/cast', label: '投屏接收', icon: '📺' },
   { path: '/message', label: '消息', icon: '💬', hasBadge: true },
+  { path: '/http-tool', label: 'HTTP 调试', icon: '🧪' },
   { path: '/monitor', label: '服务监控', icon: '🖥️', monitor: true },
 ]
 
