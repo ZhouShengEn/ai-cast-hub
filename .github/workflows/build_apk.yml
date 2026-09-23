@@ -19,8 +19,81 @@ jobs:
           flutter-version: '3.29.0'
 
       # 安装Android编译SDK
+      #
+      # 这里【不】使用 android-actions/setup-android@v3：
+      # 它会把 runner 预装的 cmdline-tools 判定为
+      # "Wrong version in preinstalled sdkmanager"，于是重新下载 cmdline-tools 16.0，
+      # 随后在 `sdkmanager --licenses` 阶段异常退出（exit 1），
+      # 导致任务在真正编译之前就失败。
+      # ubuntu-latest 镜像本身已预装 Android SDK（platform-tools / build-tools /
+      # platforms）并已接受过许可，因此只需把 cmdline-tools、platform-tools 暴露到
+      # PATH，再容错地接受一次许可即可。
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          set -uo pipefail
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID SDK root: $SDK_ROOT"
+
+          # 取版本号最高的可用 cmdline-tools（镜像里可能同时存在 latest 与具体版本）
+          CMDLINE_BIN=""
+          for dir in $(ls -d "$SDK_ROOT"/cmdline-tools/*/ 2>/dev/null | sort -V -r); do
+            if [ -x "${dir}bin/sdkmanager" ]; then
+              CMDLINE_BIN="${dir}bin"
+              break
+            fi
+          done
+          if [ -z "$CMDLINE_BIN" ] && [ -x "$SDK_ROOT/tools/bin/sdkmanager" ]; then
+            CMDLINE_BIN="$SDK_ROOT/tools/bin"
+          fi
+          echo "cmdline-tools bin: ${CMDLINE_BIN:-<not found>}"
+
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          if [ -z "$CMDLINE_BIN" ]; then
+            echo "::warning::未找到 sdkmanager，直接使用镜像预装 SDK"
+          else
+            echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
+            # 用环境变量而非已废弃的 --sdk_root 指定 SDK 路径
+            export ANDROID_SDK_ROOT="$SDK_ROOT"
+            export ANDROID_HOME="$SDK_ROOT"
+
+            # 接受许可：失败也不阻塞（镜像 licenses 目录通常已存在且有效）
+            if yes | "$CMDLINE_BIN/sdkmanager" --licenses > /dev/null 2>&1; then
+              echo "Android SDK licenses accepted."
+            elif yes | flutter doctor --android-licenses > /dev/null 2>&1; then
+              echo "Android SDK licenses accepted (via flutter doctor)."
+            else
+              echo "::warning::无法主动接受许可，沿用镜像预装的 licenses"
+            fi
+
+            # 按需补齐编译所需组件。
+            # app/build.gradle.kts 里 compileSdk = 36、ndkVersion = 27.0.12077973，
+            # 镜像若未预装会由 Gradle 自动下载；这里显式补装可让失败原因更清晰。
+            install_if_missing() {
+              local pkg="$1" dir="$2"
+              if [ -e "$SDK_ROOT/$dir" ]; then
+                echo "已存在: $pkg"
+                return 0
+              fi
+              echo "安装: $pkg"
+              if yes | "$CMDLINE_BIN/sdkmanager" "$pkg" > /dev/null 2>&1; then
+                echo "已安装: $pkg"
+              else
+                echo "::warning::$pkg 安装失败，交由 Gradle 自动下载"
+              fi
+            }
+            install_if_missing "platforms;android-36" "platforms/android-36"
+            install_if_missing "ndk;27.0.12077973" "ndk/27.0.12077973"
+          fi
+
+          echo "---- platforms ----"
+          ls "$SDK_ROOT/platforms" 2>/dev/null || true
+          echo "---- build-tools ----"
+          ls "$SDK_ROOT/build-tools" 2>/dev/null || true
+          echo "---- ndk ----"
+          ls "$SDK_ROOT/ndk" 2>/dev/null || true
+          echo "---- licenses ----"
+          ls "$SDK_ROOT/licenses" 2>/dev/null || true
 
       # 缓存依赖，加速重复打包
       #
