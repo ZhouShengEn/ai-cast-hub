@@ -1,0 +1,259 @@
+name: Release Android (正式签名)
+
+# 仅手动触发：仓库 Actions 页面 → 左侧选本工作流 → Run workflow
+on:
+  workflow_dispatch:
+    inputs:
+      build_appbundle:
+        description: '同时构建 AAB（Google Play 上架包）'
+        type: boolean
+        default: false
+      create_release:
+        description: '构建完成后自动创建 GitHub Release'
+        type: boolean
+        default: true
+      release_tag:
+        description: '自定义 Release Tag（留空自动生成 v<版本>-build.<构建号>）'
+        type: string
+        default: ''
+      flutter_version:
+        description: 'Flutter 版本'
+        type: string
+        default: '3.29.0'
+
+# 创建 Release 需要仓库写权限
+permissions:
+  contents: write
+
+# 同一分支下不并发跑多个发布任务，避免同时创建 Release 冲突
+concurrency:
+  group: release-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & Release APK
+    runs-on: ubuntu-latest
+
+    env:
+      # 从 Secrets 还原出来的 keystore 目标路径。
+      # android/.gitignore 已忽略 **/*.jks，绝不会被提交。
+      ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/flutter-app/android/app/ci-release.jks
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+
+      # 复用 ubuntu-latest 预装的 Android SDK。
+      # 不使用 android-actions/setup-android：它会把预装 cmdline-tools 判定为
+      # "Wrong version" 后重新下载，并在 `sdkmanager --licenses` 阶段异常退出。
+      - name: Setup Android SDK
+        run: |
+          set -uo pipefail
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID SDK root: $SDK_ROOT"
+
+          CMDLINE_BIN=""
+          for dir in $(ls -d "$SDK_ROOT"/cmdline-tools/*/ 2>/dev/null | sort -V -r); do
+            if [ -x "${dir}bin/sdkmanager" ]; then
+              CMDLINE_BIN="${dir}bin"
+              break
+            fi
+          done
+          if [ -z "$CMDLINE_BIN" ] && [ -x "$SDK_ROOT/tools/bin/sdkmanager" ]; then
+            CMDLINE_BIN="$SDK_ROOT/tools/bin"
+          fi
+          echo "cmdline-tools bin: ${CMDLINE_BIN:-<not found>}"
+
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          if [ -n "$CMDLINE_BIN" ]; then
+            echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
+            export ANDROID_SDK_ROOT="$SDK_ROOT"
+            export ANDROID_HOME="$SDK_ROOT"
+
+            if yes | "$CMDLINE_BIN/sdkmanager" --licenses > /dev/null 2>&1; then
+              echo "Android SDK licenses accepted."
+            else
+              echo "::warning::sdkmanager --licenses 未成功，沿用镜像预装的 licenses"
+            fi
+
+            # compileSdk = 36、ndkVersion = 27.0.12077973（见 app/build.gradle.kts）
+            install_if_missing() {
+              local pkg="$1" dir="$2"
+              if [ -e "$SDK_ROOT/$dir" ]; then
+                echo "已存在: $pkg"
+                return 0
+              fi
+              echo "安装: $pkg"
+              if yes | "$CMDLINE_BIN/sdkmanager" "$pkg" > /dev/null 2>&1; then
+                echo "已安装: $pkg"
+              else
+                echo "::warning::$pkg 安装失败，交由 Gradle 自动下载"
+              fi
+            }
+            install_if_missing "platforms;android-36" "platforms/android-36"
+            install_if_missing "ndk;27.0.12077973" "ndk/27.0.12077973"
+          fi
+
+      # ------------------------------------------------------------
+      # 从 Secrets 还原 keystore（构建完成后立即销毁）
+      # ------------------------------------------------------------
+      - name: Restore release keystore from Secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::缺少 Secret: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "请在仓库 Settings → Secrets and variables → Actions 中配置以下 4 个 Secret："
+            echo "  ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD"
+            exit 1
+          fi
+
+          # 去掉换行与空白（base64 输出可能带换行）后解码
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '\n\r\t ' | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
+          echo "keystore 已还原：$ANDROID_KEYSTORE_PATH（$(stat -c%s "$ANDROID_KEYSTORE_PATH") bytes）"
+
+          # 提前验证 jks 与别名是否匹配，避免把错误留到 Gradle 签名阶段
+          if ! keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" > /tmp/ks-list.txt 2>&1; then
+            echo "::error::keystore 解析失败：ANDROID_KEYSTORE_BASE64 或 ANDROID_KEYSTORE_PASSWORD 不正确"
+            sed -n '1,10p' /tmp/ks-list.txt
+            exit 1
+          fi
+          if ! grep -q -- "$KEY_ALIAS" /tmp/ks-list.txt; then
+            echo "::error::keystore 中不存在别名 $KEY_ALIAS，请核对 ANDROID_KEY_ALIAS"
+            grep -E '^[^,]+,' /tmp/ks-list.txt || true
+            exit 1
+          fi
+          echo "keystore 校验通过，别名 $KEY_ALIAS 存在。"
+          rm -f /tmp/ks-list.txt
+
+      - name: Install dependencies
+        working-directory: ./flutter-app
+        run: flutter pub get
+
+      # 用 --release 构建；签名由 build.gradle.kts 从环境变量读取
+      - name: Build Release APK
+        working-directory: ./flutter-app
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: flutter build apk --release
+
+      - name: Build Release AAB
+        if: ${{ inputs.build_appbundle }}
+        working-directory: ./flutter-app
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: flutter build appbundle --release
+
+      # ------------------------------------------------------------
+      # 销毁 keystore：紧跟构建之后，缩短密钥在磁盘上的存活时间
+      # always() 保证构建失败时也会执行
+      # ------------------------------------------------------------
+      - name: Destroy keystore
+        if: always()
+        run: |
+          if [ -f "$ANDROID_KEYSTORE_PATH" ]; then
+            shred -u "$ANDROID_KEYSTORE_PATH" 2>/dev/null || rm -f "$ANDROID_KEYSTORE_PATH"
+            echo "keystore 已销毁：$ANDROID_KEYSTORE_PATH"
+          else
+            echo "keystore 不存在，无需销毁"
+          fi
+
+      # 断言产物用的确实是正式签名，而不是悄悄回落的 debug 签名
+      - name: Verify APK is release-signed
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          APKSIGNER="$(ls -d $SDK_ROOT/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::warning::未找到 apksigner，跳过签名校验"
+            exit 0
+          fi
+
+          APK="flutter-app/build/app/outputs/flutter-apk/app-release.apk"
+          "$APKSIGNER" verify --print-certs "$APK" | sed -n '1,12p'
+
+          if "$APKSIGNER" verify --print-certs "$APK" | grep -q 'CN=Android Debug'; then
+            echo "::error::产物仍是 debug 签名，请检查 4 个签名 Secret 是否配置齐全"
+            exit 1
+          fi
+          echo "签名校验通过：产物为正式签名。"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: flutter-app/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
+
+      - name: Upload AAB artifact
+        if: ${{ inputs.build_appbundle }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aab
+          path: flutter-app/build/app/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          VERSION="$(grep -m1 '^version:' flutter-app/pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)"
+          TAG="${{ inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="v${VERSION}-build.${GITHUB_RUN_NUMBER}"
+          fi
+          TITLE="AI Cast Hub v${VERSION} (build ${GITHUB_RUN_NUMBER})"
+
+          FILES="flutter-app/build/app/outputs/flutter-apk/app-release.apk"
+          if [ "${{ inputs.build_appbundle }}" = "true" ]; then
+            FILES="$FILES flutter-app/build/app/outputs/bundle/release/app-release.aab"
+          fi
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖上传产物"
+            gh release upload "$TAG" $FILES --clobber
+          else
+            gh release create "$TAG" $FILES --title "$TITLE" --generate-notes
+          fi
+
+          echo "Release 地址: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          echo "- Release: [$TAG]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Android 正式签名发布构建"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|----|----|"
+            echo "| APK | $(test -f flutter-app/build/app/outputs/flutter-apk/app-release.apk && echo 'app-release.apk 已产出' || echo '未产出') |"
+            echo "| AAB | ${{ inputs.build_appbundle }} |"
+            echo "| 创建 Release | ${{ inputs.create_release }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

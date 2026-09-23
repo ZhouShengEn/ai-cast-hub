@@ -140,7 +140,7 @@ graph TB
 | PM2 | 守护 Node 服务（`ai-cast-server`） |
 | Coturn | TURN 中继（**可选**，未部署时保持配置为空） |
 | MySQL 8 | 预留，见「已知限制」 |
-| GitHub Actions | push master 自动构建 `app-arm64-v8a-debug.apk`（artifact 保留 7 天） |
+| GitHub Actions | ① push master 自动构建 `app-arm64-v8a-debug.apk`（保留 7 天）；② 手动触发正式签名 Release 流水线（APK/AAB + GitHub Release） |
 
 ---
 
@@ -642,8 +642,10 @@ ai-cast-hub/
 │       └── res/xml/             # accessibility_service_config.xml / file_paths.xml
 │
 ├── deploy/                      # nginx / coturn / mysql / sandbox
-├── docs/                        # 设计文档（mermaid）
-├── .github/workflows/build_apk.yml
+├── docs/                        # 设计文档（mermaid）+ android-release-signing.md
+├── .github/workflows/
+│   ├── build_apk.yml            # push master 自动构建 Debug APK
+│   └── release_apk.yml          # 手动触发：正式签名 Release APK/AAB
 └── docker-compose.yml
 ```
 
@@ -747,6 +749,32 @@ flutter build apk --debug --split-per-abi --target-platform android-arm64
 ```
 
 > ⚠️ 不要在 `build.gradle.kts` 里加 `ndk.abiFilters` 来限制架构 —— 它与 `--split-per-abi` 自动设置的 `splits.abi` 冲突，会导致 `Conflicting configuration` 构建失败。单架构请用 `--target-platform android-arm64`。
+
+### 正式签名发布流水线
+
+`.github/workflows/release_apk.yml`，**仅手动触发**：Actions → 选择 **Release Android (正式签名)** → Run workflow。
+
+| 输入 | 默认 | 说明 |
+|------|------|------|
+| `build_appbundle` | `false` | 额外构建 `app-release.aab`（Google Play 上架包） |
+| `create_release` | `true` | 自动创建/更新 GitHub Release |
+| `release_tag` | 空 | 留空自动生成 `v<版本>-build.<构建号>` |
+| `flutter_version` | `3.29.0` | Flutter 版本 |
+
+执行链：从 Secrets 还原 keystore（`keytool` 预校验别名）→ `flutter build apk --release` →（可选 AAB）→ `shred` 销毁密钥 → `apksigner` 断言非 debug 签名 → 上传 artifact → 挂载 GitHub Release。
+
+签名配置只读环境变量，**本地开发完全不受影响**：
+
+| 环境变量 | 用途 |
+|----------|------|
+| `ANDROID_KEYSTORE_PATH` | 还原后的 `.jks` 路径 |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore 口令 |
+| `ANDROID_KEY_ALIAS` | 密钥别名 |
+| `ANDROID_KEY_PASSWORD` | 密钥口令（JKS 时与 storePassword 相同） |
+
+4 个变量齐全且文件存在时才创建 release 签名；否则 release 回落到 debug 签名（构建日志打印 `[signing] release → ...` 便于确认）。
+
+> 📖 密钥生成 / base64 转码 / Secrets 配置 / 密钥备份 / CI 报错排查：**[docs/android-release-signing.md](docs/android-release-signing.md)**
 
 ---
 

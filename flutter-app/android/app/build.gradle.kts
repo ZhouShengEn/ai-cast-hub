@@ -1,9 +1,49 @@
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// ============================================================
+// Release 正式签名（仅 CI 生效，本地开发完全无感）
+// ============================================================
+// CI 在构建前把 keystore（来自 GitHub Secrets 的 base64）还原到 android/app/，
+// 并通过环境变量注入签名信息：
+//   ANDROID_KEYSTORE_PATH      还原后的 .jks 文件路径
+//   ANDROID_KEYSTORE_PASSWORD  keystore 口令
+//   ANDROID_KEY_ALIAS          密钥别名
+//   ANDROID_KEY_PASSWORD       密钥口令
+//
+// 本地开发不设置这些变量 → hasReleaseSigning = false → release 仍回落到 debug 签名，
+// `flutter run --release` / `flutter build apk --release` 的行为与改造前完全一致。
+// 注意：keystore 文件本身绝不入库（android/.gitignore 已忽略 **/*.jks）。
+val releaseKeystoreFile: File? =
+    System.getenv("ANDROID_KEYSTORE_PATH")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { file(it) }
+        ?.takeIf { it.isFile }
+
+val releaseKeystorePassword: String? = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias: String? = System.getenv("ANDROID_KEY_ALIAS")
+val releaseKeyPassword: String? = System.getenv("ANDROID_KEY_PASSWORD")
+
+/** 环境变量齐全且 keystore 文件真实存在时，才启用正式签名 */
+val hasReleaseSigning: Boolean =
+    releaseKeystoreFile != null &&
+        !releaseKeystorePassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank() &&
+        !releaseKeyPassword.isNullOrBlank()
+
+logger.lifecycle(
+    if (hasReleaseSigning) {
+        "[signing] release → 使用 CI 注入的正式签名（alias=$releaseKeyAlias）"
+    } else {
+        "[signing] release → 未检测到完整签名环境变量，回退 debug 签名（本地开发正常）"
+    }
+)
 
 android {
     namespace = "com.example.ai_cast_hub"
@@ -17,6 +57,19 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    signingConfigs {
+        // 仅在 CI 环境变量齐全时创建 release 签名；否则不创建，
+        // 避免本地开发者因缺少文件而在配置阶段报错。
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     defaultConfig {
@@ -37,9 +90,12 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // CI 注入正式签名环境变量时用 release 签名，否则沿用 debug 签名（本地开发）
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
