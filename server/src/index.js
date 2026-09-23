@@ -28,6 +28,16 @@ const { initializeProviders } = require('./services/ai/adapter');
 // ============================================================
 const app = express();
 
+// ---- 信任反向代理 ----
+//
+// 线上 nginx 位于本服务之前，并会注入 X-Forwarded-For。若不声明 trust proxy：
+//   1) express-rate-limit 拿不到真实客户端 IP，所有用户会共用同一个限流计数；
+//   2) 每次请求都会抛出 ERR_ERL_UNEXPECTED_X_FORWARDED_FOR 告警刷满日志。
+// 默认只信任 1 跳（即本机 nginx）。将来若在前面再加一层负载均衡（云 LB / CDN），
+// 用环境变量 TRUST_PROXY 调整跳数即可，无需改代码。
+const trustProxyHops = parseInt(process.env.TRUST_PROXY, 10);
+app.set('trust proxy', Number.isNaN(trustProxyHops) ? 1 : trustProxyHops);
+
 // ---- 全局中间件 ----
 
 // CORS 跨域支持
