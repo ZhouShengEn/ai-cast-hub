@@ -1261,6 +1261,7 @@ class _HttpRecord {
   });
 
   factory _HttpRecord.fromMap(Map<String, dynamic> map) {
+    final responseBody = map['response_body'] as String? ?? '';
     return _HttpRecord(
       id: map['id'] as String? ?? '',
       name: map['name'] as String? ?? '',
@@ -1272,8 +1273,10 @@ class _HttpRecord {
       statusCode: map['status_code'] as int?,
       durationMs: map['duration_ms'] as int? ?? 0,
       responseHeaders: _decodeHeaders(map['response_headers']),
-      responseBody: map['response_body'] as String? ?? '',
-      isJson: (map['is_json'] as int? ?? 0) == 1,
+      responseBody: responseBody,
+      // isJson 不入库，由响应体内容推导：避免表结构与写入字段不一致，
+      // 也省掉一次数据库迁移（字段冗余且存储的是已格式化文本，推导结果一致）。
+      isJson: isJsonText(responseBody),
       error: map['error'] as String?,
       createdAt: DateTime.tryParse(map['created_at'] as String? ?? '') ?? DateTime.now(),
     );
@@ -1292,11 +1295,22 @@ class _HttpRecord {
       'duration_ms': durationMs,
       'response_headers': jsonEncode(responseHeaders),
       'response_body': responseBody,
-      // sqflite 无 bool 类型，用 0/1 存储
-      'is_json': isJson ? 1 : 0,
       'error': error,
       'created_at': createdAt.toIso8601String(),
     };
+  }
+
+  /// 判断文本是否为 JSON（列名与写入字段必须严格一致，故不做持久化）
+  static bool isJsonText(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return false;
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+    try {
+      jsonDecode(trimmed);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   static List<Map<String, String>> _decodeHeaders(dynamic raw) {

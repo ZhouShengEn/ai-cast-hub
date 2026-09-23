@@ -23,6 +23,9 @@ export function useMessageTransfer() {
     handleOffer, handleAnswer, handleIceCandidate,
     onIceCandidate, offIceCandidate, onDataChannel, offDataChannel, close: rtcClose,
     createOffer, createDataChannel, dataChannel,
+    // 必须取 fetchIceServers：useWebRTC 内部默认只有硬编码的 Google STUN，
+    // 不拉取服务端配置就拿不到 TURN，跨 NAT / 企业网下消息通道必然连不通。
+    fetchIceServers,
   } = useWebRTC('message')
 
   let _currentRoomId = null
@@ -77,6 +80,12 @@ export function useMessageTransfer() {
   function startListening() {
     console.log('[Message] 启动全局消息通道监听')
 
+    // 拉取服务端下发的 ICE 配置（STUN + TURN）。
+    // ensurePC 会等待该 Promise 完成，因此这里只需触发、不必 await；
+    // 不调用的话消息链路只能用 useWebRTC 里硬编码的 Google STUN，
+    // 在对称 NAT / 企业网络下（P2P 打不通且无中继）必然失败。
+    fetchIceServers()
+
     // 先清理旧的 handler 避免重复注册
     if (_invitationHandler) {
       offMessage('room_invitation', _invitationHandler)
@@ -123,6 +132,9 @@ export function useMessageTransfer() {
   /** PC端主动创建消息房间并邀请App端 */
   async function createRoom(targetDeviceUuid) {
     console.log('[Message] PC端主动创建房间，目标设备:', targetDeviceUuid)
+
+    // 确保建 PC 前已拿到含 TURN 的 ICE 配置（ensurePC 会 await 该 Promise）
+    fetchIceServers()
 
     if (!targetDeviceUuid) {
       console.warn('[Message] 缺少目标设备 UUID')
@@ -284,6 +296,9 @@ export function useMessageTransfer() {
   }
 
   async function _handleInvitation(msg) {
+    // 每次建连前重新拉取一次：即使页面未刷新，服务端新增 TURN 也能立即生效
+    fetchIceServers()
+
     const roomId = msg.roomId
     if (!roomId) {
       console.warn('[Message] room_invitation 缺少 roomId')
