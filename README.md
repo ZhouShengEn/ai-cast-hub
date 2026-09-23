@@ -138,7 +138,7 @@ graph TB
 |------|------|
 | Nginx | 托管 `pc-web/dist` 静态资源 + 反向代理 `/api`、`/ws` |
 | PM2 | 守护 Node 服务（`ai-cast-server`） |
-| Coturn | TURN 中继（**可选**，未部署时保持配置为空） |
+| Coturn | TURN 中继（**已部署**：`coturn 4.6.1` + systemd + ufw；部署与排障见 [docs/turn-deployment.md](docs/turn-deployment.md)） |
 | MySQL 8 | 预留，见「已知限制」 |
 | GitHub Actions | ① push master 自动构建 `app-arm64-v8a-debug.apk`（保留 7 天）；② 手动触发正式签名 Release 流水线（APK/AAB + GitHub Release） |
 
@@ -642,7 +642,8 @@ ai-cast-hub/
 │       └── res/xml/             # accessibility_service_config.xml / file_paths.xml
 │
 ├── deploy/                      # nginx / coturn / mysql / sandbox
-├── docs/                        # 设计文档（mermaid）+ android-release-signing.md
+├── docs/                        # 设计文档（mermaid）、android-release-signing.md、turn-deployment.md
+├── scripts/check-turn.js        # STUN/TURN 可达性自检（UDP STUN Binding + TCP/TLS 建连）
 ├── .github/workflows/
 │   ├── build_apk.yml            # push master 自动构建 Debug APK
 │   └── release_apk.yml          # 手动触发：正式签名 Release APK/AAB
@@ -750,32 +751,6 @@ flutter build apk --debug --split-per-abi --target-platform android-arm64
 
 > ⚠️ 不要在 `build.gradle.kts` 里加 `ndk.abiFilters` 来限制架构 —— 它与 `--split-per-abi` 自动设置的 `splits.abi` 冲突，会导致 `Conflicting configuration` 构建失败。单架构请用 `--target-platform android-arm64`。
 
-### 正式签名发布流水线
-
-`.github/workflows/release_apk.yml`，**仅手动触发**：Actions → 选择 **Release Android (正式签名)** → Run workflow。
-
-| 输入 | 默认 | 说明 |
-|------|------|------|
-| `build_appbundle` | `false` | 额外构建 `app-release.aab`（Google Play 上架包） |
-| `create_release` | `true` | 自动创建/更新 GitHub Release |
-| `release_tag` | 空 | 留空自动生成 `v<版本>-build.<构建号>` |
-| `flutter_version` | `3.29.0` | Flutter 版本 |
-
-执行链：从 Secrets 还原 keystore（`keytool` 预校验别名）→ `flutter build apk --release` →（可选 AAB）→ `shred` 销毁密钥 → `apksigner` 断言非 debug 签名 → 上传 artifact → 挂载 GitHub Release。
-
-签名配置只读环境变量，**本地开发完全不受影响**：
-
-| 环境变量 | 用途 |
-|----------|------|
-| `ANDROID_KEYSTORE_PATH` | 还原后的 `.jks` 路径 |
-| `ANDROID_KEYSTORE_PASSWORD` | keystore 口令 |
-| `ANDROID_KEY_ALIAS` | 密钥别名 |
-| `ANDROID_KEY_PASSWORD` | 密钥口令（JKS 时与 storePassword 相同） |
-
-4 个变量齐全且文件存在时才创建 release 签名；否则 release 回落到 debug 签名（构建日志打印 `[signing] release → ...` 便于确认）。
-
-> 📖 密钥生成 / base64 转码 / Secrets 配置 / 密钥备份 / CI 报错排查：**[docs/android-release-signing.md](docs/android-release-signing.md)**
-
 ---
 
 ## 12. 环境变量
@@ -786,7 +761,7 @@ flutter build apk --debug --split-per-abi --target-platform android-arm64
 | `NODE_ENV` | development / production | development |
 | `ENCRYPTION_KEY` | **必需**，64 个 hex 字符（32 字节），用于 AES-256-GCM 加密 API Key | — |
 | `DB_MYSQL_*` | MySQL 连接信息（**当前未接入业务层**） | localhost:3306 |
-| `TURN_SERVER` / `TURN_USERNAME` / `TURN_CREDENTIAL` | TURN 中继。**未部署时留空**，不要填 localhost 占位 | 空 |
+| `TURN_SERVER` / `TURN_USERNAME` / `TURN_CREDENTIAL` | TURN 中继。`TURN_SERVER` 支持**逗号分隔的多传输方式**（如 `turn:h:3478?transport=udp,turn:h:3478?transport=tcp`），由 `turnConfig.js` 拆成 `urls` 数组下发。**未部署时三个都留空**，不要填 localhost 占位 | 空 |
 | `SANDBOX_TIMEOUT_SEC` / `_MEMORY_MB` / `_CPU_COUNT` | 沙箱（未启用） | 120 / 512 / 1 |
 
 > `DB_SQLITE_PATH` 在 `.env.example` 中存在但**无任何代码读取**，为历史残留。
@@ -801,7 +776,8 @@ flutter build apk --debug --split-per-abi --target-platform android-arm64
 |----|------|------|
 | **服务端持久化** | 全部模型为内存 Map，MySQL 连接池已建但业务层未接入 | **进程重启所有设备/会话/消息丢失** |
 | **认证强度** | `X-Transfer-Key` 可选；register/bind/pair-code 均在白名单 | 仅适用局域网可信环境，公网需前置鉴权 |
-| **消息链路 ICE** | 两端硬编码 Google STUN，不调 `/webrtc/config` | 跨 NAT 场景可能连不通（投屏链路无此问题） |
+| **P2P 打洞成功率** | 两端均已改为从 `/webrtc/config` 取 ICE 配置（STUN + TURN），不再硬编码 STUN；但企业网络若同时封 UDP 与 TCP:3478，仍需开启 `turns:`（见 turn-deployment.md §9.4） | P2P 打不通时自动回落 TURN 中继：能用，但延迟/带宽不如直连，投屏清晰度可能降档 |
+| **浏览器 mDNS 候选** | Chrome 未获媒体授权时会把局域网 IP 匿名化成 `xxxx.local`，Android 端 libwebrtc 不解析 mDNS 候选 | 同一局域网内无法利用 host 候选直连，只能靠 srflx 回环或 TURN |
 | **系统音频** | AudioPlaybackCapture 只能采「允许被捕获的应用播放声」 | 通知音/键盘音/系统 UI 音/DRM 内容采集不到（Android 硬限制） |
 | **FLAC/DRM** | 目标 App 用 `FLAG_SECURE` 时 | 手势被系统忽略，无法远程控制 |
 | **文件内存占用** | 发送端整文件读入内存计算 MD5 | 超大文件有 OOM 风险；且保存后沙盒+公共目录双份占用 |
