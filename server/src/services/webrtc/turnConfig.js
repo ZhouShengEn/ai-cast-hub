@@ -25,8 +25,19 @@ function getTurnConfig() {
 
   // 自定义 TURN 服务器
   if (config.turn && config.turn.server) {
+    // TURN_SERVER 支持逗号分隔的多个传输方式，例如：
+    //   TURN_SERVER=turn:host:3478?transport=udp,turn:host:3478?transport=tcp
+    //
+    // 企业/校园网络常单向封 UDP（只放行 80/443），此时 UDP 中继不可用，
+    // 把 TCP（必要时再加 turns: TLS）一起下发能让 ICE 换条路走通。
+    // 注意：客户端（Chrome / flutter_webrtc）都要求 urls 为数组，这里始终传数组。
+    const turnUrls = String(config.turn.server)
+      .split(',')
+      .map((url) => url.trim())
+      .filter(Boolean);
+
     const turnServer = {
-      urls: [config.turn.server],
+      urls: turnUrls,
     };
 
     if (config.turn.username) {
@@ -37,7 +48,9 @@ function getTurnConfig() {
     }
 
     iceServers.push(turnServer);
-    logger.debug(`[TURN] TURN 服务器已配置: ${config.turn.server}`);
+    logger.info(
+      `[TURN] TURN 服务器已配置（${turnUrls.length} 个传输方式）: ${turnUrls.join(' , ')}`,
+    );
   } else {
     logger.warn('[TURN] 未配置 TURN 服务器，NAT 穿透可能在某些网络环境下失败');
   }
