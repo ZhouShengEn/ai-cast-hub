@@ -66,12 +66,34 @@ class _HttpToolScreenState extends State<HttpToolScreen>
   List<_HttpApi> _apis = [];
   List<_HttpRecord> _records = [];
 
+  /// 当前显示的 Tab（配合 IndexedStack 使用）
+  int _currentTab = 0;
+
   @override
   void initState() {
     super.initState();
     _tabCtrl = TabController(length: 3, vsync: this);
+    _tabCtrl.addListener(_onTabChanged);
     _loadApis();
     _loadRecords();
+  }
+
+  /// TabBar 点击/程序化切换都会走到这里
+  void _onTabChanged() {
+    if (!mounted) return;
+    if (_tabCtrl.index != _currentTab) {
+      setState(() => _currentTab = _tabCtrl.index);
+    }
+  }
+
+  /// 清空请求头行的引用
+  ///
+  /// 注意：这里【不要】调用旧 controller 的 dispose() ——
+  /// 它们可能仍被页面上已挂载的 TextField 引用，提前 dispose 会破坏
+  /// 框架的依赖清理（触发 InheritedElement 相关断言 / used after disposed）。
+  /// 直接丢弃引用即可：Element 卸载时框架会自行 removeListener，随后由 GC 回收。
+  void _clearHeaderRows() {
+    _headerRows.clear();
   }
 
   @override
@@ -433,10 +455,7 @@ class _HttpToolScreenState extends State<HttpToolScreen>
       _urlCtrl.text = api.url;
       _timeoutCtrl.text = '${api.timeoutSec}';
       _bodyCtrl.text = api.body;
-      for (final row in _headerRows) {
-        row.dispose();
-      }
-      _headerRows.clear();
+      _clearHeaderRows();
       if (api.headers.isEmpty) {
         _headerRows.add(_HeaderRow());
       } else {
@@ -445,6 +464,7 @@ class _HttpToolScreenState extends State<HttpToolScreen>
         }
       }
       _response = null;
+      _currentTab = 1;
     });
     _tabCtrl.animateTo(1);
   }
@@ -458,12 +478,10 @@ class _HttpToolScreenState extends State<HttpToolScreen>
       _urlCtrl.text = '$_serverOrigin/api/v1/health';
       _timeoutCtrl.text = '$_defaultTimeoutSec';
       _bodyCtrl.text = '';
-      for (final row in _headerRows) {
-        row.dispose();
-      }
-      _headerRows.clear();
+      _clearHeaderRows();
       _headerRows.add(_HeaderRow());
       _response = null;
+      _currentTab = 1;
     });
     _tabCtrl.animateTo(1);
   }
@@ -664,10 +682,7 @@ class _HttpToolScreenState extends State<HttpToolScreen>
       _urlCtrl.text = rec.url;
       _timeoutCtrl.text = '${rec.timeoutSec}';
       _bodyCtrl.text = rec.body;
-      for (final row in _headerRows) {
-        row.dispose();
-      }
-      _headerRows.clear();
+      _clearHeaderRows();
       if (rec.headers.isEmpty) {
         _headerRows.add(_HeaderRow());
       } else {
@@ -676,11 +691,11 @@ class _HttpToolScreenState extends State<HttpToolScreen>
         }
       }
       _response = null;
+      _currentTab = 1;
     });
 
-    // 切到「接口请求」页，等切换动画结束再发请求
+    // IndexedStack 同步切换，无需等待动画
     _tabCtrl.animateTo(1);
-    await Future.delayed(const Duration(milliseconds: 300));
     await _send();
   }
 
@@ -690,30 +705,31 @@ class _HttpToolScreenState extends State<HttpToolScreen>
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('HTTP 接口调试'),
-          bottom: TabBar(
-            controller: _tabCtrl,
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
-            tabs: const [
-              Tab(text: '接口列表'),
-              Tab(text: '接口请求'),
-              Tab(text: '请求记录'),
-            ],
-          ),
-        ),
-        body: TabBarView(
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('HTTP 接口调试'),
+        bottom: TabBar(
           controller: _tabCtrl,
-          children: [
-            _buildApiListTab(),
-            _buildRequestTab(),
-            _buildRecordsTab(),
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
+          tabs: const [
+            Tab(text: '接口列表'),
+            Tab(text: '接口请求'),
+            Tab(text: '请求记录'),
           ],
         ),
+      ),
+      // 用 IndexedStack 而不是 TabBarView：
+      //  - 三个页面常驻，切 Tab 不销毁/重建子树，TextField 的 controller
+      //    永远不会在仍被引用时被释放，避开 InheritedElement 相关的框架断言；
+      //  - 切换只做显示/隐藏，交互更稳定（代价是没有左右滑动手势）。
+      body: IndexedStack(
+        index: _currentTab,
+        children: [
+          _buildApiListTab(),
+          _buildRequestTab(),
+          _buildRecordsTab(),
+        ],
       ),
     );
   }
@@ -1955,11 +1971,14 @@ class _RecordDetailScreen extends StatelessWidget {
         color: const Color(0xFF0F172A),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(minWidth: MediaQuery.of(context).size.width - 64),
-          child: child,
+      // 用 LayoutBuilder 取宽度，避免 MediaQuery.of 造成的跨树依赖
+      child: LayoutBuilder(
+        builder: (context, constraints) => SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: child,
+          ),
         ),
       ),
     );
