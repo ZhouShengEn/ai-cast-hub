@@ -733,6 +733,12 @@ pm2 restart ai-cast-server
 - PM2 守护 Node 进程
 - 健康检查：`GET /api/v1/health`
 
+
+```bash
+# 一键部署
+bash /opt/workspace/ai-cast-hub/deploy/restart.sh
+```
+
 ### Docker
 
 ```bash
