@@ -20,6 +20,8 @@ const fileRoutes = require('./file');
 const statsRoutes = require('./stats');
 // 独立运维监控模块（全新解耦，不改动原有业务）
 const monitorModule = require('../modules/server-monitor');
+// 独立 HTTP 接口调试工具模块（接口列表/请求记录存服务端，全局共享一份）
+const httpToolModule = require('../modules/http-tool');
 
 const router = Router();
 
@@ -100,5 +102,8 @@ router.use('/stats', statsRoutes);
 
 // ---- 服务器运维监控模块（独立路由，复用全局设备认证） ----
 router.use('/server-monitor', monitorModule.router);
+
+// ---- HTTP 接口调试工具（独立路由，复用全局设备认证） ----
+router.use('/http-tool', httpToolModule.router);
 
 module.exports = router;

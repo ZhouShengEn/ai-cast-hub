@@ -9,9 +9,13 @@ import '../services/local_storage.dart';
 
 /// HTTP 接口调试工具（App 端）
 ///
-/// 与 PC Web 端能力保持一致：请求配置 / 发送 / 一键重发 / 请求记录 / 响应展示。
-/// 记录持久化到 App 本地数据库（sqflite，无 sqflite 环境降级为 SharedPreferences），
-/// 重装 App 后数据清空，不做云端同步。
+/// 与 PC Web 端能力对齐，但按移动端习惯使用 **Tab 切换式** UI：
+///   Tab1 接口列表  —— 保存下来的接口模板，点击进入接口请求页并回填
+///   Tab2 接口请求  —— 编辑并发起请求（发送 / 保存），**不放一键重发**
+///   Tab3 请求记录  —— 历史记录，点击进详情页查看完整入参与响应，详情页提供一键重发
+///
+/// 存储策略（与 Web 端刻意区分）：接口列表与请求记录**只存手机本地数据库**
+/// （sqflite，无 sqflite 环境降级为 SharedPreferences），不上传服务器，仅本机可用。
 class HttpToolScreen extends StatefulWidget {
   const HttpToolScreen({super.key});
 
@@ -19,8 +23,9 @@ class HttpToolScreen extends StatefulWidget {
   State<HttpToolScreen> createState() => _HttpToolScreenState();
 }
 
-class _HttpToolScreenState extends State<HttpToolScreen> {
-  /// 与 PC 端保持一致的常量
+class _HttpToolScreenState extends State<HttpToolScreen>
+    with SingleTickerProviderStateMixin {
+  /// 与 PC Web 端保持一致的常量
   static const List<String> _methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
   static const List<String> _commonHeaders = [
     'Accept',
@@ -33,36 +38,45 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
   ];
   static const int _defaultTimeoutSec = 10;
 
-  /// 裸 Dio 实例：不加任何拦截器，保证看到「最原始」的响应（含非 0 业务码与 4xx/5xx）
+  /// 裸 Dio：不加任何拦截器，保证看到「最原始」的响应（含非 0 业务码与 4xx/5xx）
   final Dio _dio = Dio();
 
-  final TextEditingController _nameCtrl = TextEditingController();
-  final TextEditingController _urlCtrl = TextEditingController();
+  late final TabController _tabCtrl;
+
+  // ---- 请求表单（Tab2）----
+  final TextEditingController _urlCtrl =
+      TextEditingController(text: '$_serverOrigin/api/v1/health');
   final TextEditingController _timeoutCtrl =
       TextEditingController(text: '$_defaultTimeoutSec');
   final TextEditingController _bodyCtrl = TextEditingController();
-
   final List<_HeaderRow> _headerRows = [_HeaderRow()];
 
   String _method = 'GET';
+
+  /// 当前表单关联的名字：来自接口模板或历史记录，用于保存接口与生成请求记录名
+  String _formName = '';
+
+  /// 表单正在编辑的接口模板 id；null 表示是一份新参数
+  String? _editingApiId;
+
   bool _sending = false;
   bool _bodyExpanded = true;
-  bool _headersExpanded = false;
 
   _HttpResponse? _response;
+  List<_HttpApi> _apis = [];
   List<_HttpRecord> _records = [];
-  String? _activeRecordId;
 
   @override
   void initState() {
     super.initState();
-    _urlCtrl.text = '$_serverOrigin/api/v1/health';
+    _tabCtrl = TabController(length: 3, vsync: this);
+    _loadApis();
     _loadRecords();
   }
 
   @override
   void dispose() {
-    _nameCtrl.dispose();
+    _tabCtrl.dispose();
     _urlCtrl.dispose();
     _timeoutCtrl.dispose();
     _bodyCtrl.dispose();
@@ -77,7 +91,7 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
   // ============================================================
 
   /// 服务端 Origin（去掉 /api/v1 前缀），用于给相对地址补全
-  String get _serverOrigin {
+  static String get _serverOrigin {
     final uri = Uri.tryParse(LocalStorage.instance.getServerUrl());
     if (uri != null && uri.hasScheme && uri.host.isNotEmpty) {
       final port = uri.hasPort ? ':${uri.port}' : '';
@@ -119,18 +133,6 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
     }
   }
 
-  bool _isJsonText(String text) {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) return false;
-    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
-    try {
-      jsonDecode(trimmed);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   String _fmtTime(DateTime t) {
     String two(int n) => n.toString().padLeft(2, '0');
     return '${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
@@ -138,7 +140,9 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
 
   Color _statusColor(int? code) {
     if (code == null) return Colors.red;
-    return (code >= 200 && code < 400) ? Colors.green.shade600 : Colors.red.shade600;
+    return (code >= 200 && code < 400)
+        ? Colors.green.shade600
+        : Colors.red.shade600;
   }
 
   Color _methodColor(String m) {
@@ -158,6 +162,11 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
     }
   }
 
+  String _newId() {
+    final rand = Random().nextInt(0xFFFFFF).toRadixString(36);
+    return 'req_${DateTime.now().microsecondsSinceEpoch}_$rand';
+  }
+
   // ============================================================
   // Headers 行操作
   // ============================================================
@@ -171,6 +180,25 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
       _headerRows.removeAt(index).dispose();
       if (_headerRows.isEmpty) _headerRows.add(_HeaderRow());
     });
+  }
+
+  void _upsertHeader(String key, String value) {
+    for (final row in _headerRows) {
+      if (row.key.text.trim().toLowerCase() == key.toLowerCase()) {
+        row.value.text = value;
+        setState(() {});
+        return;
+      }
+    }
+    for (final row in _headerRows) {
+      if (row.key.text.trim().isEmpty) {
+        row.key.text = key;
+        row.value.text = value;
+        setState(() {});
+        return;
+      }
+    }
+    _addHeaderRow(key, value);
   }
 
   /// 快速填入本机设备认证头（与 ApiClient 拦截器注入规则一致）
@@ -203,34 +231,11 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
     }
   }
 
-  void _upsertHeader(String key, String value) {
-    _HeaderRow? found;
-    for (final row in _headerRows) {
-      if (row.key.text.trim().toLowerCase() == key.toLowerCase()) {
-        found = row;
-        break;
-      }
-    }
-    if (found != null) {
-      found.value.text = value;
-      return;
-    }
-    for (final row in _headerRows) {
-      if (row.key.text.trim().isEmpty) {
-        row.key.text = key;
-        row.value.text = value;
-        setState(() {});
-        return;
-      }
-    }
-    _addHeaderRow(key, value);
-  }
-
   // ============================================================
   // 发送请求
   // ============================================================
 
-  Future<void> _send({String? updateId}) async {
+  Future<void> _send() async {
     if (_sending) return;
 
     final target = _urlCtrl.text.trim();
@@ -240,10 +245,10 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
     }
 
     final messenger = ScaffoldMessenger.of(context);
-    final timeoutSec = int.tryParse(_timeoutCtrl.text.trim()) ?? _defaultTimeoutSec;
+    final timeoutSec =
+        int.tryParse(_timeoutCtrl.text.trim()) ?? _defaultTimeoutSec;
     final safeTimeout = timeoutSec <= 0 ? _defaultTimeoutSec : timeoutSec;
 
-    // 收集请求头
     final headers = <String, String>{};
     for (final row in _headerRows) {
       final k = row.key.text.trim();
@@ -282,7 +287,7 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
         durationMs: stopwatch.elapsedMilliseconds,
         headers: responseHeaders,
         body: body,
-        isJson: _isJsonText(body),
+        isJson: isJsonText(body),
       );
     } on DioException catch (e) {
       stopwatch.stop();
@@ -309,25 +314,51 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
     }
 
     if (!mounted) return;
-    await _saveRecord(
-      updateId: updateId,
-      displayName: _nameCtrl.text.trim().isEmpty
-          ? _defaultName(_method, target)
-          : _nameCtrl.text.trim(),
-      target: target,
+
+    // 落库为一条请求记录（只存本机）
+    final record = _HttpRecord(
+      id: _newId(),
+      name: _formName.isNotEmpty
+          ? _formName
+          : _defaultName(_method, target),
+      method: _method,
+      url: target,
       timeoutSec: safeTimeout,
-      result: result,
+      headers: _headerRows
+          .map((row) => {'key': row.key.text, 'value': row.value.text})
+          .toList(),
+      body: _bodyCtrl.text,
+      statusCode: result.statusCode,
+      durationMs: result.durationMs,
+      responseHeaders: result.headers,
+      responseBody: result.body,
+      isJson: result.isJson,
+      error: result.error,
+      createdAt: DateTime.now(),
     );
+
+    try {
+      await LocalStorage.instance.saveHttpRecord(record.toMap());
+    } catch (e) {
+      _toast('保存请求记录失败: $e', error: true);
+    }
+
     if (!mounted) return;
     setState(() {
       _sending = false;
       _response = result;
       _bodyExpanded = true;
+      _records = [record, ..._records];
+      if (_records.length > LocalStorage.httpRecordsLimit) {
+        _records = _records.sublist(0, LocalStorage.httpRecordsLimit);
+      }
     });
 
     if (result.error != null) {
       messenger.showSnackBar(
-        SnackBar(content: Text(result.error!), backgroundColor: Colors.red.shade600),
+        SnackBar(
+            content: Text(result.error!),
+            backgroundColor: Colors.red.shade600),
       );
     } else if ((result.statusCode ?? 0) >= 400) {
       messenger.showSnackBar(
@@ -338,25 +369,11 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
       );
     } else {
       messenger.showSnackBar(
-        SnackBar(content: Text('请求成功（${result.statusCode}，${result.durationMs}ms）')),
+        SnackBar(
+            content:
+                Text('请求成功（${result.statusCode}，${result.durationMs}ms）')),
       );
     }
-  }
-
-  /// 一键重发：优先复用当前选中记录的全部参数，其次复用当前表单
-  Future<void> _resend() async {
-    if (_sending) return;
-    final rec = _activeRecord;
-    if (rec != null) {
-      _applyRecord(rec, keepResponse: true);
-      await _send(updateId: rec.id);
-      return;
-    }
-    if (_urlCtrl.text.trim().isEmpty) {
-      _toast('请先填写请求地址 URL');
-      return;
-    }
-    await _send();
   }
 
   dynamic _buildRequestBody() {
@@ -394,113 +411,209 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
   }
 
   // ============================================================
-  // 记录读写（本地数据库）
+  // 接口列表（Tab1）
+  // ============================================================
+
+  Future<void> _loadApis() async {
+    try {
+      final rows = await LocalStorage.instance.getHttpApis();
+      if (!mounted) return;
+      setState(() => _apis = rows.map(_HttpApi.fromMap).toList());
+    } catch (e) {
+      _toast('读取接口列表失败: $e', error: true);
+    }
+  }
+
+  /// 点击接口条目：回填参数并切到「接口请求」Tab
+  void _applyApi(_HttpApi api) {
+    setState(() {
+      _editingApiId = api.id;
+      _formName = api.name;
+      _method = api.method;
+      _urlCtrl.text = api.url;
+      _timeoutCtrl.text = '${api.timeoutSec}';
+      _bodyCtrl.text = api.body;
+      for (final row in _headerRows) {
+        row.dispose();
+      }
+      _headerRows.clear();
+      if (api.headers.isEmpty) {
+        _headerRows.add(_HeaderRow());
+      } else {
+        for (final h in api.headers) {
+          _headerRows.add(_HeaderRow(k: h['key'] ?? '', v: h['value'] ?? ''));
+        }
+      }
+      _response = null;
+    });
+    _tabCtrl.animateTo(1);
+  }
+
+  /// 新增一份空参数（不切 tab 的场景由调用方决定）
+  void _startNewForm() {
+    setState(() {
+      _editingApiId = null;
+      _formName = '';
+      _method = 'GET';
+      _urlCtrl.text = '$_serverOrigin/api/v1/health';
+      _timeoutCtrl.text = '$_defaultTimeoutSec';
+      _bodyCtrl.text = '';
+      for (final row in _headerRows) {
+        row.dispose();
+      }
+      _headerRows.clear();
+      _headerRows.add(_HeaderRow());
+      _response = null;
+    });
+    _tabCtrl.animateTo(1);
+  }
+
+  /// 保存 / 更新接口（Tab2 的「保存」按钮）
+  Future<void> _saveApi() async {
+    final url = _urlCtrl.text.trim();
+    if (url.isEmpty) {
+      _toast('请先填写请求地址 URL');
+      return;
+    }
+
+    final suggested = _formName.isNotEmpty
+        ? _formName
+        : _defaultName(_method, url);
+    final name = await _promptName(suggested);
+    if (name == null) return; // 用户取消
+    if (name.trim().isEmpty) {
+      _toast('接口名称不能为空');
+      return;
+    }
+
+    final now = DateTime.now();
+    final api = _HttpApi(
+      id: _editingApiId ?? _newId(),
+      name: name.trim(),
+      method: _method,
+      url: url,
+      timeoutSec:
+          int.tryParse(_timeoutCtrl.text.trim()) ?? _defaultTimeoutSec,
+      headers: _headerRows
+          .map((row) => {'key': row.key.text, 'value': row.value.text})
+          .toList(),
+      body: _bodyCtrl.text,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    try {
+      await LocalStorage.instance.saveHttpApi(api.toMap());
+    } catch (e) {
+      _toast('保存接口失败: $e', error: true);
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _editingApiId = api.id;
+      _formName = api.name;
+      _apis = [api, ..._apis.where((a) => a.id != api.id)];
+    });
+    _toast(_apis.any((a) => a.id == api.id) ? '接口已保存' : '接口已新增');
+  }
+
+  /// 重命名接口（弹窗输入）
+  Future<void> _renameApi(_HttpApi api) async {
+    final name = await _promptName(api.name);
+    if (name == null || name.trim().isEmpty || name.trim() == api.name) return;
+
+    final updated = _HttpApi(
+      id: api.id,
+      name: name.trim(),
+      method: api.method,
+      url: api.url,
+      timeoutSec: api.timeoutSec,
+      headers: api.headers,
+      body: api.body,
+      createdAt: api.createdAt,
+      updatedAt: DateTime.now(),
+    );
+    try {
+      await LocalStorage.instance.saveHttpApi(updated.toMap());
+    } catch (e) {
+      _toast('重命名失败: $e', error: true);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _apis = _apis.map((a) => a.id == api.id ? updated : a).toList();
+      if (_editingApiId == api.id) _formName = updated.name;
+    });
+    _toast('已重命名');
+  }
+
+  Future<void> _deleteApi(_HttpApi api) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除接口'),
+        content: Text('确认删除接口「${api.name}」？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await LocalStorage.instance.deleteHttpApi(api.id);
+    } catch (e) {
+      _toast('删除失败: $e', error: true);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _apis = _apis.where((a) => a.id != api.id).toList();
+      if (_editingApiId == api.id) _editingApiId = null;
+    });
+    _toast('接口已删除');
+  }
+
+  /// 弹窗输入接口名称；返回 null 表示取消
+  Future<String?> _promptName(String initial) {
+    final ctrl = TextEditingController(text: initial);
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('接口名称'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '例如：获取设备列表',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text('确定')),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // 请求记录（Tab3）
   // ============================================================
 
   Future<void> _loadRecords() async {
     try {
       final rows = await LocalStorage.instance.getHttpRecords();
       if (!mounted) return;
-      setState(() {
-        _records = rows.map(_HttpRecord.fromMap).toList();
-      });
+      setState(() => _records = rows.map(_HttpRecord.fromMap).toList());
     } catch (e) {
       _toast('读取请求记录失败: $e', error: true);
     }
-  }
-
-  Future<void> _saveRecord({
-    required String? updateId,
-    required String displayName,
-    required String target,
-    required int timeoutSec,
-    required _HttpResponse result,
-  }) async {
-    final id = updateId ?? _newId();
-    final record = _HttpRecord(
-      id: id,
-      name: displayName,
-      method: _method,
-      url: target,
-      timeoutSec: timeoutSec,
-      headers: _headerRows
-          .map((row) => {'key': row.key.text, 'value': row.value.text})
-          .toList(),
-      body: _bodyCtrl.text,
-      statusCode: result.statusCode,
-      durationMs: result.durationMs,
-      responseHeaders: result.headers,
-      responseBody: result.body,
-      isJson: result.isJson,
-      error: result.error,
-      createdAt: DateTime.now(),
-    );
-
-    try {
-      await LocalStorage.instance.saveHttpRecord(record.toMap());
-    } catch (e) {
-      _toast('保存请求记录失败: $e', error: true);
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _activeRecordId = record.id;
-      _records = [record, ..._records.where((r) => r.id != record.id)];
-      if (_records.length > LocalStorage.httpRecordsLimit) {
-        _records = _records.sublist(0, LocalStorage.httpRecordsLimit);
-      }
-    });
-  }
-
-  String _newId() {
-    final rand = Random().nextInt(0xFFFFFF).toRadixString(36);
-    return 'req_${DateTime.now().microsecondsSinceEpoch}_$rand';
-  }
-
-  _HttpRecord? get _activeRecord {
-    if (_activeRecordId == null) return null;
-    for (final r in _records) {
-      if (r.id == _activeRecordId) return r;
-    }
-    return null;
-  }
-
-  /// 点击历史记录：回填全部配置并展示上次响应
-  void _applyRecord(_HttpRecord rec, {bool keepResponse = false}) {
-    setState(() {
-      _nameCtrl.text = rec.name;
-      _method = rec.method;
-      _urlCtrl.text = rec.url;
-      _timeoutCtrl.text = '${rec.timeoutSec}';
-      _bodyCtrl.text = rec.body;
-
-      for (final row in _headerRows) {
-        row.dispose();
-      }
-      _headerRows.clear();
-      if (rec.headers.isEmpty) {
-        _headerRows.add(_HeaderRow());
-      } else {
-        for (final h in rec.headers) {
-          _headerRows.add(_HeaderRow(k: h['key'] ?? '', v: h['value'] ?? ''));
-        }
-      }
-
-      _activeRecordId = rec.id;
-      if (!keepResponse) {
-        _response = _HttpResponse(
-          statusCode: rec.statusCode,
-          statusText: '',
-          durationMs: rec.durationMs,
-          headers: rec.responseHeaders,
-          body: rec.responseBody,
-          isJson: rec.isJson,
-          error: rec.error,
-        );
-      }
-      _headersExpanded = false;
-      _bodyExpanded = true;
-    });
   }
 
   Future<void> _deleteRecord(String id) async {
@@ -511,10 +624,7 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
       return;
     }
     if (!mounted) return;
-    setState(() {
-      _records = _records.where((r) => r.id != id).toList();
-      if (_activeRecordId == id) _activeRecordId = null;
-    });
+    setState(() => _records = _records.where((r) => r.id != id).toList());
   }
 
   Future<void> _clearAllRecords() async {
@@ -541,24 +651,37 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
       return;
     }
     if (!mounted) return;
-    setState(() {
-      _records = [];
-      _activeRecordId = null;
-    });
+    setState(() => _records = []);
     _toast('请求记录已清空');
   }
 
-  // ============================================================
-  // 长文本缩放查看
-  // ============================================================
+  /// 详情页点击「一键重发」：回填参数 → 跳到接口请求页 → 立即发起请求
+  Future<void> _resendFromDetail(_HttpRecord rec) async {
+    setState(() {
+      _editingApiId = null;
+      _formName = rec.name;
+      _method = rec.method;
+      _urlCtrl.text = rec.url;
+      _timeoutCtrl.text = '${rec.timeoutSec}';
+      _bodyCtrl.text = rec.body;
+      for (final row in _headerRows) {
+        row.dispose();
+      }
+      _headerRows.clear();
+      if (rec.headers.isEmpty) {
+        _headerRows.add(_HeaderRow());
+      } else {
+        for (final h in rec.headers) {
+          _headerRows.add(_HeaderRow(k: h['key'] ?? '', v: h['value'] ?? ''));
+        }
+      }
+      _response = null;
+    });
 
-  void _openFullscreenText(String title, String text) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => _FullscreenTextViewer(title: title, text: text),
-      ),
-    );
+    // 切到「接口请求」页，等切换动画结束再发请求
+    _tabCtrl.animateTo(1);
+    await Future.delayed(const Duration(milliseconds: 300));
+    await _send();
   }
 
   // ============================================================
@@ -567,24 +690,205 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 3,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('HTTP 接口调试'),
+          bottom: TabBar(
+            controller: _tabCtrl,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            tabs: const [
+              Tab(text: '接口列表'),
+              Tab(text: '接口请求'),
+              Tab(text: '请求记录'),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          controller: _tabCtrl,
+          children: [
+            _buildApiListTab(),
+            _buildRequestTab(),
+            _buildRecordsTab(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---- Tab1：接口列表 ----
+  Widget _buildApiListTab() {
     final theme = _theme;
-    return Scaffold(
-      appBar: AppBar(title: const Text('HTTP 接口调试')),
-      body: ListView(
+    return RefreshIndicator(
+      onRefresh: _loadApis,
+      child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _buildRequestCard(theme),
-          const SizedBox(height: 16),
-          _buildResponseCard(theme),
-          const SizedBox(height: 16),
-          _buildRecordsCard(theme),
-          const SizedBox(height: 32),
+          Row(
+            children: [
+              Text('接口列表', style: theme.textTheme.titleMedium),
+              const SizedBox(width: 6),
+              Text('（${_apis.length}）',
+                  style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+              const Spacer(),
+              FilledButton.icon(
+                onPressed: _startNewForm,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('新增接口'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '点击接口会切到「接口请求」页并自动回填全部参数',
+            style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+
+          if (_apis.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
+              child: Center(
+                child: Column(
+                  children: [
+                    Icon(Icons.http, size: 44, color: Colors.grey.shade400),
+                    const SizedBox(height: 12),
+                    Text('还没有保存过接口', style: theme.textTheme.bodyMedium),
+                    const SizedBox(height: 4),
+                    Text('在「接口请求」页填好参数后点「保存」',
+                        style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+                  ],
+                ),
+              ),
+            )
+          else
+            ..._apis.map((api) => _buildApiCard(api, theme)),
+          const SizedBox(height: 24),
         ],
       ),
     );
   }
 
-  // ---- 请求配置 ----
+  Widget _buildApiCard(_HttpApi api, ThemeData theme) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _applyApi(api),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Container(
+                width: 54,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                decoration: BoxDecoration(
+                  color: _methodColor(api.method).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  api.method,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: _methodColor(api.method),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      api.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      api.url,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 18),
+                color: Colors.grey,
+                tooltip: '重命名',
+                onPressed: () => _renameApi(api),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, size: 18),
+                color: Colors.grey,
+                tooltip: '删除接口',
+                onPressed: () => _deleteApi(api),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- Tab2：接口请求 ----
+  Widget _buildRequestTab() {
+    final theme = _theme;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        // 编辑状态提示
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: _editingApiId != null
+                ? theme.colorScheme.primary.withOpacity(0.08)
+                : Colors.grey.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                _editingApiId != null ? Icons.edit : Icons.add_circle_outline,
+                size: 16,
+                color: Colors.grey.shade700,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _editingApiId != null
+                      ? '正在编辑接口「${_formName.isEmpty ? '未命名' : _formName}」，点「保存」会更新它'
+                      : '新参数，点「保存」可存入「接口列表」',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+              if (_editingApiId != null)
+                GestureDetector(
+                  onTap: _startNewForm,
+                  child: const Text('新建',
+                      style: TextStyle(fontSize: 12, color: Colors.blue)),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        _buildRequestCard(theme),
+        const SizedBox(height: 16),
+        _buildResponseCard(theme),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
   Widget _buildRequestCard(ThemeData theme) {
     return Card(
       child: Padding(
@@ -592,20 +896,6 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('请求配置', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 12),
-
-            TextField(
-              controller: _nameCtrl,
-              enabled: !_sending,
-              decoration: const InputDecoration(
-                labelText: '请求名称（留空自动生成）',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 12),
-
             // 方法 + URL
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -673,32 +963,26 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
                       : () => _urlCtrl.text = '$_serverOrigin/api/v1/server/info',
                 ),
                 ActionChip(
-                  avatar: const Icon(Icons.link_off, size: 14),
-                  label: const Text('清空', style: TextStyle(fontSize: 11)),
-                  onPressed: _sending ? null : () => _urlCtrl.clear(),
+                  avatar: const Icon(Icons.key, size: 14),
+                  label: const Text('认证头', style: TextStyle(fontSize: 11)),
+                  onPressed: _sending ? null : _addAuthHeaders,
                 ),
               ],
             ),
             const SizedBox(height: 12),
 
-            // 超时时间
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _timeoutCtrl,
-                    enabled: !_sending,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    decoration: const InputDecoration(
-                      labelText: '超时时间（秒）',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                      helperText: '默认 10 秒',
-                    ),
-                  ),
-                ),
-              ],
+            // 超时
+            TextField(
+              controller: _timeoutCtrl,
+              enabled: !_sending,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: '超时时间（秒）',
+                border: OutlineInputBorder(),
+                isDense: true,
+                helperText: '默认 10 秒',
+              ),
             ),
             const SizedBox(height: 16),
 
@@ -707,15 +991,6 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
               children: [
                 Text('请求头 Headers', style: theme.textTheme.bodyMedium),
                 const Spacer(),
-                TextButton.icon(
-                  onPressed: _sending ? null : _addAuthHeaders,
-                  icon: const Icon(Icons.key, size: 16),
-                  label: const Text('认证头', style: TextStyle(fontSize: 12)),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 32),
-                  ),
-                ),
                 // 新增请求头：可选空行自定义，也可直接选常见请求头
                 PopupMenuButton<String>(
                   tooltip: '新增请求头',
@@ -792,12 +1067,12 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
             ),
             const SizedBox(height: 16),
 
-            // 操作按钮
+            // 操作：只有「发送请求」和「保存」，按需求不放「一键重发」
             Row(
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _sending ? null : () => _send(),
+                    onPressed: _sending ? null : _send,
                     icon: _sending
                         ? const SizedBox(
                             width: 16,
@@ -813,9 +1088,9 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
-                  onPressed: _sending ? null : _resend,
-                  icon: const Icon(Icons.replay),
-                  label: const Text('一键重发'),
+                  onPressed: _sending ? null : _saveApi,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('保存'),
                 ),
               ],
             ),
@@ -871,7 +1146,7 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
     );
   }
 
-  // ---- 响应结果 ----
+  // ---- 本次响应（Tab2 底部，发送后立即看结果）----
   Widget _buildResponseCard(ThemeData theme) {
     final res = _response;
     return Card(
@@ -882,22 +1157,28 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
           children: [
             Row(
               children: [
-                Text('响应结果', style: theme.textTheme.titleMedium),
+                Text('本次响应', style: theme.textTheme.titleMedium),
                 const Spacer(),
                 if (res != null)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: (res.error != null ? Colors.red : _statusColor(res.statusCode))
+                      color: (res.error != null
+                              ? Colors.red
+                              : _statusColor(res.statusCode))
                           .withOpacity(0.12),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      res.error != null ? '请求失败' : '${res.statusCode} ${res.statusText}'.trim(),
+                      res.error != null
+                          ? '请求失败'
+                          : '${res.statusCode} ${res.statusText}'.trim(),
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
-                        color: res.error != null ? Colors.red : _statusColor(res.statusCode),
+                        color: res.error != null
+                            ? Colors.red
+                            : _statusColor(res.statusCode),
                       ),
                     ),
                   ),
@@ -912,10 +1193,10 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
 
             if (res == null)
               Padding(
-                padding: const EdgeInsets.symmetric(vertical: 24),
+                padding: const EdgeInsets.symmetric(vertical: 20),
                 child: Center(
                   child: Text(
-                    '还没有响应，填写请求配置后点击「发送请求」',
+                    '点击「发送请求」后在此查看响应；完整历史见「请求记录」',
                     style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey),
                   ),
                 ),
@@ -939,14 +1220,10 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
               if (res.headers.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 ExpansionTile(
-                  initiallyExpanded: _headersExpanded,
-                  onExpansionChanged: (v) => setState(() => _headersExpanded = v),
                   tilePadding: EdgeInsets.zero,
                   childrenPadding: const EdgeInsets.only(bottom: 8),
-                  title: Text(
-                    '响应头（${res.headers.length}）',
-                    style: theme.textTheme.bodySmall,
-                  ),
+                  title: Text('响应头（${res.headers.length}）',
+                      style: theme.textTheme.bodySmall),
                   children: res.headers
                       .map((h) => Padding(
                             padding: const EdgeInsets.symmetric(vertical: 2),
@@ -1001,15 +1278,6 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
                     ),
                   ),
                   const Spacer(),
-                  TextButton.icon(
-                    onPressed: () => _openFullscreenText('响应体', res.body),
-                    icon: const Icon(Icons.zoom_in, size: 16),
-                    label: const Text('缩放', style: TextStyle(fontSize: 12)),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
-                      minimumSize: const Size(0, 30),
-                    ),
-                  ),
                   TextButton.icon(
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: res.body));
@@ -1067,69 +1335,73 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
     );
   }
 
-  // ---- 请求记录 ----
-  Widget _buildRecordsCard(ThemeData theme) {
-    return Card(
-      child: Padding(
+  // ---- Tab3：请求记录 ----
+  Widget _buildRecordsTab() {
+    final theme = _theme;
+    return RefreshIndicator(
+      onRefresh: _loadRecords,
+      child: ListView(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text('请求记录', style: theme.textTheme.titleMedium),
-                const SizedBox(width: 6),
-                Text(
-                  '（${_records.length}）',
-                  style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey),
+        children: [
+          Row(
+            children: [
+              Text('请求记录', style: theme.textTheme.titleMedium),
+              const SizedBox(width: 6),
+              Text('（${_records.length}）',
+                  style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _records.isEmpty ? null : _clearAllRecords,
+                icon: const Icon(Icons.delete_sweep, size: 16),
+                label: const Text('清空', style: TextStyle(fontSize: 12)),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.red,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  minimumSize: const Size(0, 32),
                 ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: _records.isEmpty ? null : _clearAllRecords,
-                  icon: const Icon(Icons.delete_sweep, size: 16),
-                  label: const Text('清空', style: TextStyle(fontSize: 12)),
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    minimumSize: const Size(0, 32),
-                  ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '点击记录查看完整入参与响应，详情页可一键重发',
+            style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+
+          if (_records.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
+              child: Center(
+                child: Column(
+                  children: [
+                    Icon(Icons.history, size: 44, color: Colors.grey.shade400),
+                    const SizedBox(height: 12),
+                    Text('暂无请求记录', style: theme.textTheme.bodyMedium),
+                    const SizedBox(height: 4),
+                    Text('只保存在本机，重装 App 后会清空',
+                        style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+                  ],
                 ),
-              ],
-            ),
-            if (_records.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 20),
-                child: Center(
-                  child: Text(
-                    '暂无请求记录（重装 App 后记录会清空）',
-                    style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey),
-                  ),
-                ),
-              )
-            else
-              ..._records.map((rec) => _buildRecordTile(rec, theme)),
-          ],
-        ),
+              ),
+            )
+          else
+            ..._records.map((rec) => _buildRecordTile(rec, theme)),
+          const SizedBox(height: 24),
+        ],
       ),
     );
   }
 
   Widget _buildRecordTile(_HttpRecord rec, ThemeData theme) {
-    final active = rec.id == _activeRecordId;
-    return Container(
-      margin: const EdgeInsets.only(top: 6),
-      decoration: BoxDecoration(
-        color: active ? theme.colorScheme.primary.withOpacity(0.06) : null,
-        borderRadius: BorderRadius.circular(8),
-      ),
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
-        dense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        onTap: () => _applyRecord(rec),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        onTap: () => _openRecordDetail(rec),
         leading: Container(
-          width: 52,
-          padding: const EdgeInsets.symmetric(vertical: 3),
+          width: 54,
+          padding: const EdgeInsets.symmetric(vertical: 4),
           decoration: BoxDecoration(
             color: _methodColor(rec.method).withOpacity(0.12),
             borderRadius: BorderRadius.circular(6),
@@ -1138,7 +1410,7 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
             rec.method,
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 10,
+              fontSize: 11,
               fontWeight: FontWeight.bold,
               color: _methodColor(rec.method),
             ),
@@ -1151,13 +1423,13 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
                 rec.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
               ),
             ),
             Text(
               rec.error != null ? '失败' : '${rec.statusCode ?? '-'}',
               style: TextStyle(
-                fontSize: 11,
+                fontSize: 12,
                 fontWeight: FontWeight.bold,
                 color: rec.error != null ? Colors.red : _statusColor(rec.statusCode),
               ),
@@ -1179,16 +1451,37 @@ class _HttpToolScreenState extends State<HttpToolScreen> {
             ),
           ],
         ),
-        trailing: IconButton(
-          icon: const Icon(Icons.close, size: 16),
-          color: Colors.grey,
-          tooltip: '删除该记录',
-          onPressed: () => _deleteRecord(rec.id),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.delete_outline, size: 18),
+              color: Colors.grey,
+              tooltip: '删除该记录',
+              onPressed: () => _deleteRecord(rec.id),
+            ),
+            const Icon(Icons.chevron_right, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openRecordDetail(_HttpRecord rec) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _RecordDetailScreen(
+          record: rec,
+          onResend: () => _resendFromDetail(rec),
         ),
       ),
     );
   }
 }
+
+// ============================================================
+// 辅助模型
+// ============================================================
 
 /// Headers 行（key-value 一对一控制器）
 class _HeaderRow {
@@ -1224,6 +1517,61 @@ class _HttpResponse {
     required this.isJson,
     this.error,
   });
+}
+
+/// 接口模板（「接口列表」的数据源，只存本机）
+class _HttpApi {
+  final String id;
+  final String name;
+  final String method;
+  final String url;
+  final int timeoutSec;
+  final List<Map<String, String>> headers;
+  final String body;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  const _HttpApi({
+    required this.id,
+    required this.name,
+    required this.method,
+    required this.url,
+    required this.timeoutSec,
+    required this.headers,
+    required this.body,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory _HttpApi.fromMap(Map<String, dynamic> map) {
+    return _HttpApi(
+      id: map['id'] as String? ?? '',
+      name: map['name'] as String? ?? '',
+      method: map['method'] as String? ?? 'GET',
+      url: map['url'] as String? ?? '',
+      timeoutSec: map['timeout_sec'] as int? ?? 10,
+      headers: _HttpRecord._decodeHeaders(map['headers']),
+      body: map['body'] as String? ?? '',
+      createdAt:
+          DateTime.tryParse(map['created_at'] as String? ?? '') ?? DateTime.now(),
+      updatedAt:
+          DateTime.tryParse(map['updated_at'] as String? ?? '') ?? DateTime.now(),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'method': method,
+      'url': url,
+      'timeout_sec': timeoutSec,
+      'headers': jsonEncode(headers),
+      'body': body,
+      'created_at': createdAt.toIso8601String(),
+      'updated_at': updatedAt.toIso8601String(),
+    };
+  }
 }
 
 /// 一条请求记录（持久化到本地数据库）
@@ -1274,11 +1622,11 @@ class _HttpRecord {
       durationMs: map['duration_ms'] as int? ?? 0,
       responseHeaders: _decodeHeaders(map['response_headers']),
       responseBody: responseBody,
-      // isJson 不入库，由响应体内容推导：避免表结构与写入字段不一致，
-      // 也省掉一次数据库迁移（字段冗余且存储的是已格式化文本，推导结果一致）。
+      // isJson 不入库（表里没有该列），由响应体内容推导
       isJson: isJsonText(responseBody),
       error: map['error'] as String?,
-      createdAt: DateTime.tryParse(map['created_at'] as String? ?? '') ?? DateTime.now(),
+      createdAt:
+          DateTime.tryParse(map['created_at'] as String? ?? '') ?? DateTime.now(),
     );
   }
 
@@ -1300,19 +1648,6 @@ class _HttpRecord {
     };
   }
 
-  /// 判断文本是否为 JSON（列名与写入字段必须严格一致，故不做持久化）
-  static bool isJsonText(String text) {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) return false;
-    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
-    try {
-      jsonDecode(trimmed);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   static List<Map<String, String>> _decodeHeaders(dynamic raw) {
     if (raw == null) return const [];
     try {
@@ -1331,50 +1666,300 @@ class _HttpRecord {
   }
 }
 
-/// 长文本全屏查看（支持双指缩放 / 拖动）
-class _FullscreenTextViewer extends StatelessWidget {
-  final String title;
-  final String text;
+/// 判断文本是否为 JSON（与存储解耦，避免表结构与写入字段不一致）
+bool isJsonText(String text) {
+  final trimmed = text.trim();
+  if (trimmed.isEmpty) return false;
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+  try {
+    jsonDecode(trimmed);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
-  const _FullscreenTextViewer({required this.title, required this.text});
+// ============================================================
+// 请求记录详情页（完整入参 + 完整响应 + 一键重发）
+// ============================================================
+class _RecordDetailScreen extends StatelessWidget {
+  final _HttpRecord record;
+  final VoidCallback onResend;
+
+  const _RecordDetailScreen({required this.record, required this.onResend});
+
+  Color _statusColor(BuildContext context, int? code) {
+    if (code == null) return Colors.red;
+    return (code >= 200 && code < 400) ? Colors.green : Colors.red;
+  }
+
+  Color _methodColor(String m) {
+    switch (m.toUpperCase()) {
+      case 'GET':
+        return Colors.green;
+      case 'POST':
+        return Colors.blue;
+      case 'PUT':
+        return Colors.orange;
+      case 'DELETE':
+        return Colors.red;
+      case 'PATCH':
+        return Colors.purple;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  String _fmtTime(DateTime t) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
+  }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final rec = record;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(title),
+        title: Text(rec.name, overflow: TextOverflow.ellipsis),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.copy),
-            tooltip: '复制',
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: text));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('已复制到剪贴板')),
-              );
-            },
+          FilledButton.icon(
+            onPressed: onResend,
+            icon: const Icon(Icons.replay, size: 18),
+            label: const Text('一键重发'),
+            style: FilledButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+            ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: ColoredBox(
-        color: const Color(0xFF0F172A),
-        child: InteractiveViewer(
-          minScale: 0.5,
-          maxScale: 6,
-          boundaryMargin: const EdgeInsets.all(80),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // ---- 完整入参 ----
+          _sectionTitle(theme, '完整入参'),
+          // 请求方式用彩色徽标展示
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 64,
+                  child: Text('请求方式',
+                      style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: _methodColor(rec.method).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    rec.method,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: _methodColor(rec.method),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _kvRow(theme, '请求地址', rec.url, mono: true),
+          _kvRow(theme, '超时时间', '${rec.timeoutSec} 秒'),
+          _kvRow(theme, '发起时间', _fmtTime(rec.createdAt)),
+
+          const SizedBox(height: 12),
+          if (rec.headers.any((h) => (h['key'] ?? '').isNotEmpty)) ...[
+            Text('请求头', style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+            const SizedBox(height: 4),
+            _darkBlock(
+              context,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: rec.headers
+                    .where((h) => (h['key'] ?? '').isNotEmpty)
+                    .map((h) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 1),
+                          child: SelectableText.rich(
+                            TextSpan(
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                              children: [
+                                TextSpan(
+                                    text: h['key'],
+                                    style: TextStyle(color: Colors.blue.shade300)),
+                                const TextSpan(
+                                    text: ': ', style: TextStyle(color: Colors.grey)),
+                                TextSpan(
+                                    text: h['value'],
+                                    style: const TextStyle(color: Color(0xFFE2E8F0))),
+                              ],
+                            ),
+                          ),
+                        ))
+                    .toList(),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          Text('请求体', style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+          const SizedBox(height: 4),
+          _darkBlock(
+            context,
             child: SelectableText(
-              text.isEmpty ? '(空)' : text,
+              rec.body.isEmpty ? '（无请求体）' : rec.body,
               style: const TextStyle(
-                fontSize: 12,
+                fontSize: 11,
                 height: 1.5,
                 fontFamily: 'monospace',
                 color: Color(0xFFE2E8F0),
               ),
             ),
           ),
+          const SizedBox(height: 20),
+
+          // ---- 完整响应 ----
+          _sectionTitle(theme, '完整响应'),
+          if (rec.error != null)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                rec.error!,
+                style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+              ),
+            )
+          else ...[
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _statusColor(context, rec.statusCode).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '${rec.statusCode ?? '-'}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: _statusColor(context, rec.statusCode),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text('耗时 ${rec.durationMs} ms',
+                    style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            if (rec.responseHeaders.isNotEmpty) ...[
+              Text('响应头', style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+              const SizedBox(height: 4),
+              _darkBlock(
+                context,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: rec.responseHeaders
+                      .map((h) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 1),
+                            child: SelectableText.rich(
+                              TextSpan(
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontFamily: 'monospace',
+                                ),
+                                children: [
+                                  TextSpan(
+                                      text: h['key'],
+                                      style: TextStyle(color: Colors.blue.shade300)),
+                                  const TextSpan(
+                                      text: ': ', style: TextStyle(color: Colors.grey)),
+                                  TextSpan(
+                                      text: h['value'],
+                                      style: const TextStyle(color: Color(0xFFE2E8F0))),
+                                ],
+                              ),
+                            ),
+                          ))
+                      .toList(),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+
+            Text('响应体', style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+            const SizedBox(height: 4),
+            _darkBlock(
+              context,
+              child: SelectableText(
+                rec.responseBody.isEmpty ? '(无响应体)' : rec.responseBody,
+                style: const TextStyle(
+                  fontSize: 11,
+                  height: 1.5,
+                  fontFamily: 'monospace',
+                  color: Color(0xFFE2E8F0),
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionTitle(ThemeData theme, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(text,
+          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+    );
+  }
+
+  Widget _kvRow(ThemeData theme, String label, String value, {bool mono = false}) {
+    final valueStyle = TextStyle(fontSize: 12, fontFamily: mono ? 'monospace' : null);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 64,
+            child: Text(label, style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey)),
+          ),
+          Expanded(child: SelectableText(value, style: valueStyle)),
+        ],
+      ),
+    );
+  }
+
+  Widget _darkBlock(BuildContext context, {required Widget child}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minWidth: MediaQuery.of(context).size.width - 64),
+          child: child,
         ),
       ),
     );

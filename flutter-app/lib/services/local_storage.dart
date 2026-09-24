@@ -183,15 +183,20 @@ class LocalStorage {
 
     return openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await _createV1Tables(db);
         await _createHttpRecordsTable(db);
+        await _createHttpApisTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        // v1 → v2：新增 HTTP 接口调试请求记录表
+        // v1 → v2：HTTP 接口调试 —— 请求记录表
         if (oldVersion < 2) {
           await _createHttpRecordsTable(db);
+        }
+        // v2 → v3：HTTP 接口调试 —— 接口模板表（左栏/接口列表的数据源）
+        if (oldVersion < 3) {
+          await _createHttpApisTable(db);
         }
       },
     );
@@ -262,6 +267,29 @@ class LocalStorage {
     );
   }
 
+  /// v3 新增表：HTTP 接口调试的「接口列表」（保存下来的接口模板）
+  ///
+  /// 说明：App 端的接口列表与请求记录**只存本机**，不上传服务器；
+  /// Web 端则是存服务端全局共享一份（见 server/src/modules/http-tool）。
+  Future<void> _createHttpApisTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE http_apis (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT 'GET',
+        url TEXT NOT NULL DEFAULT '',
+        timeout_sec INTEGER NOT NULL DEFAULT 10,
+        headers TEXT NOT NULL DEFAULT '[]',
+        body TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_http_apis_updated ON http_apis(updated_at DESC)',
+    );
+  }
+
   /// 确保数据库已初始化
   Future<Database> get db async {
     _db ??= await _initDatabase();
@@ -272,6 +300,9 @@ class LocalStorage {
 
   /// Web 等无 sqflite 环境下的兜底存储 key
   static const String _httpRecordsFallbackKey = 'http_records_fallback';
+
+  /// 接口列表在无 sqflite 环境下的兜底存储 key
+  static const String _httpApisFallbackKey = 'http_apis_fallback';
 
   /// 最多保留的请求记录条数
   static const int httpRecordsLimit = 100;
@@ -343,6 +374,62 @@ class LocalStorage {
       return;
     }
     await database.delete('http_records');
+  }
+
+  // ---- HTTP 接口调试：接口列表（保存下来的接口模板） ----
+
+  /// 保存 / 更新一个接口模板
+  Future<void> saveHttpApi(Map<String, dynamic> api) async {
+    final database = _db;
+    if (database == null) {
+      final list = _prefs.getStringList(_httpApisFallbackKey) ?? <String>[];
+      final id = api['id'];
+      list.removeWhere((e) {
+        try {
+          return (jsonDecode(e) as Map)['id'] == id;
+        } catch (_) {
+          return false;
+        }
+      });
+      list.insert(0, jsonEncode(api));
+      await _prefs.setStringList(_httpApisFallbackKey, list);
+      return;
+    }
+    await database.insert(
+      'http_apis',
+      api,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// 读取接口列表（按更新时间倒序）
+  Future<List<Map<String, dynamic>>> getHttpApis() async {
+    final database = _db;
+    if (database == null) {
+      final list = _prefs.getStringList(_httpApisFallbackKey) ?? <String>[];
+      return list
+          .map((e) => Map<String, dynamic>.from(jsonDecode(e) as Map))
+          .toList();
+    }
+    return database.query('http_apis', orderBy: 'updated_at DESC');
+  }
+
+  /// 删除接口模板
+  Future<void> deleteHttpApi(String id) async {
+    final database = _db;
+    if (database == null) {
+      final list = _prefs.getStringList(_httpApisFallbackKey) ?? <String>[];
+      list.removeWhere((e) {
+        try {
+          return (jsonDecode(e) as Map)['id'] == id;
+        } catch (_) {
+          return false;
+        }
+      });
+      await _prefs.setStringList(_httpApisFallbackKey, list);
+      return;
+    }
+    await database.delete('http_apis', where: 'id = ?', whereArgs: [id]);
   }
 
   // ---- 对话缓存 ----
